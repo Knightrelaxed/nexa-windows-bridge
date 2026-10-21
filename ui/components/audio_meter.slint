@@ -1,0 +1,41 @@
+// ============================================================
+// N.E.X.A 3.3 — REAL-TIME AUDIO SPECTRUM VISUALIZER
+// Multi-Bar Frequency Equalizer & Fluid Voice Waveform
+// ============================================================
+
+export component AudioMeter inherits Rectangle {
+    in property <float> volume_level: 0.0; // 0.0 to 1.0 (RMS amplitude)
+    in property <bool> is_active: false;    // True when speaking or listening
+    in property <color> theme_color: #00E5FF;
+    in property <int> bar_count: 16;
+    in property <length> bar_width: 3px;
+    in property <length> bar_spacing: 3px;
+    in property <length> max_bar_height: 28px;
+    in property <length> min_bar_height: 3px;
+
+    height: root.max_bar_height + 4px;
+    background: transparent;
+
+    HorizontalLayout {
+        alignment: center;
+        spacing: root.bar_spacing;
+
+        for i in root.bar_count : Rectangle {
+            width: root.bar_width;
+            height: root.min_bar_height + (root.max_bar_height - root.min_bar_height) *
+                max(0.1, (1.0 - ((i - (root.bar_count / 2)).abs() / (root.bar_count / 2.0)) * 0.6)) *
+                (root.is_active ? ((sin((i * 24deg) + (animation-tick() / 120ms * 180deg)) * 0.6 +
+                                    cos((i * 36deg) - (animation-tick() / 180ms * 180deg)) * 0.4).abs()) : 0.0) *
+                max(0.2, root.volume_level);
+            y: (parent.height - self.height) / 2;
+            border-radius: self.width / 2;
+
+            background: root.is_active ? root.theme_color : root.theme_color.transparentize(0.7);
+
+            animate height {
+                duration: 60ms;
+                easing: ease-out;
+            }
+        }
+    }
+}

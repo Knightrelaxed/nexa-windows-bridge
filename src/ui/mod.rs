@@ -126,6 +126,11 @@ mod tests {
         // 7. Update Telemetry values
         main_window.set_telemetry_cpu("18%".into());
         assert_eq!(main_window.get_telemetry_cpu().as_str(), "18%");
+
+        // 8. Verify AudioMeter Volume level property
+        assert_eq!(main_window.get_volume_level(), 0.0);
+        main_window.set_volume_level(0.75);
+        assert_eq!(main_window.get_volume_level(), 0.75);
     }
 
     #[test]

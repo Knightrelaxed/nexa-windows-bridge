@@ -146,6 +146,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ServerMessage::AudioPlay { pcm_chunk } => {
                     use base64::prelude::*;
                     if let Ok(bytes) = BASE64_STANDARD.decode(&pcm_chunk) {
+                        let pcm_i16 = audio::resampler::pcm_bytes_to_i16(&bytes);
+                        let mut sum_sq: f64 = 0.0;
+                        for &sample in &pcm_i16 {
+                            let s = sample as f64 / 32768.0;
+                            sum_sq += s * s;
+                        }
+                        let rms = if !pcm_i16.is_empty() {
+                            (sum_sq / pcm_i16.len() as f64).sqrt() as f32
+                        } else {
+                            0.0
+                        };
+                        let vol = (rms * 3.5).min(1.0);
+                        let pulse = 1.0 + vol * 0.35;
+
+                        let window_weak = window_weak_cmd.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(win) = window_weak.upgrade() {
+                                win.set_volume_level(vol);
+                                win.set_pulse_scale(pulse);
+                            }
+                        });
+
                         let mut engine = audio_engine_cmd.lock().await;
                         engine.play_response_pcm(&bytes);
                     }
@@ -154,6 +176,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     info!("[MAIN] Server signaled audio interrupted (barge-in).");
                     let mut engine = audio_engine_cmd.lock().await;
                     engine.stop_speaking();
+
+                    let window_weak = window_weak_cmd.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(win) = window_weak.upgrade() {
+                            win.set_volume_level(0.0);
+                            win.set_pulse_scale(1.0);
+                        }
+                    });
                 }
                 ServerMessage::StatusUpdate { status, text, .. } => {
                     let cog = ui::CognitiveState::from_str_loose(&status);
@@ -177,6 +207,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(win) = window_weak.upgrade() {
                             win.set_avatar_state(ui::CognitiveState::Idle.as_str().into());
                             win.set_status_message(ui::CognitiveState::Idle.status_text().into());
+                            win.set_volume_level(0.0);
+                            win.set_pulse_scale(1.0);
                         }
                     });
                 }
@@ -232,6 +264,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(win) = window_weak.upgrade() {
                     win.set_avatar_state(ui::CognitiveState::BargeIn.as_str().into());
                     win.set_status_message(ui::CognitiveState::BargeIn.status_text().into());
+                    win.set_volume_level(0.0);
+                    win.set_pulse_scale(1.0);
                 }
             });
         }

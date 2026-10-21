@@ -5,6 +5,7 @@
 
 import { Button } from "std-widgets.slint";
 import { Avatar } from "components/avatar.slint";
+import { AudioMeter } from "components/audio_meter.slint";
 import { SettingsDialog } from "settings_dialog.slint";
 
 export component MainWindow inherits Window {
@@ -22,6 +23,7 @@ export component MainWindow inherits Window {
     in-out property <string> connection_status: "offline"; // "connected" | "connecting" | "offline"
     in-out property <string> avatar_state: "offline";       // "idle" | "listening" | "thinking" | "speaking" | "barge_in" | "screen_sharing" | "tool_executing" | "connecting" | "offline"
     in-out property <float> pulse_scale: 1.0;
+    in-out property <float> volume_level: 0.0;             // Real-time audio RMS volume level (0.0 to 1.0)
     in-out property <string> status_message: "Siap terhubung ke N.E.X.A Server";
     in-out property <bool> show_settings: false;
 
@@ -148,6 +150,20 @@ export component MainWindow inherits Window {
                     font-size: 12px;
                     color: #8B949E;
                     overflow: elide;
+                }
+
+                // Mini Audio Waveform Visualizer
+                AudioMeter {
+                    volume_level: root.volume_level;
+                    is_active: root.avatar_state == "speaking" || root.avatar_state == "listening";
+                    theme_color: root.avatar_state == "listening" ? #00B4D8 :
+                                 root.avatar_state == "speaking"  ? #00FF88 :
+                                 root.avatar_state == "thinking"  ? #FFB300 :
+                                 root.avatar_state == "idle"      ? #00E5FF : #546E7A;
+                    bar_count: 24;
+                    bar_width: 3px;
+                    bar_spacing: 3px;
+                    max_bar_height: 20px;
                 }
             }
 
@@ -355,6 +371,20 @@ export component MainWindow inherits Window {
                     text: root.status_message;
                     font-size: 15px;
                     color: #8B949E;
+                }
+
+                // Wide Frequency Spectrum Audio Equalizer
+                AudioMeter {
+                    volume_level: root.volume_level;
+                    is_active: root.avatar_state == "speaking" || root.avatar_state == "listening";
+                    theme_color: root.avatar_state == "listening" ? #00B4D8 :
+                                 root.avatar_state == "speaking"  ? #00FF88 :
+                                 root.avatar_state == "thinking"  ? #FFB300 :
+                                 root.avatar_state == "idle"      ? #00E5FF : #546E7A;
+                    bar_count: 48;
+                    bar_width: 4px;
+                    bar_spacing: 4px;
+                    max_bar_height: 40px;
                 }
             }
 
