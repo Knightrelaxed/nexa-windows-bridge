@@ -63,7 +63,10 @@ export component MainWindow inherits Window {
     // Top-Level Keyboard Handler (F11 Fullscreen Toggle & Escape Exit Fullscreen)
     FocusScope {
         key-pressed(event) => {
-            if (event.text == Key.F11) {
+            if (root.show_settings && event.text == Key.Escape) {
+                root.show_settings = false;
+                accept
+            } else if (event.text == Key.F11) {
                 root.is_fullscreen = !root.is_fullscreen;
                 root.toggle_fullscreen();
                 accept

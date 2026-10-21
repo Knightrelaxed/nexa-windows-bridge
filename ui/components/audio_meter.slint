@@ -26,7 +26,7 @@ export component AudioMeter inherits Rectangle {
                 max(0.1, (1.0 - ((i - (root.bar_count / 2)).abs() / (root.bar_count / 2.0)) * 0.6)) *
                 (root.is_active ? ((sin((i * 24deg) + (animation-tick() / 120ms * 180deg)) * 0.6 +
                                     cos((i * 36deg) - (animation-tick() / 180ms * 180deg)) * 0.4).abs()) : 0.0) *
-                max(0.2, root.volume_level);
+                max(0.0, root.volume_level);
             y: (parent.height - self.height) / 2;
             border-radius: self.width / 2;
 

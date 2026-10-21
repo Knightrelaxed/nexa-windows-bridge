@@ -83,6 +83,10 @@ impl CognitiveState {
     pub fn is_orbital_rotating(&self) -> bool {
         matches!(self, Self::Thinking | Self::Connecting)
     }
+
+    pub fn is_vocal(&self) -> bool {
+        matches!(self, Self::Speaking | Self::Listening)
+    }
 }
 
 #[cfg(test)]
@@ -207,5 +211,18 @@ mod tests {
         assert!(!CognitiveState::Idle.is_orbital_rotating());
         assert!(!CognitiveState::Speaking.is_orbital_rotating());
         assert!(!CognitiveState::Offline.is_orbital_rotating());
+    }
+
+    #[test]
+    fn test_cognitive_state_is_vocal() {
+        assert!(CognitiveState::Speaking.is_vocal());
+        assert!(CognitiveState::Listening.is_vocal());
+        assert!(!CognitiveState::Thinking.is_vocal());
+        assert!(!CognitiveState::Idle.is_vocal());
+        assert!(!CognitiveState::BargeIn.is_vocal());
+        assert!(!CognitiveState::Offline.is_vocal());
+        assert!(!CognitiveState::Connecting.is_vocal());
+        assert!(!CognitiveState::ScreenSharing.is_vocal());
+        assert!(!CognitiveState::ToolExecuting.is_vocal());
     }
 }

@@ -90,7 +90,8 @@ mod tests {
 
     #[test]
     fn test_system_telemetry_samples() {
-        let mut telemetry = SystemTelemetry::new();
+        let mut telemetry = SystemTelemetry::default();
+        std::thread::sleep(std::time::Duration::from_millis(20));
         let cpu = telemetry.sample_cpu_percent();
         let ram = SystemTelemetry::sample_ram_percent();
 

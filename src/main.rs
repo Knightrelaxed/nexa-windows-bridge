@@ -68,6 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let net_client_mic = net_client_audio.clone();
         let window_weak_mic = window_weak.clone();
         tokio::spawn(async move {
+            let mut prev_had_voice = false;
             while let Some(pcm_chunk) = mic_pcm_rx.recv().await {
                 if net_client_mic.is_connected() {
                     // Compute Mic RMS for user voice reactivity when listening
@@ -86,12 +87,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if rms > 0.015 {
                         let vol = (rms * 3.5).min(1.0);
                         let pulse = 1.0 + vol * 0.25;
+                        prev_had_voice = true;
                         let window_weak = window_weak_mic.clone();
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(win) = window_weak.upgrade() {
                                 if win.get_avatar_state() == "listening" {
                                     win.set_volume_level(vol);
                                     win.set_pulse_scale(pulse);
+                                }
+                            }
+                        });
+                    } else if prev_had_voice {
+                        prev_had_voice = false;
+                        let window_weak = window_weak_mic.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(win) = window_weak.upgrade() {
+                                if win.get_avatar_state() == "listening" {
+                                    win.set_volume_level(0.0);
+                                    win.set_pulse_scale(1.0);
                                 }
                             }
                         });
@@ -153,11 +166,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             win.set_connection_status("offline".into());
                             win.set_avatar_state(ui::CognitiveState::Offline.as_str().into());
                             win.set_status_message(ui::CognitiveState::Offline.status_text().into());
+                            win.set_volume_level(0.0);
+                            win.set_pulse_scale(1.0);
                         }
                         ConnectionState::Suspended => {
                             win.set_connection_status("offline".into());
                             win.set_avatar_state(ui::CognitiveState::Offline.as_str().into());
                             win.set_status_message("Laptop Tertidur (Suspended).".into());
+                            win.set_volume_level(0.0);
+                            win.set_pulse_scale(1.0);
                         }
                     }
                 }
@@ -228,6 +245,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 win.set_status_message(t.into());
                             } else {
                                 win.set_status_message(fallback_text.into());
+                            }
+                            if !cog.is_vocal() {
+                                win.set_volume_level(0.0);
+                                win.set_pulse_scale(1.0);
                             }
                         }
                     });
@@ -423,6 +444,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         loop {
             interval.tick().await;
+
+            if window_weak_telem.upgrade().is_none() {
+                break;
+            }
 
             let cpu_pct = telemetry.sample_cpu_percent();
             let ram_pct = SystemTelemetry::sample_ram_percent();
