@@ -11,6 +11,7 @@ export component MainWindow inherits Window {
 
     in-out property <string> connection_status: "offline"; // "connected" | "connecting" | "offline"
     in-out property <string> avatar_state: "offline";       // "idle" | "listening" | "thinking" | "speaking" | "offline"
+    in-out property <float> pulse_scale: 1.0;
     in-out property <string> status_message: "Ready to connect";
     in-out property <bool> show_settings: false;
 
@@ -57,15 +58,20 @@ export component MainWindow inherits Window {
                 alignment: center;
                 Avatar {
                     state: root.avatar_state;
+                    pulse_scale: root.pulse_scale;
                 }
             }
 
             Text {
                 horizontal-alignment: center;
-                text: root.avatar_state == "listening" ? "Listening to Tuan Faqih..." :
-                      root.avatar_state == "thinking"  ? "Cognitive Extended Thinking..." :
-                      root.avatar_state == "speaking"  ? "N.E.X.A is Speaking..." :
-                      root.avatar_state == "idle"      ? "Online & Ready" : "Bridge Offline";
+                text: root.avatar_state == "listening"      ? "Mendengarkan Tuan Faqih..." :
+                      root.avatar_state == "thinking"       ? "Sedang menalar & memproses..." :
+                      root.avatar_state == "speaking"       ? "N.E.X.A sedang berbicara..." :
+                      root.avatar_state == "barge_in"       ? "Mendengarkan interupsi Tuan..." :
+                      root.avatar_state == "screen_sharing" ? "Mentransmisikan layar & audio (D3D11 1 FPS)..." :
+                      root.avatar_state == "tool_executing" ? "Mengeksekusi perintah sistem..." :
+                      (root.avatar_state == "connecting" || root.avatar_state == "reconnecting") ? "Menghubungkan kembali ke server..." :
+                      root.avatar_state == "idle"           ? "Online & Siaga" : "Bridge Terputus (Offline)";
                 font-size: 14px;
                 font-weight: 600;
                 color: #C9D1D9;

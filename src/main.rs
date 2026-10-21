@@ -96,23 +96,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     match state {
                         ConnectionState::Connected => {
                             win.set_connection_status("connected".into());
-                            win.set_avatar_state("idle".into());
-                            win.set_status_message("Online & Connected to N.E.X.A Server".into());
+                            win.set_avatar_state(ui::CognitiveState::Idle.as_str().into());
+                            win.set_status_message(ui::CognitiveState::Idle.status_text().into());
                         }
                         ConnectionState::Connecting => {
                             win.set_connection_status("connecting".into());
-                            win.set_avatar_state("idle".into());
-                            win.set_status_message("Connecting to Server...".into());
+                            win.set_avatar_state(ui::CognitiveState::Connecting.as_str().into());
+                            win.set_status_message(ui::CognitiveState::Connecting.status_text().into());
                         }
                         ConnectionState::Reconnecting {
                             attempt,
                             next_retry_ms,
                         } => {
                             win.set_connection_status("connecting".into());
-                            win.set_avatar_state("idle".into());
+                            win.set_avatar_state(ui::CognitiveState::Connecting.as_str().into());
                             win.set_status_message(
                                 format!(
-                                    "Reconnecting in {}ms (Attempt #{})",
+                                    "Menghubungkan kembali ke server dalam {}ms (Percobaan #{})",
                                     next_retry_ms, attempt
                                 )
                                 .into(),
@@ -120,13 +120,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         ConnectionState::Disconnected => {
                             win.set_connection_status("offline".into());
-                            win.set_avatar_state("offline".into());
-                            win.set_status_message("Disconnected.".into());
+                            win.set_avatar_state(ui::CognitiveState::Offline.as_str().into());
+                            win.set_status_message(ui::CognitiveState::Offline.status_text().into());
                         }
                         ConnectionState::Suspended => {
                             win.set_connection_status("offline".into());
-                            win.set_avatar_state("offline".into());
-                            win.set_status_message("Laptop Sleeping (Suspended).".into());
+                            win.set_avatar_state(ui::CognitiveState::Offline.as_str().into());
+                            win.set_status_message("Laptop Tertidur (Suspended).".into());
                         }
                     }
                 }
@@ -156,19 +156,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     engine.stop_speaking();
                 }
                 ServerMessage::StatusUpdate { status, text, .. } => {
-                    let status_lower = status.to_lowercase();
+                    let cog = ui::CognitiveState::from_str_loose(&status);
+                    let state_str = cog.as_str();
+                    let fallback_text = cog.status_text();
                     let window_weak = window_weak_cmd.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(win) = window_weak.upgrade() {
-                            if status_lower == "speaking" {
-                                win.set_avatar_state("speaking".into());
-                            } else if status_lower == "listening" {
-                                win.set_avatar_state("listening".into());
-                            } else if status_lower == "processing" {
-                                win.set_avatar_state("thinking".into());
-                            }
+                            win.set_avatar_state(state_str.into());
                             if let Some(t) = text {
                                 win.set_status_message(t.into());
+                            } else {
+                                win.set_status_message(fallback_text.into());
                             }
                         }
                     });
@@ -177,7 +175,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let window_weak = window_weak_cmd.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(win) = window_weak.upgrade() {
-                            win.set_avatar_state("idle".into());
+                            win.set_avatar_state(ui::CognitiveState::Idle.as_str().into());
+                            win.set_status_message(ui::CognitiveState::Idle.status_text().into());
                         }
                     });
                 }
@@ -231,7 +230,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let window_weak = window_weak_barge.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(win) = window_weak.upgrade() {
-                    win.set_avatar_state("listening".into());
+                    win.set_avatar_state(ui::CognitiveState::BargeIn.as_str().into());
+                    win.set_status_message(ui::CognitiveState::BargeIn.status_text().into());
                 }
             });
         }

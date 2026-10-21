@@ -1,42 +1,285 @@
-export component Avatar inherits Rectangle {
-    in property <string> state: "offline"; // "idle" | "listening" | "thinking" | "speaking" | "offline"
-    in property <float> pulse_scale: 1.0;
+// ============================================================
+// N.E.X.A 3.3 — SENTIENT CYBERNETIC AVATAR (J.A.R.V.I.S AESTHETIC)
+// Dual-Ocular Cybernetic Vision with 9 Cognitive States & Gyroscopic Rotation
+// ============================================================
 
-    width: 90px;
-    height: 90px;
+component CyberEye inherits Rectangle {
+    in property <color> theme_color: #00E5FF;
+    in property <color> glow_color: #00E5FF33;
+    in property <angle> rotation_angle: 0deg;
+    in property <float> pulse_scale: 1.0;
+    in property <float> pupil_dilation: 1.0;
+    in property <float> blink_amount: 0.0;
+    in property <bool> is_screen_sharing: false;
+    in property <bool> is_left_eye: true;
+
+    width: 72px;
+    height: 72px;
     background: transparent;
 
-    // Outer glow ring
+    // 1. Static Outer Telemetry Brackets (HUD Corner Reticle)
     Rectangle {
         width: parent.width;
         height: parent.height;
         border-radius: self.width / 2;
-        border-width: 2px;
-        border-color: root.state == "listening" ? #00E5FF :
-                      root.state == "speaking"  ? #00FF88 :
-                      root.state == "thinking"  ? #FFB300 :
-                      root.state == "idle"      ? #4DD0E1 : #546E7A;
-        background: root.state == "listening" ? #00E5FF18 :
-                    root.state == "speaking"  ? #00FF8818 :
-                    root.state == "thinking"  ? #FFB30018 :
-                    root.state == "idle"      ? #4DD0E110 : #26323830;
+        border-width: 1px;
+        border-color: root.theme_color.transparentize(0.7);
+        background: transparent;
     }
 
-    // Inner core
+    // 2. Rotating Gyroscopic Orbital Ring
     Rectangle {
+        width: parent.width * 0.94;
+        height: parent.height * 0.94;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        width: 44px * root.pulse_scale;
-        height: 44px * root.pulse_scale;
         border-radius: self.width / 2;
-        background: root.state == "listening" ? #00E5FF :
-                    root.state == "speaking"  ? #00FF88 :
-                    root.state == "thinking"  ? #FFB300 :
-                    root.state == "idle"      ? #80DEEA : #78909C;
+        border-width: 1.5px;
+        border-color: root.theme_color.transparentize(0.35);
+        background: transparent;
+        transform-rotation: root.rotation_angle;
 
-        animate width, height {
-            duration: 250ms;
-            easing: ease-in-out;
+        // Telemetry Tick 1 (Top)
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: 0px;
+            width: 3px;
+            height: 6px;
+            border-radius: 1px;
+            background: root.theme_color;
+        }
+        // Telemetry Tick 2 (Bottom)
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: parent.height - self.height;
+            width: 3px;
+            height: 6px;
+            border-radius: 1px;
+            background: root.theme_color;
+        }
+        // Telemetry Tick 3 (Left)
+        Rectangle {
+            x: 0px;
+            y: (parent.height - self.height) / 2;
+            width: 6px;
+            height: 3px;
+            border-radius: 1px;
+            background: root.theme_color;
+        }
+        // Telemetry Tick 4 (Right)
+        Rectangle {
+            x: parent.width - self.width;
+            y: (parent.height - self.height) / 2;
+            width: 6px;
+            height: 3px;
+            border-radius: 1px;
+            background: root.theme_color;
+        }
+    }
+
+    // 3. Dynamic Aperture Eyelid Container (Clips on blink/sleep)
+    Rectangle {
+        width: parent.width * 0.82;
+        height: max(4px, parent.height * 0.82 * (1.0 - root.blink_amount * 0.92));
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: self.height / 2;
+        clip: true;
+        background: root.glow_color;
+
+        // Middle Telemetry Pulse Arc
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: parent.width * min(1.15, max(0.85, root.pulse_scale));
+            height: parent.width * min(1.15, max(0.85, root.pulse_scale));
+            border-radius: self.width / 2;
+            border-width: 1.5px;
+            border-color: root.theme_color.transparentize(0.2);
+            background: root.theme_color.transparentize(0.85);
+
+            animate width, height {
+                duration: 120ms;
+                easing: ease-out;
+            }
+        }
+
+        // Inner Luminous Iris
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: parent.width * 0.55;
+            height: parent.width * 0.55;
+            border-radius: self.width / 2;
+            background: root.theme_color.transparentize(0.4);
+            border-width: 1.5px;
+            border-color: root.theme_color;
+        }
+
+        // Central Pupil Core
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: parent.width * 0.28 * root.pupil_dilation;
+            height: parent.width * 0.28 * root.pupil_dilation;
+            border-radius: self.width / 2;
+            background: #FFFFFF;
+
+            animate width, height {
+                duration: 200ms;
+                easing: ease-in-out;
+            }
+
+            // Specular Glint Highlight
+            Rectangle {
+                x: parent.width * 0.25;
+                y: parent.height * 0.25;
+                width: max(2px, parent.width * 0.25);
+                height: max(2px, parent.height * 0.25);
+                border-radius: self.width / 2;
+                background: #FFFFFF;
+            }
+        }
+
+        // Vision Scan Sweep Bar (Screen Sharing Mode)
+        if root.is_screen_sharing : Rectangle {
+            width: parent.width;
+            height: 2px;
+            y: (parent.height - self.height) * (sin(animation-tick() / 600ms * 180deg) + 1.0) / 2.0;
+            background: #E0F7FA;
+        }
+    }
+}
+
+export component Avatar inherits Rectangle {
+    in property <string> state: "offline";
+    in property <float> pulse_scale: 1.0;
+    in property <length> eye_size: 72px;
+
+    width: 220px;
+    height: 90px;
+    background: transparent;
+
+    // 9 Cognitive Spectrum Colors
+    property <color> theme_color:
+        root.state == "listening"      ? #00B4D8 :
+        root.state == "thinking"       ? #FFB300 :
+        root.state == "speaking"       ? #00FF88 :
+        root.state == "barge_in"       ? #E0F7FA :
+        root.state == "screen_sharing" ? #00B0FF :
+        root.state == "tool_executing" ? #7C4DFF :
+        (root.state == "connecting" || root.state == "reconnecting") ? #FF9100 :
+        root.state == "idle"           ? #00E5FF :
+        #37474F; // offline / sleeping
+
+    property <color> glow_color:
+        root.state == "listening"      ? #00B4D833 :
+        root.state == "thinking"       ? #FFB30033 :
+        root.state == "speaking"       ? #00FF8833 :
+        root.state == "barge_in"       ? #E0F7FA66 :
+        root.state == "screen_sharing" ? #00B0FF33 :
+        root.state == "tool_executing" ? #7C4DFF33 :
+        (root.state == "connecting" || root.state == "reconnecting") ? #FF910033 :
+        root.state == "idle"           ? #00E5FF26 :
+        #2632381A;
+
+    // Continuous Gyroscopic Rotation (360° in 2.0s during thinking, 1.5s during connecting)
+    property <angle> gyro_angle:
+        root.state == "thinking" ? (animation-tick() / 2000ms * 360deg) :
+        (root.state == "connecting" || root.state == "reconnecting") ? (animation-tick() / 1500ms * 360deg) :
+        0deg;
+
+    // Natural Eyelid Blink Engine (every 3.5s, duration 160ms)
+    property <float> blink_time_ms: (Math.mod(animation-tick(), 3500ms) / 1ms);
+    property <float> blink_amount:
+        root.state == "offline" ? 1.0 :
+        (root.blink_time_ms < 80.0 ? (root.blink_time_ms / 80.0) :
+        (root.blink_time_ms < 160.0 ? (1.0 - (root.blink_time_ms - 80.0) / 80.0) : 0.0));
+
+    // Pupil Dilation (Receptive in listening, focused in thinking)
+    property <float> pupil_dilation:
+        root.state == "listening" ? 1.25 :
+        root.state == "thinking"  ? 0.85 :
+        root.state == "offline"   ? 0.50 : 1.0;
+
+    property <bool> is_vision_active: root.state == "screen_sharing";
+
+    // Layout: Left Eye + Central Arc Reactor Core + Right Eye
+    HorizontalLayout {
+        alignment: center;
+        spacing: 18px;
+
+        // Left Eye (Rotates Counter-Clockwise during thinking)
+        CyberEye {
+            width: root.eye_size;
+            height: root.eye_size;
+            theme_color: root.theme_color;
+            glow_color: root.glow_color;
+            rotation_angle: -root.gyro_angle;
+            pulse_scale: root.pulse_scale;
+            pupil_dilation: root.pupil_dilation;
+            blink_amount: root.blink_amount;
+            is_screen_sharing: root.is_vision_active;
+            is_left_eye: true;
+        }
+
+        // Central Arc Reactor Core
+        VerticalLayout {
+            alignment: center;
+            spacing: 4px;
+
+            // Upper Data Bus Trace
+            Rectangle {
+                width: 2px;
+                height: 8px;
+                background: root.theme_color.transparentize(0.5);
+            }
+
+            // Core Reactor Diamond
+            Rectangle {
+                width: 14px;
+                height: 14px;
+                border-radius: 3px;
+                transform-rotation: 45deg;
+                border-width: 1.5px;
+                border-color: root.theme_color;
+                background: root.state == "offline" ? #263238 : root.theme_color;
+
+                animate background {
+                    duration: 250ms;
+                }
+
+                // Inner Specular Dot
+                Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: 4px;
+                    height: 4px;
+                    border-radius: 2px;
+                    background: #FFFFFF;
+                }
+            }
+
+            // Lower Data Bus Trace
+            Rectangle {
+                width: 2px;
+                height: 8px;
+                background: root.theme_color.transparentize(0.5);
+            }
+        }
+
+        // Right Eye (Rotates Clockwise during thinking)
+        CyberEye {
+            width: root.eye_size;
+            height: root.eye_size;
+            theme_color: root.theme_color;
+            glow_color: root.glow_color;
+            rotation_angle: root.gyro_angle;
+            pulse_scale: root.pulse_scale;
+            pupil_dilation: root.pupil_dilation;
+            blink_amount: root.blink_amount;
+            is_screen_sharing: root.is_vision_active;
+            is_left_eye: false;
         }
     }
 }
