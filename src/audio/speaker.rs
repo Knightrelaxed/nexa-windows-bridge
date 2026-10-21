@@ -15,6 +15,9 @@ use tracing::{error, info, warn};
 pub struct SendStream(#[allow(dead_code)] pub Stream);
 unsafe impl Send for SendStream {}
 
+// Ring buffer capacity constant: 120 seconds absorbs full Gemini Live burst audio without dropping
+pub const PLAYBACK_BUFFER_SECONDS: usize = 120;
+
 pub struct SpeakerPlayer {
     _stream: Option<SendStream>,
     producer: Option<AudioProducer<f32>>,
@@ -48,8 +51,8 @@ impl SpeakerPlayer {
             hardware_sample_rate, hardware_channels, sample_format
         );
 
-        // Ring buffer capacity: 8 seconds of hardware audio (absorb Gemini Live burst streaming without sample drops)
-        let buffer_capacity = (hardware_sample_rate as usize) * (hardware_channels as usize) * 8;
+        // Ring buffer capacity: 120 seconds of hardware audio (absorb Gemini Live burst streaming without sample drops)
+        let buffer_capacity = (hardware_sample_rate as usize) * (hardware_channels as usize) * PLAYBACK_BUFFER_SECONDS;
         let (producer, mut consumer) = create_audio_ring_buffer::<f32>(buffer_capacity);
 
         let is_playing = Arc::new(AtomicBool::new(false));
@@ -253,5 +256,26 @@ mod tests {
         assert_eq!(buffer2, [0.0, 0.0, 0.0, 0.0]); // Silenced
         assert!(!is_playing.load(Ordering::SeqCst));
         assert!(cons.is_empty()); // Ring buffer drained
+    }
+
+    #[test]
+    fn test_playback_buffer_capacity_absorbs_20s_burst() {
+        // At 48kHz stereo, a 20s speech burst produces:
+        // 48,000 samples/sec * 2 channels * 20s = 1,920,000 samples
+        let sample_rate = 48000usize;
+        let channels = 2usize;
+        let burst_20s_samples = sample_rate * channels * 20;
+
+        let buffer_capacity = sample_rate * channels * PLAYBACK_BUFFER_SECONDS;
+        assert!(
+            buffer_capacity >= burst_20s_samples,
+            "Buffer capacity {} must be >= 20s burst samples {}",
+            buffer_capacity,
+            burst_20s_samples
+        );
+        let (mut prod, _cons) = create_audio_ring_buffer::<f32>(buffer_capacity);
+        let dummy_chunk = vec![0.05f32; burst_20s_samples];
+        let pushed = prod.push_slice(&dummy_chunk);
+        assert_eq!(pushed, burst_20s_samples, "Ring buffer must absorb 20s burst without dropping");
     }
 }

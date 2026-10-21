@@ -348,6 +348,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let highlighter_cmd = Arc::clone(&highlighter_controller);
 
     tokio::spawn(async move {
+        let mut last_ui_audio_tick = std::time::Instant::now();
         while let Ok(msg) = command_rx.recv().await {
             match msg {
                 ServerMessage::AudioPlay { pcm_chunk } => {
@@ -367,13 +368,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let vol = (rms * 3.5).min(1.0);
                         let pulse = 1.0 + vol * 0.35;
 
-                        let window_weak = window_weak_cmd.clone();
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(win) = window_weak.upgrade() {
-                                win.set_volume_level(vol);
-                                win.set_pulse_scale(pulse);
-                            }
-                        });
+                        // Throttle Slint UI event loop dispatch to ~16 updates/sec (60ms) to prevent UI thread lockup during burst streaming
+                        let now = std::time::Instant::now();
+                        if now.duration_since(last_ui_audio_tick) >= std::time::Duration::from_millis(60) {
+                            last_ui_audio_tick = now;
+                            let window_weak = window_weak_cmd.clone();
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(win) = window_weak.upgrade() {
+                                    win.set_volume_level(vol);
+                                    win.set_pulse_scale(pulse);
+                                }
+                            });
+                        }
 
                         let mut engine = audio_engine_cmd.lock().await;
                         engine.play_response_pcm(&bytes);
@@ -393,21 +399,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                 }
                 ServerMessage::StatusUpdate { status, text, .. } => {
-                    let cog = ui::CognitiveState::from_str_loose(&status);
-                    let state_str = cog.as_str();
-                    let fallback_text = cog.status_text();
+                    let maybe_cog = ui::CognitiveState::try_from_status(&status);
                     let window_weak = window_weak_cmd.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(win) = window_weak.upgrade() {
-                            win.set_avatar_state(state_str.into());
+                            if let Some(cog) = maybe_cog {
+                                win.set_avatar_state(cog.as_str().into());
+                                if !cog.is_vocal() {
+                                    win.set_volume_level(0.0);
+                                    win.set_pulse_scale(1.0);
+                                }
+                            }
                             if let Some(t) = text {
                                 win.set_status_message(t.into());
-                            } else {
-                                win.set_status_message(fallback_text.into());
-                            }
-                            if !cog.is_vocal() {
-                                win.set_volume_level(0.0);
-                                win.set_pulse_scale(1.0);
+                            } else if let Some(cog) = maybe_cog {
+                                win.set_status_message(cog.status_text().into());
                             }
                         }
                     });

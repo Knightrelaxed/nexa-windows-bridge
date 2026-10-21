@@ -48,8 +48,20 @@ impl CognitiveState {
             "screen_sharing" | "vision" => Self::ScreenSharing,
             "tool_executing" | "executing" => Self::ToolExecuting,
             "connecting" | "reconnecting" => Self::Connecting,
-            _ => Self::Offline,
+            "offline" | "disconnecting" => Self::Offline,
+            _ => Self::Idle,
         }
+    }
+
+    /// Parse status string into an optional CognitiveState.
+    /// Returns None if the string is empty or whitespace-only (e.g. transcript-only updates),
+    /// preventing spurious offline avatar state transitions mid-turn.
+    pub fn try_from_status(s: &str) -> Option<Self> {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        Some(Self::from_str_loose(trimmed))
     }
 
     pub fn hex_color(&self) -> &'static str {
@@ -193,7 +205,17 @@ mod tests {
         assert_eq!(CognitiveState::from_str_loose("vision"), CognitiveState::ScreenSharing);
         assert_eq!(CognitiveState::from_str_loose("executing"), CognitiveState::ToolExecuting);
         assert_eq!(CognitiveState::from_str_loose("reconnecting"), CognitiveState::Connecting);
-        assert_eq!(CognitiveState::from_str_loose("unknown_value"), CognitiveState::Offline);
+        assert_eq!(CognitiveState::from_str_loose("offline"), CognitiveState::Offline);
+        assert_eq!(CognitiveState::from_str_loose("disconnecting"), CognitiveState::Offline);
+        assert_eq!(CognitiveState::from_str_loose("unknown_value"), CognitiveState::Idle);
+    }
+
+    #[test]
+    fn test_empty_transcript_does_not_trigger_offline_state() {
+        assert_eq!(CognitiveState::try_from_status(""), None);
+        assert_eq!(CognitiveState::try_from_status("   "), None);
+        assert_eq!(CognitiveState::try_from_status("speaking"), Some(CognitiveState::Speaking));
+        assert_eq!(CognitiveState::try_from_status("LISTENING"), Some(CognitiveState::Listening));
     }
 
     #[test]
