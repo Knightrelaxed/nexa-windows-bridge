@@ -4,14 +4,20 @@
 // ============================================================
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::thread;
 use tracing::{error, info};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::System::Power::{
+    RegisterSuspendResumeNotification, UnregisterSuspendResumeNotification, HPOWERNOTIFY,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, PostMessageW,
-    PostQuitMessage, RegisterClassW, TranslateMessage, HWND_MESSAGE, MSG, WM_DESTROY,
+    PostQuitMessage, RegisterClassW, TranslateMessage, MSG, WM_DESTROY,
     WM_POWERBROADCAST, WM_USER, WNDCLASSW,
 };
+
+const DEVICE_NOTIFY_WINDOW_HANDLE: u32 = 0;
 
 // Standard Win32 WM_POWERBROADCAST event codes
 const PBT_APMSUSPEND: u32 = 0x0004;
@@ -25,7 +31,7 @@ pub enum PowerStateEvent {
 }
 
 static LISTENER_ACTIVE: AtomicBool = AtomicBool::new(false);
-static mut GLOBAL_CALLBACK: Option<Box<dyn Fn(PowerStateEvent) + Send + Sync>> = None;
+static GLOBAL_CALLBACK: Mutex<Option<Box<dyn Fn(PowerStateEvent) + Send + Sync>>> = Mutex::new(None);
 
 const WM_STOP_LISTENER: u32 = WM_USER + 101;
 
@@ -42,8 +48,9 @@ impl PowerListener {
         let (hwnd_tx, hwnd_rx) = std::sync::mpsc::channel::<Option<isize>>();
 
         let handle = thread::spawn(move || {
-            unsafe {
-                GLOBAL_CALLBACK = Some(Box::new(callback));
+            {
+                let mut cb = GLOBAL_CALLBACK.lock().unwrap();
+                *cb = Some(Box::new(callback));
             }
             LISTENER_ACTIVE.store(true, Ordering::SeqCst);
 
@@ -65,7 +72,7 @@ impl PowerListener {
 
                 let _ = RegisterClassW(&wnd_class);
 
-                // Create a message-only window attached to HWND_MESSAGE
+                // Create an invisible top-level window (parent = 0 so it receives OS broadcast messages)
                 let hwnd = CreateWindowExW(
                     0,
                     class_name.as_ptr(),
@@ -75,16 +82,27 @@ impl PowerListener {
                     0,
                     0,
                     0,
-                    HWND_MESSAGE,
+                    0 as _, // NULL parent -> Top-level window
                     0 as _,
                     0 as _,
                     std::ptr::null(),
                 );
 
                 if hwnd.is_null() {
-                    error!("[POWER] Failed to create message-only window for power listener");
+                    error!("[POWER] Failed to create window for power listener");
                     let _ = hwnd_tx.send(None);
                     return;
+                }
+
+                // Modern Windows 10/11: Register for Suspend/Resume notifications
+                let hnotify: HPOWERNOTIFY = RegisterSuspendResumeNotification(
+                    hwnd as _,
+                    DEVICE_NOTIFY_WINDOW_HANDLE,
+                );
+                if hnotify == 0 {
+                    tracing::warn!("[POWER] RegisterSuspendResumeNotification returned 0, falling back to standard broadcast");
+                } else {
+                    info!("[POWER] Successfully registered with Windows Suspend/Resume Notification system.");
                 }
 
                 info!("[POWER] Registered WM_POWERBROADCAST listener window successfully.");
@@ -93,6 +111,9 @@ impl PowerListener {
                 let mut msg: MSG = std::mem::zeroed();
                 while GetMessageW(&mut msg, 0 as _, 0, 0) > 0 {
                     if msg.message == WM_STOP_LISTENER {
+                        if hnotify != 0 {
+                            let _ = UnregisterSuspendResumeNotification(hnotify);
+                        }
                         DestroyWindow(hwnd);
                         break;
                     }
@@ -124,6 +145,9 @@ impl Drop for PowerListener {
         if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
         }
+        if let Ok(mut guard) = GLOBAL_CALLBACK.lock() {
+            *guard = None;
+        }
     }
 }
 
@@ -136,18 +160,22 @@ unsafe extern "system" fn power_wnd_proc(
     match msg {
         WM_POWERBROADCAST => {
             let event_type = wparam as u32;
-            if event_type == PBT_APMSUSPEND {
+            let event = if event_type == PBT_APMSUSPEND {
                 info!("[POWER] ⚡ WM_POWERBROADCAST: PBT_APMSUSPEND (Laptop Sleep / Lid Closed)");
-                if let Some(ref cb) = GLOBAL_CALLBACK {
-                    cb(PowerStateEvent::Suspend);
-                }
-                return 1;
+                Some(PowerStateEvent::Suspend)
             } else if event_type == PBT_APMRESUMEAUTOMATIC || event_type == PBT_APMRESUMESUSPEND {
                 info!("[POWER] ⚡ WM_POWERBROADCAST: PBT_APMRESUME (Laptop Woken / Lid Opened)");
-                if let Some(ref cb) = GLOBAL_CALLBACK {
-                    cb(PowerStateEvent::Resume);
+                Some(PowerStateEvent::Resume)
+            } else {
+                None
+            };
+
+            if let Some(evt) = event {
+                if let Ok(guard) = GLOBAL_CALLBACK.lock() {
+                    if let Some(ref cb) = *guard {
+                        cb(evt);
+                    }
                 }
-                return 1;
             }
             1
         }

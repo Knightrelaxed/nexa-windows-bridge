@@ -203,7 +203,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let net_client_toggle = network_client.clone();
     main_window.on_toggle_connect(move || {
-        if net_client_toggle.is_connected() {
+        if net_client_toggle.is_enabled() {
             net_client_toggle.disconnect();
         } else {
             net_client_toggle.connect();

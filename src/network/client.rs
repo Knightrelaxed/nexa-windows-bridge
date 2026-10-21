@@ -38,6 +38,7 @@ pub struct NetworkClient {
     outbound_tx: mpsc::Sender<OutboundItem>,
     command_tx: broadcast::Sender<ServerMessage>,
     reconnect_notify: Arc<Notify>,
+    session_interrupt: Arc<Notify>,
     enabled: Arc<Mutex<bool>>,
     is_suspended: Arc<Mutex<bool>>,
 }
@@ -48,6 +49,7 @@ impl NetworkClient {
         let (outbound_tx, outbound_rx) = mpsc::channel::<OutboundItem>(128);
         let (command_tx, _) = broadcast::channel::<ServerMessage>(64);
         let reconnect_notify = Arc::new(Notify::new());
+        let session_interrupt = Arc::new(Notify::new());
         let enabled = Arc::new(Mutex::new(false));
         let is_suspended = Arc::new(Mutex::new(false));
 
@@ -57,6 +59,7 @@ impl NetworkClient {
             outbound_tx,
             command_tx: command_tx.clone(),
             reconnect_notify: Arc::clone(&reconnect_notify),
+            session_interrupt: Arc::clone(&session_interrupt),
             enabled: Arc::clone(&enabled),
             is_suspended: Arc::clone(&is_suspended),
         };
@@ -68,6 +71,7 @@ impl NetworkClient {
             outbound_rx,
             command_tx,
             reconnect_notify,
+            session_interrupt,
             enabled,
             is_suspended,
         ));
@@ -118,6 +122,7 @@ impl NetworkClient {
             let mut en = self.enabled.lock().unwrap();
             *en = false;
         }
+        self.session_interrupt.notify_one();
         let _ = self.state_tx.send(ConnectionState::Disconnected);
     }
 
@@ -128,6 +133,7 @@ impl NetworkClient {
             let mut susp = self.is_suspended.lock().unwrap();
             *susp = true;
         }
+        self.session_interrupt.notify_one();
         let _ = self.state_tx.send(ConnectionState::Suspended);
     }
 
@@ -142,8 +148,14 @@ impl NetworkClient {
     }
 
     /// Check if client is currently in connected state
+    #[allow(dead_code)]
     pub fn is_connected(&self) -> bool {
         *self.state_tx.borrow() == ConnectionState::Connected
+    }
+
+    /// Check if client connection worker is enabled (connecting, connected, or reconnecting)
+    pub fn is_enabled(&self) -> bool {
+        *self.enabled.lock().unwrap()
     }
 }
 
@@ -153,6 +165,7 @@ async fn run_client_worker(
     mut outbound_rx: mpsc::Receiver<OutboundItem>,
     command_tx: broadcast::Sender<ServerMessage>,
     reconnect_notify: Arc<Notify>,
+    session_interrupt: Arc<Notify>,
     enabled: Arc<Mutex<bool>>,
     is_suspended: Arc<Mutex<bool>>,
 ) {
@@ -163,6 +176,8 @@ async fn run_client_worker(
     loop {
         // 1. Wait if connection is not enabled or suspended
         while !*enabled.lock().unwrap() || *is_suspended.lock().unwrap() {
+            attempt = 0;
+            backoff_ms = 500;
             reconnect_notify.notified().await;
         }
 
@@ -198,6 +213,9 @@ async fn run_client_worker(
                 let mut ping_interval = tokio::time::interval(Duration::from_secs(20));
                 ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+                // Drain any stale outbound items from previous sessions
+                while outbound_rx.try_recv().is_ok() {}
+
                 // 3. Active Session Loop
                 let mut session_active = true;
                 while session_active {
@@ -208,6 +226,13 @@ async fn run_client_worker(
                     }
 
                     tokio::select! {
+                        // Instant session interrupt (triggered on disconnect or OS suspend)
+                        _ = session_interrupt.notified() => {
+                            info!("[NETWORK] Active session interrupted by disconnect or suspend.");
+                            let _ = ws_write.send(Message::Close(None)).await;
+                            break;
+                        }
+
                         // Keepalive Watchdog (Sends PING every 20s)
                         _ = ping_interval.tick() => {
                             let now = std::time::SystemTime::now()
@@ -301,6 +326,11 @@ async fn run_client_worker(
                 _ = tokio::time::sleep(Duration::from_millis(backoff_ms)) => {}
                 _ = reconnect_notify.notified() => {
                     info!("[NETWORK] Reconnect timer preempted by instant trigger.");
+                    attempt = 0;
+                    backoff_ms = 500;
+                }
+                _ = session_interrupt.notified() => {
+                    info!("[NETWORK] Reconnect backoff preempted by interrupt.");
                 }
             }
 
@@ -356,6 +386,11 @@ mod tests {
 
         let state_rx = client.subscribe_state();
         assert_eq!(*state_rx.borrow(), ConnectionState::Disconnected);
+        assert!(!client.is_enabled());
+
+        // Connect
+        client.connect();
+        assert!(client.is_enabled());
 
         // Suspend
         client.notify_suspend();
@@ -368,5 +403,6 @@ mod tests {
         // Disconnect
         client.disconnect();
         assert_eq!(*state_rx.borrow(), ConnectionState::Disconnected);
+        assert!(!client.is_enabled());
     }
 }
