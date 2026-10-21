@@ -22,9 +22,12 @@ base64 = "0.23"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_Graphics_Gdi",
     "Win32_System_SystemServices",
     "Win32_System_Power",
+    "Win32_System_LibraryLoader",
 ] }
 
 [build-dependencies]

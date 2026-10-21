@@ -1,5 +1,5 @@
 // ============================================================
-// N.E.X.A 3.3 — WINDOWS BRIDGE DESKTOP COMPANION
+// WINDOWS BRIDGE DESKTOP COMPANION
 // Native Slint Desktop Companion for Lenovo ThinkPad X380 Yoga
 // ============================================================
 
@@ -11,7 +11,7 @@ mod audio;
 
 use config::BridgeConfig;
 use network::{ClientMessage, ConnectionState, NetworkClient, ServerMessage};
-use platform::{PowerListener, PowerStateEvent};
+use platform::{HotkeyAction, HotkeyListener, PowerListener, PowerStateEvent, SystemTray, TrayEvent};
 use slint::ComponentHandle;
 use std::sync::{Arc, Mutex};
 use tracing::{error, info};
@@ -280,6 +280,97 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         PowerStateEvent::Resume => {
             net_client_power.notify_resume();
         }
+    });
+
+    // 10. Register Windows Native System Tray Controller
+    let window_weak_tray = main_window.as_weak();
+    let audio_engine_tray = Arc::clone(&audio_engine);
+    let _system_tray = SystemTray::spawn(move |event| {
+        let window_weak = window_weak_tray.clone();
+        let audio_engine = Arc::clone(&audio_engine_tray);
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(win) = window_weak.upgrade() {
+                match event {
+                    TrayEvent::ToggleWindow => {
+                        let is_vis = win.window().is_visible();
+                        info!("[TRAY] 🖱️ Tray icon clicked. Toggling window visibility (visible={})", !is_vis);
+                        if is_vis {
+                            let _ = win.window().hide();
+                        } else {
+                            let _ = win.window().show();
+                        }
+                    }
+                    TrayEvent::ShowWindow => {
+                        info!("[TRAY] Context menu 'Buka N.E.X.A' activated.");
+                        let _ = win.window().show();
+                    }
+                    TrayEvent::ToggleMute => {
+                        let muted = !win.get_is_mic_muted();
+                        info!("[TRAY] Context menu 'Mute / Unmute' activated: muted={}", muted);
+                        win.set_is_mic_muted(muted);
+                        let audio_clone = Arc::clone(&audio_engine);
+                        tokio::spawn(async move {
+                            let engine = audio_clone.lock().await;
+                            engine.set_mic_muted(muted);
+                        });
+                    }
+                    TrayEvent::ToggleFullscreen => {
+                        let fs = !win.get_is_fullscreen();
+                        info!("[TRAY] Context menu 'Layar Penuh' activated: fs={}", fs);
+                        win.set_is_fullscreen(fs);
+                        win.window().set_fullscreen(fs);
+                    }
+                    TrayEvent::OpenSettings => {
+                        info!("[TRAY] Context menu 'Pengaturan' activated.");
+                        let _ = win.window().show();
+                        win.set_show_settings(true);
+                    }
+                    TrayEvent::Quit => {
+                        info!("[TRAY] Context menu 'Keluar' activated. Exiting application.");
+                        std::process::exit(0);
+                    }
+                }
+            }
+        });
+    });
+
+    // 11. Register Windows Global Hotkeys (Boss Key, Mic Mute, Fullscreen)
+    let window_weak_hotkey = main_window.as_weak();
+    let audio_engine_hotkey = Arc::clone(&audio_engine);
+    let _hotkey_listener = HotkeyListener::spawn(move |action| {
+        let window_weak = window_weak_hotkey.clone();
+        let audio_engine = Arc::clone(&audio_engine_hotkey);
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(win) = window_weak.upgrade() {
+                match action {
+                    HotkeyAction::BossKey => {
+                        let is_vis = win.window().is_visible();
+                        info!("[HOTKEY] 🕶️ Boss Key (Win+Alt+N) triggered. Window visible -> {}", !is_vis);
+                        if is_vis {
+                            let _ = win.window().hide();
+                        } else {
+                            let _ = win.window().show();
+                        }
+                    }
+                    HotkeyAction::ToggleMute => {
+                        let muted = !win.get_is_mic_muted();
+                        info!("[HOTKEY] 🎙️ Mic Mute (Win+Alt+M) triggered: muted={}", muted);
+                        win.set_is_mic_muted(muted);
+                        let audio_clone = Arc::clone(&audio_engine);
+                        tokio::spawn(async move {
+                            let engine = audio_clone.lock().await;
+                            engine.set_mic_muted(muted);
+                        });
+                    }
+                    HotkeyAction::ToggleFullscreen => {
+                        let fs = !win.get_is_fullscreen();
+                        info!("[HOTKEY] ⛶ Fullscreen Toggle (F11 / Win+Alt+F) triggered: fs={}", fs);
+                        win.set_is_fullscreen(fs);
+                        win.window().set_fullscreen(fs);
+                    }
+                }
+            }
+        });
     });
 
     // 8. Hook Slint UI Callbacks
