@@ -30,8 +30,9 @@ pub enum PowerStateEvent {
     Resume,
 }
 
+type PowerCallback = Box<dyn Fn(PowerStateEvent) + Send + Sync>;
 static LISTENER_ACTIVE: AtomicBool = AtomicBool::new(false);
-static GLOBAL_CALLBACK: Mutex<Option<Box<dyn Fn(PowerStateEvent) + Send + Sync>>> = Mutex::new(None);
+static GLOBAL_CALLBACK: Mutex<Option<PowerCallback>> = Mutex::new(None);
 
 const WM_STOP_LISTENER: u32 = WM_USER + 101;
 

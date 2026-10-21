@@ -92,7 +92,7 @@ impl BridgeConfig {
     pub fn save(&self) -> Result<(), std::io::Error> {
         let path = Self::config_path();
         let content = serde_json::to_string_pretty(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         fs::write(&path, content)?;
         tracing::info!("Saved config to {}", path.display());
         Ok(())
@@ -150,7 +150,7 @@ mod tests {
         let json = r#"{"server_url": "ws://example.com/ws"}"#;
         let cfg: BridgeConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.server_url, "ws://example.com/ws");
-        assert_eq!(cfg.low_ram_mode, true);
+        assert!(cfg.low_ram_mode);
         assert_eq!(cfg.capture_fps, 1);
         assert_eq!(cfg.audio_input_device, "Default");
         assert_eq!(cfg.auth_token, "");

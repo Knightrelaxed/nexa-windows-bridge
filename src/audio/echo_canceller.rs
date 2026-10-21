@@ -107,8 +107,8 @@ impl EchoCancellerEngine {
     /// Read processed, echo-cancelled audio samples out into destination buffer.
     pub fn read_processed_samples(&mut self, dst: &mut [f32]) -> usize {
         let count = dst.len().min(self.processed_queue.len());
-        for i in 0..count {
-            dst[i] = self.processed_queue.pop_front().unwrap_or(0.0);
+        for slot in dst.iter_mut().take(count) {
+            *slot = self.processed_queue.pop_front().unwrap_or(0.0);
         }
         count
     }

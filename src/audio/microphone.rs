@@ -149,6 +149,7 @@ impl MicrophoneCapture {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_mic_processing_worker(
     mut consumer: AudioConsumer<f32>,
     hardware_sample_rate: u32,

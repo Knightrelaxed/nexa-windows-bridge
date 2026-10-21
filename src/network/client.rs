@@ -159,6 +159,7 @@ impl NetworkClient {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_client_worker(
     config: Arc<Mutex<BridgeConfig>>,
     state_tx: Arc<watch::Sender<ConnectionState>>,

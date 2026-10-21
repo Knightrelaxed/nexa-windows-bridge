@@ -94,6 +94,7 @@ pub fn i16_to_f32(samples: &[i16]) -> Vec<f32> {
 }
 
 /// Convert raw little-endian PCM bytes to i16 slice.
+#[allow(clippy::chunks_exact_to_as_chunks)]
 pub fn pcm_bytes_to_i16(bytes: &[u8]) -> Vec<i16> {
     bytes
         .chunks_exact(2)
