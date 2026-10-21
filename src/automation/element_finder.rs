@@ -10,9 +10,24 @@ use tracing::{debug, info};
 use windows::Win32::Foundation::POINT;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
-    COINIT_APARTMENTTHREADED,
+    COINIT_MULTITHREADED,
 };
-use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation, IUIAutomationElement};
+use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation};
+
+/// RAII Guard ensuring CoUninitialize is called only after all COM objects are released
+struct ComGuard {
+    need_uninit: bool,
+}
+
+impl Drop for ComGuard {
+    fn drop(&mut self) {
+        if self.need_uninit {
+            unsafe {
+                CoUninitialize();
+            }
+        }
+    }
+}
 
 /// Physical pixel rectangle of a detected UI element
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,8 +57,12 @@ impl PixelRect {
     }
 
     /// Check if dimensions are rational for an interactive UI control
-    /// (e.g. at least 4x4 pixels, and not occupying >95% of the screen)
+    /// (e.g. at least 4x4 pixels, valid order, and not occupying >95% of the screen)
     pub fn is_valid_control(&self, screen_w: i32, screen_h: i32) -> bool {
+        if self.right <= self.left || self.bottom <= self.top {
+            return false;
+        }
+
         let w = self.width();
         let h = self.height();
 
@@ -82,12 +101,24 @@ pub struct SnappedRect {
 }
 
 impl SnappedRect {
+    /// Create a new SnappedRect with guaranteed ordered bounds and clamped to [0..=1000]
     pub fn new(ymin: f64, xmin: f64, ymax: f64, xmax: f64, is_snapped: bool) -> Self {
+        let (clean_ymin, clean_ymax) = if ymin <= ymax {
+            (ymin, ymax)
+        } else {
+            (ymax, ymin)
+        };
+        let (clean_xmin, clean_xmax) = if xmin <= xmax {
+            (xmin, xmax)
+        } else {
+            (xmax, xmin)
+        };
+
         Self {
-            ymin: ymin.clamp(0.0, 1000.0),
-            xmin: xmin.clamp(0.0, 1000.0),
-            ymax: ymax.clamp(0.0, 1000.0),
-            xmax: xmax.clamp(0.0, 1000.0),
+            ymin: clean_ymin.clamp(0.0, 1000.0),
+            xmin: clean_xmin.clamp(0.0, 1000.0),
+            ymax: clean_ymax.clamp(0.0, 1000.0),
+            xmax: clean_xmax.clamp(0.0, 1000.0),
             is_snapped,
         }
     }
@@ -95,13 +126,13 @@ impl SnappedRect {
 
 /// Convert physical pixel bounds back into normalized coordinates (0..=1000)
 pub fn pixel_rect_to_normalized(rect: &PixelRect, screen_w: i32, screen_h: i32) -> SnappedRect {
-    let max_w = (screen_w - 1).max(1) as f64;
-    let max_h = (screen_h - 1).max(1) as f64;
+    let w = (screen_w.max(1)) as f64;
+    let h = (screen_h.max(1)) as f64;
 
-    let xmin = ((rect.left as f64 / max_w) * 1000.0).clamp(0.0, 1000.0);
-    let ymin = ((rect.top as f64 / max_h) * 1000.0).clamp(0.0, 1000.0);
-    let xmax = ((rect.right as f64 / max_w) * 1000.0).clamp(0.0, 1000.0);
-    let ymax = ((rect.bottom as f64 / max_h) * 1000.0).clamp(0.0, 1000.0);
+    let xmin = ((rect.left as f64 / w) * 1000.0).clamp(0.0, 1000.0);
+    let ymin = ((rect.top as f64 / h) * 1000.0).clamp(0.0, 1000.0);
+    let xmax = ((rect.right as f64 / w) * 1000.0).clamp(0.0, 1000.0);
+    let ymax = ((rect.bottom as f64 / h) * 1000.0).clamp(0.0, 1000.0);
 
     SnappedRect::new(ymin, xmin, ymax, xmax, true)
 }
@@ -110,55 +141,42 @@ pub fn pixel_rect_to_normalized(rect: &PixelRect, screen_w: i32, screen_h: i32) 
 /// Returns Some(PixelRect) if a valid control is found, or None.
 pub fn find_element_bounds_at_point(px: i32, py: i32, screen_w: i32, screen_h: i32) -> Option<PixelRect> {
     unsafe {
-        // Initialize COM library for current thread if not already initialized
-        let co_init_res = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let com_initialized = co_init_res.is_ok();
+        // Initialize COM library for the current thread (using MTA for worker thread compatibility)
+        let co_init_res = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let need_uninit = co_init_res.is_ok();
+        let _guard = ComGuard { need_uninit };
 
         let uia: Result<IUIAutomation, _> = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER);
         let uia = match uia {
             Ok(u) => u,
             Err(err) => {
                 debug!("[UIA] CoCreateInstance(CUIAutomation) failed: {:?}", err);
-                if com_initialized {
-                    CoUninitialize();
-                }
                 return None;
             }
         };
 
         let pt = POINT { x: px, y: py };
-        let elem_res: Result<IUIAutomationElement, _> = uia.ElementFromPoint(pt);
-
-        let elem = match elem_res {
+        let elem = match uia.ElementFromPoint(pt) {
             Ok(e) => e,
             Err(err) => {
                 debug!("[UIA] ElementFromPoint failed at ({}, {}): {:?}", px, py, err);
-                if com_initialized {
-                    CoUninitialize();
-                }
                 return None;
             }
         };
 
-        let rect_res = elem.CurrentBoundingRectangle();
-
-        if com_initialized {
-            CoUninitialize();
-        }
-
-        match rect_res {
-            Ok(rect) => {
-                let pixel_rect = PixelRect::new(rect.left, rect.top, rect.right, rect.bottom);
-                if pixel_rect.is_valid_control(screen_w, screen_h) && pixel_rect.contains_or_near(px, py, 30) {
-                    Some(pixel_rect)
-                } else {
-                    None
-                }
-            }
+        let rect = match elem.CurrentBoundingRectangle() {
+            Ok(r) => r,
             Err(err) => {
                 debug!("[UIA] CurrentBoundingRectangle failed: {:?}", err);
-                None
+                return None;
             }
+        };
+
+        let pixel_rect = PixelRect::new(rect.left, rect.top, rect.right, rect.bottom);
+        if pixel_rect.is_valid_control(screen_w, screen_h) && pixel_rect.contains_or_near(px, py, 30) {
+            Some(pixel_rect)
+        } else {
+            None
         }
     }
 }
@@ -221,6 +239,10 @@ mod tests {
         let tiny = PixelRect::new(100, 100, 102, 102);
         assert!(!tiny.is_valid_control(screen_w, screen_h));
 
+        // Inverted or degenerate (right <= left)
+        let inverted = PixelRect::new(600, 300, 500, 340);
+        assert!(!inverted.is_valid_control(screen_w, screen_h));
+
         // Too huge (> 95% of screen, e.g. root desktop)
         let desktop = PixelRect::new(0, 0, 1920, 1080);
         assert!(!desktop.is_valid_control(screen_w, screen_h));
@@ -236,15 +258,15 @@ mod tests {
         let norm_tl = pixel_rect_to_normalized(&rect_tl, screen_w, screen_h);
         assert_eq!(norm_tl.xmin, 0.0);
         assert_eq!(norm_tl.ymin, 0.0);
-        assert!((norm_tl.xmax - 100.0).abs() < 2.0);
-        assert!((norm_tl.ymax - 100.0).abs() < 2.0);
+        assert!((norm_tl.xmax - 100.0).abs() < 1e-4);
+        assert!((norm_tl.ymax - 100.0).abs() < 1e-4);
         assert!(norm_tl.is_snapped);
 
         // Center screen
         let rect_center = PixelRect::new(960, 540, 1152, 648);
         let norm_center = pixel_rect_to_normalized(&rect_center, screen_w, screen_h);
-        assert!((norm_center.xmin - 500.0).abs() < 2.0);
-        assert!((norm_center.ymin - 500.0).abs() < 2.0);
+        assert!((norm_center.xmin - 500.0).abs() < 1e-4);
+        assert!((norm_center.ymin - 500.0).abs() < 1e-4);
         assert!(norm_center.is_snapped);
     }
 
@@ -264,6 +286,17 @@ mod tests {
         assert_eq!(clamped.xmin, 0.0);
         assert_eq!(clamped.ymax, 1000.0);
         assert_eq!(clamped.xmax, 1000.0);
+    }
+
+    #[test]
+    fn test_snapped_rect_reversed_bounds_normalization() {
+        // If inputs are inverted (e.g. ymin > ymax or xmin > xmax),
+        // SnappedRect::new should automatically swap them into correct order
+        let reversed = SnappedRect::new(600.0, 800.0, 200.0, 100.0, true);
+        assert_eq!(reversed.ymin, 200.0);
+        assert_eq!(reversed.ymax, 600.0);
+        assert_eq!(reversed.xmin, 100.0);
+        assert_eq!(reversed.xmax, 800.0);
     }
 
     #[test]

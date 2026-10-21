@@ -8,6 +8,7 @@
 use std::thread::sleep;
 use std::time::Duration;
 use tracing::{info, warn};
+use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN,
@@ -71,11 +72,11 @@ pub fn denormalize_to_pixels(norm_x: f64, norm_y: f64, width: i32, height: i32) 
     let clamped_x = norm_x.clamp(0.0, 1000.0);
     let clamped_y = norm_y.clamp(0.0, 1000.0);
 
-    let max_w = (width - 1).max(1);
-    let max_h = (height - 1).max(1);
+    let max_w = (width - 1).max(0);
+    let max_h = (height - 1).max(0);
 
-    let px = ((clamped_x / 1000.0) * (max_w as f64)).round() as i32;
-    let py = ((clamped_y / 1000.0) * (max_h as f64)).round() as i32;
+    let px = ((clamped_x / 1000.0) * (width as f64)).floor() as i32;
+    let py = ((clamped_y / 1000.0) * (height as f64)).floor() as i32;
 
     (px.clamp(0, max_w), py.clamp(0, max_h))
 }
@@ -125,6 +126,11 @@ pub fn map_key_name_to_vk(key_name: &str) -> Option<u16> {
         "ALT" => Some(VK_MENU),
         "CTRL" | "CONTROL" => Some(VK_CONTROL),
         "SHIFT" => Some(VK_SHIFT),
+        "CAPSLOCK" | "CAPS" => Some(VK_CAPITAL),
+        "NUMLOCK" => Some(VK_NUMLOCK),
+        "SCROLLLOCK" => Some(VK_SCROLL),
+        "PRINTSCREEN" | "PRTSC" | "SNAPSHOT" => Some(VK_SNAPSHOT),
+        "PAUSE" => Some(VK_PAUSE),
         "F1" => Some(VK_F1),
         "F2" => Some(VK_F2),
         "F3" => Some(VK_F3),
@@ -194,10 +200,14 @@ pub fn desktop_click(
                 },
             },
         };
-        SendInput(1, &move_input, std::mem::size_of::<INPUT>() as i32);
+        let sent_move = SendInput(1, &move_input, std::mem::size_of::<INPUT>() as i32);
+        if sent_move == 0 {
+            let err = GetLastError();
+            warn!("[AUTOMATION] SendInput for mouse move returned 0 (error code: {})", err);
+        }
         sleep(Duration::from_millis(15));
 
-        // Helper closure to trigger a single down/up sequence
+        // Helper closure to trigger a single down/up sequence with position lock
         let trigger_click = || {
             let down_input = INPUT {
                 r#type: INPUT_MOUSE,
@@ -206,7 +216,7 @@ pub fn desktop_click(
                         dx: abs_x,
                         dy: abs_y,
                         mouseData: 0,
-                        dwFlags: MOUSEEVENTF_ABSOLUTE | down_flag,
+                        dwFlags: MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE | down_flag,
                         time: 0,
                         dwExtraInfo: 0,
                     },
@@ -222,7 +232,7 @@ pub fn desktop_click(
                         dx: abs_x,
                         dy: abs_y,
                         mouseData: 0,
-                        dwFlags: MOUSEEVENTF_ABSOLUTE | up_flag,
+                        dwFlags: MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE | up_flag,
                         time: 0,
                         dwExtraInfo: 0,
                     },
@@ -271,8 +281,9 @@ pub fn desktop_scroll(direction: &str, amount: i32) -> Result<i32, String> {
 
         let sent = SendInput(1, &scroll_input, std::mem::size_of::<INPUT>() as i32);
         if sent == 0 {
-            warn!("[AUTOMATION] SendInput for mouse scroll failed");
-            return Err("SendInput failed to inject mouse scroll".to_string());
+            let err = GetLastError();
+            warn!("[AUTOMATION] SendInput for mouse scroll failed (error code: {})", err);
+            return Err(format!("SendInput failed to inject mouse scroll (error: {})", err));
         }
     }
 
@@ -285,52 +296,99 @@ pub fn desktop_scroll(direction: &str, amount: i32) -> Result<i32, String> {
 }
 
 /// Type Unicode text using KEYEVENTF_UNICODE to ensure 100% layout-independent character entry.
-/// Returns the number of UTF-16 code units typed.
+/// Correctly handles surrogate pairs and maps newlines ('\n') to VK_RETURN for universal compatibility.
+/// Returns the number of characters typed.
 pub fn desktop_type_text(text: &str, press_enter: bool) -> Result<usize, String> {
     if text.is_empty() {
         return Err("Text to type cannot be empty".to_string());
     }
 
-    let utf16_units: Vec<u16> = text.encode_utf16().collect();
-    let count = utf16_units.len();
+    let mut char_count = 0;
 
     unsafe {
-        for &code_unit in &utf16_units {
-            // Key down
-            let key_down = INPUT {
-                r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 {
-                    ki: KEYBDINPUT {
-                        wVk: 0,
-                        wScan: code_unit,
-                        dwFlags: KEYEVENTF_UNICODE,
-                        time: 0,
-                        dwExtraInfo: 0,
-                    },
-                },
-            };
-            SendInput(1, &key_down, std::mem::size_of::<INPUT>() as i32);
+        for ch in text.chars() {
+            if ch == '\r' {
+                continue; // Skip standalone CR; LF handles Enter
+            }
 
-            // Key up
-            let key_up = INPUT {
-                r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 {
-                    ki: KEYBDINPUT {
-                        wVk: 0,
-                        wScan: code_unit,
-                        dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
-                        time: 0,
-                        dwExtraInfo: 0,
+            if ch == '\n' {
+                // Send Enter key sequence for genuine newline across text boxes
+                let enter_down = INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VK_RETURN,
+                            wScan: 0,
+                            dwFlags: 0,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
                     },
-                },
-            };
-            SendInput(1, &key_up, std::mem::size_of::<INPUT>() as i32);
+                };
+                SendInput(1, &enter_down, std::mem::size_of::<INPUT>() as i32);
+                sleep(Duration::from_millis(10));
 
-            // Brief pause between keystrokes to ensure smooth input in text fields
+                let enter_up = INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VK_RETURN,
+                            wScan: 0,
+                            dwFlags: KEYEVENTF_KEYUP,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                };
+                SendInput(1, &enter_up, std::mem::size_of::<INPUT>() as i32);
+                char_count += 1;
+                sleep(Duration::from_millis(10));
+                continue;
+            }
+
+            // Encode character to UTF-16 code units (1 unit for BMP, 2 for surrogate pairs)
+            let mut buf = [0u16; 2];
+            let encoded = ch.encode_utf16(&mut buf);
+
+            for &code_unit in encoded.iter() {
+                // Key down
+                let key_down = INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: 0,
+                            wScan: code_unit,
+                            dwFlags: KEYEVENTF_UNICODE,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                };
+                SendInput(1, &key_down, std::mem::size_of::<INPUT>() as i32);
+
+                // Key up
+                let key_up = INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: 0,
+                            wScan: code_unit,
+                            dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                };
+                SendInput(1, &key_up, std::mem::size_of::<INPUT>() as i32);
+            }
+
+            char_count += 1;
+
+            // Brief pause between characters to avoid buffer overrun
             sleep(Duration::from_millis(5));
         }
 
-        // If requested, follow with Enter key
+        // If explicitly requested, follow with a trailing Enter key
         if press_enter {
             sleep(Duration::from_millis(20));
             let enter_down = INPUT {
@@ -365,11 +423,11 @@ pub fn desktop_type_text(text: &str, press_enter: bool) -> Result<usize, String>
     }
 
     info!(
-        "[AUTOMATION] ⌨️ desktop_type_text: typed {} UTF-16 units (press_enter={})",
-        count, press_enter
+        "[AUTOMATION] ⌨️ desktop_type_text: typed {} characters (press_enter={})",
+        char_count, press_enter
     );
 
-    Ok(count)
+    Ok(char_count)
 }
 
 /// Press a specific keyboard virtual key (e.g. "ENTER", "SPACE", "ESCAPE", "TAB").
@@ -396,7 +454,11 @@ pub fn desktop_press_key(key: &str) -> Result<u16, String> {
                 },
             },
         };
-        SendInput(1, &key_down, std::mem::size_of::<INPUT>() as i32);
+        let sent_down = SendInput(1, &key_down, std::mem::size_of::<INPUT>() as i32);
+        if sent_down == 0 {
+            let err = GetLastError();
+            warn!("[AUTOMATION] SendInput for key down returned 0 (error code: {})", err);
+        }
         sleep(Duration::from_millis(20));
 
         // Key up
@@ -412,7 +474,11 @@ pub fn desktop_press_key(key: &str) -> Result<u16, String> {
                 },
             },
         };
-        SendInput(1, &key_up, std::mem::size_of::<INPUT>() as i32);
+        let sent_up = SendInput(1, &key_up, std::mem::size_of::<INPUT>() as i32);
+        if sent_up == 0 {
+            let err = GetLastError();
+            warn!("[AUTOMATION] SendInput for key up returned 0 (error code: {})", err);
+        }
     }
 
     info!(
@@ -495,6 +561,8 @@ mod tests {
         assert_eq!(map_key_name_to_vk("F5"), Some(VK_F5));
         assert_eq!(map_key_name_to_vk("A"), Some(b'A' as u16));
         assert_eq!(map_key_name_to_vk("7"), Some(b'7' as u16));
+        assert_eq!(map_key_name_to_vk("PRTSC"), Some(VK_SNAPSHOT));
+        assert_eq!(map_key_name_to_vk("CAPSLOCK"), Some(VK_CAPITAL));
 
         assert_eq!(map_key_name_to_vk("NON_EXISTENT_KEY_1234"), None);
     }
