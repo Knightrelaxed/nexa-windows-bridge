@@ -49,6 +49,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         main_window.set_status_message("Ready to connect.".into());
     }
 
+    // 3.1 Initialize Slint OverlayWindow and Stealth Highlighter Controller
+    let overlay_window = ui::OverlayWindow::new().ok();
+    let highlighter_controller = Arc::new(automation::HighlighterController::new(
+        overlay_window.as_ref().map(|w| w.as_weak()),
+    ));
+
     // 4. Initialize Network Client
     let network_client = NetworkClient::new(Arc::clone(&config));
 
@@ -281,6 +287,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let net_client_cmd = network_client.clone();
     let audio_engine_cmd = Arc::clone(&audio_engine);
     let window_weak_cmd = main_window.as_weak();
+    let highlighter_cmd = Arc::clone(&highlighter_controller);
 
     tokio::spawn(async move {
         while let Ok(msg) = command_rx.recv().await {
@@ -366,18 +373,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } => {
                     info!("[MAIN] 🛠️ Executing command '{}' [{}]", action, command_id);
 
-                    // Acknowledge receipt to server
-                    let ack = ClientMessage::CommandResult {
-                        command_id: command_id.clone(),
-                        success: true,
-                        message: format!("Command '{}' received by Windows Bridge", action),
-                        data: serde_json::json!({
-                            "action": action,
-                            "params": params,
-                            "status": "ACKNOWLEDGED"
-                        }),
-                    };
-                    let _ = net_client_cmd.send_message(ack).await;
+                    let hl = Arc::clone(&highlighter_cmd);
+                    let net_tx = net_client_cmd.clone();
+                    tokio::spawn(async move {
+                        let result = automation::handle_execute_command(
+                            command_id,
+                            action,
+                            params,
+                            Some(&hl),
+                        )
+                        .await;
+
+                        let _ = net_tx.send_message(result).await;
+                    });
                 }
                 _ => {}
             }
@@ -697,6 +705,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("[MAIN] Window close [X] requested. Hiding window to system tray.");
         slint::CloseRequestResponse::HideWindow
     });
+
+    // Keep overlay window alive across application runtime
+    let _overlay_guard = overlay_window;
 
     // Run the Slint GUI Event Loop
     main_window.run()?;

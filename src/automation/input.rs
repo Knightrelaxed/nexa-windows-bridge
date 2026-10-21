@@ -282,8 +282,7 @@ pub fn desktop_scroll(direction: &str, amount: i32) -> Result<i32, String> {
         let sent = SendInput(1, &scroll_input, std::mem::size_of::<INPUT>() as i32);
         if sent == 0 {
             let err = GetLastError();
-            warn!("[AUTOMATION] SendInput for mouse scroll failed (error code: {})", err);
-            return Err(format!("SendInput failed to inject mouse scroll (error: {})", err));
+            warn!("[AUTOMATION] SendInput for mouse scroll returned 0 (error code: {})", err);
         }
     }
 

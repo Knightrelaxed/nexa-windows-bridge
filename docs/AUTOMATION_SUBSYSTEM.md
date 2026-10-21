@@ -90,6 +90,21 @@ graph TD
   - Timer pembubaran otomatis berbasis *epoch atomic token* untuk mencegah konflik antar-sorotan berturut-turut.
   - Fungsi pembersihan manual `clear_all()` untuk aksi `CLEAR_HIGHLIGHTS`.
 
+### F. Command Dispatcher & WebSocket Integration (Milestone 6.4)
+* Mengorkestrasi seluruh subsistem otomasi melalui fungsi utama [`handle_execute_command`](../src/automation/mod.rs).
+* **Penanganan 7 Perintah Desktop Standar Live Tool Registry:**
+  1. `DESKTOP_CLICK`: Validasi koordinat normalisasi `(x, y)` [0..1000], konversi tombol (`LEFT`, `RIGHT`, `MIDDLE`), klik ganda, picu *click ripple* visual, dan eksekusi klik Win32.
+  2. `DESKTOP_SCROLL`: Pengguliran layar berdasarkan `direction` (`UP`/`DOWN`) dan jumlah notch `amount` via `MOUSEEVENTF_WHEEL`.
+  3. `DESKTOP_TYPE_TEXT`: Pengetikan teks Unicode bebas tata letak, pemetaan otomatis baris baru `\n` ke `VK_RETURN`, dan opsi penekanan Enter di akhir teks.
+  4. `DESKTOP_PRESS_KEY`: Penekanan tombol virtual keyboard fungsional dan navigasi.
+  5. `HIGHLIGHT_ELEMENT`: Evaluasi koordinat bounding box, *magnetic smart-snap* ke elemen OS via Windows UI Automation, dan perenderan overlay visual sesuai gaya (`BOX`, `RING`, `POINTER`, `SPOTLIGHT`).
+  6. `POINT_CURSOR`: Penunjukan titik kursor pada koordinat tertentu.
+  7. `CLEAR_HIGHLIGHTS`: Pembersihan seketika seluruh overlay dan sorotan aktif.
+* **Integrasi Non-Blocking Async (`src/main.rs`):**
+  - Menerima `ServerMessage::ExecuteCommand` melalui channel tokio mpsc.
+  - Mengeksekusi penanganan otomasi di background task (`tokio::spawn`) agar tidak memblokir alur data audio dupleks WASAPI maupun loop jaringan utama.
+  - Mengirimkan balik hasil tipe-kuat `ClientMessage::CommandResult` ke peladen Azure.
+
 ---
 
 ## 3. Rencana Milestone Subsistem Otomasi (Fase 6)
@@ -99,5 +114,5 @@ graph TD
 | **Milestone 6.1** | Desktop Input Automation (`src/automation/input.rs`) — SendInput mouse & keyboard | **SELESAI ✅** |
 | **Milestone 6.2** | Magnetic Smart-Snap via Windows UI Automation (`src/automation/element_finder.rs`) | **SELESAI ✅** |
 | **Milestone 6.3** | Stealth Overlay & Click Ripple (`src/automation/highlighter.rs`) | **SELESAI ✅** |
-| **Milestone 6.4** | Router EXECUTE_COMMAND & WebSocket Binding di `src/main.rs` | *Berikutnya* |
-| **Milestone 6.5** | Verifikasi Komprehensif, Audit Zero-Warning Clippy, & Git Push | *Terencana* |
+| **Milestone 6.4** | Router EXECUTE_COMMAND & WebSocket Binding di `src/main.rs` | **SELESAI ✅** |
+| **Milestone 6.5** | Verifikasi Komprehensif, Audit Zero-Warning Clippy, & Git Push | *Berikutnya* |
