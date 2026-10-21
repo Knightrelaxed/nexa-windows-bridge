@@ -98,9 +98,11 @@ pub fn apply_stealth_window_styles() -> bool {
             return false;
         }
 
-        let mut ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
-        ex_style |= (WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_LAYERED) as i32;
-        SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style);
+        let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        let required_flags = (WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_LAYERED) as i32;
+        if (ex_style & required_flags) != required_flags {
+            SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style | required_flags);
+        }
 
         let screen = get_primary_screen_dimensions();
         SetWindowPos(
@@ -110,7 +112,7 @@ pub fn apply_stealth_window_styles() -> bool {
             0,
             screen.width,
             screen.height,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            SWP_NOACTIVATE | SWP_FRAMECHANGED,
         );
 
         debug!("[HIGHLIGHTER] Applied WS_EX_TRANSPARENT & HWND_TOPMOST to HWND 0x{:X}", hwnd as usize);
@@ -123,6 +125,7 @@ pub fn apply_stealth_window_styles() -> bool {
 pub struct HighlighterController {
     overlay_window: Option<slint::Weak<OverlayWindow>>,
     active_epoch: Arc<AtomicU64>,
+    active_ripple_epoch: Arc<AtomicU64>,
 }
 
 impl HighlighterController {
@@ -131,6 +134,7 @@ impl HighlighterController {
         Self {
             overlay_window,
             active_epoch: Arc::new(AtomicU64::new(0)),
+            active_ripple_epoch: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -221,7 +225,11 @@ impl HighlighterController {
         let rx = px as f32;
         let ry = py as f32;
 
-        debug!("[HIGHLIGHTER] 🔘 show_click_ripple at ({}, {})", px, py);
+        let ripple_epoch = self.active_ripple_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        debug!(
+            "[HIGHLIGHTER] 🔘 show_click_ripple at ({}, {}) [ripple_epoch={}]",
+            px, py, ripple_epoch
+        );
 
         if let Some(ref win_weak) = self.overlay_window {
             let win_handle = win_weak.clone();
@@ -236,17 +244,28 @@ impl HighlighterController {
                 }
             });
 
-            // Ensure window is transparent and on top
-            apply_stealth_window_styles();
+            // Ensure window is transparent, topmost, and click-through
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                apply_stealth_window_styles();
+            });
 
-            // Run 300ms ripple expansion animation
+            // Run 300ms ripple expansion animation with atomic epoch cancellation
             let win_anim = win_weak.clone();
+            let active_ripple_epoch = Arc::clone(&self.active_ripple_epoch);
+
             tokio::spawn(async move {
                 let steps = 10;
                 let step_delay = Duration::from_millis(30);
 
                 for i in 1..=steps {
                     tokio::time::sleep(step_delay).await;
+
+                    // Bail out immediately if a newer ripple has superseded this one
+                    if active_ripple_epoch.load(Ordering::SeqCst) != ripple_epoch {
+                        return;
+                    }
+
                     let progress = (i as f32) / (steps as f32);
                     let radius = 12.0 + (33.0 * progress); // 12px -> 45px
                     let opacity = 0.85 * (1.0 - progress);
@@ -260,16 +279,18 @@ impl HighlighterController {
                     });
                 }
 
-                // Finish ripple
-                let win_final = win_anim.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(w) = win_final.upgrade() {
-                        w.set_ripple_visible(false);
-                        if !w.get_highlight_visible() {
-                            let _ = w.hide();
+                // Finish ripple only if this is still the active epoch
+                if active_ripple_epoch.load(Ordering::SeqCst) == ripple_epoch {
+                    let win_final = win_anim.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(w) = win_final.upgrade() {
+                            w.set_ripple_visible(false);
+                            if !w.get_highlight_visible() {
+                                let _ = w.hide();
+                            }
                         }
-                    }
-                });
+                    });
+                }
             });
         }
     }
@@ -277,6 +298,7 @@ impl HighlighterController {
     /// Clear all active highlights and ripples immediately
     pub fn clear_all(&self) {
         self.active_epoch.fetch_add(1, Ordering::SeqCst);
+        self.active_ripple_epoch.fetch_add(1, Ordering::SeqCst);
         info!("[HIGHLIGHTER] 🧹 Cleared all screen highlights and overlays");
 
         if let Some(ref win_weak) = self.overlay_window {

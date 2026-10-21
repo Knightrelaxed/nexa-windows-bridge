@@ -143,6 +143,13 @@ pub fn map_key_name_to_vk(key_name: &str) -> Option<u16> {
         "F10" => Some(VK_F10),
         "F11" => Some(VK_F11),
         "F12" => Some(VK_F12),
+        "VOLUME_MUTE" | "MUTE" => Some(VK_VOLUME_MUTE),
+        "VOLUME_DOWN" | "VOLDOWN" => Some(VK_VOLUME_DOWN),
+        "VOLUME_UP" | "VOLUP" => Some(VK_VOLUME_UP),
+        "MEDIA_PLAY_PAUSE" | "PLAY_PAUSE" | "PLAY" => Some(VK_MEDIA_PLAY_PAUSE),
+        "MEDIA_NEXT" | "NEXT_TRACK" => Some(VK_MEDIA_NEXT_TRACK),
+        "MEDIA_PREV" | "PREV_TRACK" => Some(VK_MEDIA_PREV_TRACK),
+        "MEDIA_STOP" => Some(VK_MEDIA_STOP),
         _ => {
             // Support single ASCII uppercase letters and digits (e.g. 'A', '1')
             if cleaned.len() == 1 {
@@ -429,13 +436,102 @@ pub fn desktop_type_text(text: &str, press_enter: bool) -> Result<usize, String>
     Ok(char_count)
 }
 
-/// Press a specific keyboard virtual key (e.g. "ENTER", "SPACE", "ESCAPE", "TAB").
-/// Returns the VK code pressed.
+/// Press a specific keyboard virtual key or key combination (e.g. "ENTER", "SPACE", "CTRL+C", "ALT+F4", "WIN+D").
+/// Returns the primary/last VK code pressed.
 pub fn desktop_press_key(key: &str) -> Result<u16, String> {
-    let vk = map_key_name_to_vk(key).ok_or_else(|| {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return Err("Key name cannot be empty".to_string());
+    }
+
+    // Support key combinations (e.g. "CTRL+C", "ALT+TAB", "WIN+D", "CTRL+SHIFT+ESC")
+    if trimmed.contains('+') {
+        let parts: Vec<&str> = trimmed
+            .split('+')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if parts.is_empty() {
+            return Err("Invalid key combination: empty parts".to_string());
+        }
+
+        let mut vks = Vec::with_capacity(parts.len());
+        for part in &parts {
+            let vk = map_key_name_to_vk(part).ok_or_else(|| {
+                format!(
+                    "Unsupported or unknown key name in combo: '{}'. Supported: ENTER, SPACE, ESCAPE, TAB, CTRL, ALT, SHIFT, WIN, etc.",
+                    part
+                )
+            })?;
+            vks.push(vk);
+        }
+
+        unsafe {
+            // Press all keys down in forward order
+            for &vk in &vks {
+                let key_down = INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: vk,
+                            wScan: 0,
+                            dwFlags: 0,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                };
+                let sent = SendInput(1, &key_down, std::mem::size_of::<INPUT>() as i32);
+                if sent == 0 {
+                    let err = GetLastError();
+                    warn!(
+                        "[AUTOMATION] SendInput for combo key down (0x{:04X}) returned 0 (error code: {})",
+                        vk, err
+                    );
+                }
+                sleep(Duration::from_millis(10));
+            }
+
+            sleep(Duration::from_millis(20));
+
+            // Release all keys in reverse order
+            for &vk in vks.iter().rev() {
+                let key_up = INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: vk,
+                            wScan: 0,
+                            dwFlags: KEYEVENTF_KEYUP,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                };
+                let sent = SendInput(1, &key_up, std::mem::size_of::<INPUT>() as i32);
+                if sent == 0 {
+                    let err = GetLastError();
+                    warn!(
+                        "[AUTOMATION] SendInput for combo key up (0x{:04X}) returned 0 (error code: {})",
+                        vk, err
+                    );
+                }
+                sleep(Duration::from_millis(10));
+            }
+        }
+
+        let last_vk = *vks.last().unwrap();
+        info!(
+            "[AUTOMATION] 🔘 desktop_press_key: pressed combination '{}' (VKs: {:?})",
+            trimmed, vks
+        );
+        return Ok(last_vk);
+    }
+
+    let vk = map_key_name_to_vk(trimmed).ok_or_else(|| {
         format!(
             "Unsupported or unknown key name: '{}'. Supported: ENTER, SPACE, ESCAPE, TAB, BACKSPACE, UP, DOWN, LEFT, RIGHT, etc.",
-            key
+            trimmed
         )
     })?;
 
@@ -562,6 +658,9 @@ mod tests {
         assert_eq!(map_key_name_to_vk("7"), Some(b'7' as u16));
         assert_eq!(map_key_name_to_vk("PRTSC"), Some(VK_SNAPSHOT));
         assert_eq!(map_key_name_to_vk("CAPSLOCK"), Some(VK_CAPITAL));
+        assert_eq!(map_key_name_to_vk("VOLUME_UP"), Some(VK_VOLUME_UP));
+        assert_eq!(map_key_name_to_vk("MUTE"), Some(VK_VOLUME_MUTE));
+        assert_eq!(map_key_name_to_vk("PLAY_PAUSE"), Some(VK_MEDIA_PLAY_PAUSE));
 
         assert_eq!(map_key_name_to_vk("NON_EXISTENT_KEY_1234"), None);
     }

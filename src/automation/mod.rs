@@ -37,8 +37,13 @@ pub async fn handle_execute_command(
         // ─────────────────────────────────────────────────────────────
         // 1. DESKTOP_CLICK
         // ─────────────────────────────────────────────────────────────
-        "DESKTOP_CLICK" => {
-            let x = match params.get("x").and_then(|v| v.as_f64()) {
+        "DESKTOP_CLICK" | "DESKTOPCLICK" | "DESKTOP-CLICK" => {
+            let x = match params
+                .get("x")
+                .or_else(|| params.get("norm_x"))
+                .or_else(|| params.get("pixel_x"))
+                .and_then(|v| v.as_f64())
+            {
                 Some(val) if (0.0..=1000.0).contains(&val) => val,
                 _ => {
                     return ClientMessage::CommandResult {
@@ -50,7 +55,12 @@ pub async fn handle_execute_command(
                 }
             };
 
-            let y = match params.get("y").and_then(|v| v.as_f64()) {
+            let y = match params
+                .get("y")
+                .or_else(|| params.get("norm_y"))
+                .or_else(|| params.get("pixel_y"))
+                .and_then(|v| v.as_f64())
+            {
                 Some(val) if (0.0..=1000.0).contains(&val) => val,
                 _ => {
                     return ClientMessage::CommandResult {
@@ -69,6 +79,7 @@ pub async fn handle_execute_command(
             let button = MouseButton::from_str_loose(button_str);
             let double_click = params
                 .get("double_click")
+                .or_else(|| params.get("doubleClick"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
@@ -112,13 +123,15 @@ pub async fn handle_execute_command(
         // ─────────────────────────────────────────────────────────────
         // 2. DESKTOP_SCROLL
         // ─────────────────────────────────────────────────────────────
-        "DESKTOP_SCROLL" => {
+        "DESKTOP_SCROLL" | "DESKTOPSCROLL" | "DESKTOP-SCROLL" => {
             let direction = params
                 .get("direction")
                 .and_then(|v| v.as_str())
                 .unwrap_or("DOWN");
             let amount = params
                 .get("amount")
+                .or_else(|| params.get("lines"))
+                .or_else(|| params.get("notches"))
                 .and_then(|v| v.as_i64())
                 .unwrap_or(3) as i32;
 
@@ -153,8 +166,12 @@ pub async fn handle_execute_command(
         // ─────────────────────────────────────────────────────────────
         // 3. DESKTOP_TYPE_TEXT
         // ─────────────────────────────────────────────────────────────
-        "DESKTOP_TYPE_TEXT" => {
-            let text = match params.get("text").and_then(|v| v.as_str()) {
+        "DESKTOP_TYPE_TEXT" | "DESKTOPTYPETEXT" | "DESKTOP_TYPETEXT" | "DESKTOP-TYPE-TEXT" => {
+            let text = match params
+                .get("text")
+                .or_else(|| params.get("content"))
+                .and_then(|v| v.as_str())
+            {
                 Some(t) if !t.is_empty() => t,
                 _ => {
                     return ClientMessage::CommandResult {
@@ -168,6 +185,7 @@ pub async fn handle_execute_command(
 
             let press_enter = params
                 .get("press_enter")
+                .or_else(|| params.get("pressEnter"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
@@ -197,8 +215,13 @@ pub async fn handle_execute_command(
         // ─────────────────────────────────────────────────────────────
         // 4. DESKTOP_PRESS_KEY
         // ─────────────────────────────────────────────────────────────
-        "DESKTOP_PRESS_KEY" => {
-            let key = match params.get("key").and_then(|v| v.as_str()) {
+        "DESKTOP_PRESS_KEY" | "DESKTOPPRESSKEY" | "DESKTOP_PRESSKEY" | "DESKTOP-PRESS-KEY" => {
+            let key = match params
+                .get("key")
+                .or_else(|| params.get("key_name"))
+                .or_else(|| params.get("keyName"))
+                .and_then(|v| v.as_str())
+            {
                 Some(k) if !k.trim().is_empty() => k.trim(),
                 _ => {
                     return ClientMessage::CommandResult {
@@ -236,22 +259,37 @@ pub async fn handle_execute_command(
         // ─────────────────────────────────────────────────────────────
         // 5. HIGHLIGHT_ELEMENT
         // ─────────────────────────────────────────────────────────────
-        "HIGHLIGHT_ELEMENT" => {
-            let ymin = match params.get("ymin").and_then(|v| v.as_f64()) {
-                Some(v) if (0.0..=1000.0).contains(&v) => v,
-                _ => 0.0,
-            };
-            let xmin = match params.get("xmin").and_then(|v| v.as_f64()) {
-                Some(v) if (0.0..=1000.0).contains(&v) => v,
-                _ => 0.0,
-            };
-            let ymax = match params.get("ymax").and_then(|v| v.as_f64()) {
-                Some(v) if (0.0..=1000.0).contains(&v) => v,
-                _ => 1000.0,
-            };
-            let xmax = match params.get("xmax").and_then(|v| v.as_f64()) {
-                Some(v) if (0.0..=1000.0).contains(&v) => v,
-                _ => 1000.0,
+        "HIGHLIGHT_ELEMENT" | "HIGHLIGHTELEMENT" | "HIGHLIGHT-ELEMENT" => {
+            // Support both flat bounds (ymin, xmin, ymax, xmax) and box_2d array: [ymin, xmin, ymax, xmax]
+            let (ymin, xmin, ymax, xmax) = if let Some(arr) = params.get("box_2d").and_then(|v| v.as_array()) {
+                if arr.len() == 4 {
+                    (
+                        arr[0].as_f64().unwrap_or(0.0),
+                        arr[1].as_f64().unwrap_or(0.0),
+                        arr[2].as_f64().unwrap_or(1000.0),
+                        arr[3].as_f64().unwrap_or(1000.0),
+                    )
+                } else {
+                    (0.0, 0.0, 1000.0, 1000.0)
+                }
+            } else {
+                let ymin = match params.get("ymin").and_then(|v| v.as_f64()) {
+                    Some(v) if (0.0..=1000.0).contains(&v) => v,
+                    _ => 0.0,
+                };
+                let xmin = match params.get("xmin").and_then(|v| v.as_f64()) {
+                    Some(v) if (0.0..=1000.0).contains(&v) => v,
+                    _ => 0.0,
+                };
+                let ymax = match params.get("ymax").and_then(|v| v.as_f64()) {
+                    Some(v) if (0.0..=1000.0).contains(&v) => v,
+                    _ => 1000.0,
+                };
+                let xmax = match params.get("xmax").and_then(|v| v.as_f64()) {
+                    Some(v) if (0.0..=1000.0).contains(&v) => v,
+                    _ => 1000.0,
+                };
+                (ymin, xmin, ymax, xmax)
             };
 
             let style_str = params
@@ -261,11 +299,14 @@ pub async fn handle_execute_command(
             let style = HighlightStyle::from_str_loose(style_str);
             let label = params
                 .get("label")
+                .or_else(|| params.get("text"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
             let duration_ms = params
                 .get("duration_ms")
+                .or_else(|| params.get("durationMs"))
+                .or_else(|| params.get("duration"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(4000);
 
@@ -298,8 +339,13 @@ pub async fn handle_execute_command(
         // ─────────────────────────────────────────────────────────────
         // 6. POINT_CURSOR
         // ─────────────────────────────────────────────────────────────
-        "POINT_CURSOR" => {
-            let x = match params.get("x").and_then(|v| v.as_f64()) {
+        "POINT_CURSOR" | "POINTCURSOR" | "POINT-CURSOR" => {
+            let x = match params
+                .get("x")
+                .or_else(|| params.get("norm_x"))
+                .or_else(|| params.get("pixel_x"))
+                .and_then(|v| v.as_f64())
+            {
                 Some(v) if (0.0..=1000.0).contains(&v) => v,
                 _ => {
                     return ClientMessage::CommandResult {
@@ -311,7 +357,12 @@ pub async fn handle_execute_command(
                 }
             };
 
-            let y = match params.get("y").and_then(|v| v.as_f64()) {
+            let y = match params
+                .get("y")
+                .or_else(|| params.get("norm_y"))
+                .or_else(|| params.get("pixel_y"))
+                .and_then(|v| v.as_f64())
+            {
                 Some(v) if (0.0..=1000.0).contains(&v) => v,
                 _ => {
                     return ClientMessage::CommandResult {
@@ -325,6 +376,8 @@ pub async fn handle_execute_command(
 
             let duration_ms = params
                 .get("duration_ms")
+                .or_else(|| params.get("durationMs"))
+                .or_else(|| params.get("duration"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(3000);
 
@@ -348,7 +401,7 @@ pub async fn handle_execute_command(
         // ─────────────────────────────────────────────────────────────
         // 7. CLEAR_HIGHLIGHTS
         // ─────────────────────────────────────────────────────────────
-        "CLEAR_HIGHLIGHTS" => {
+        "CLEAR_HIGHLIGHTS" | "CLEARHIGHLIGHTS" | "CLEAR_HIGHLIGHT" | "CLEARHIGHLIGHT" | "CLEAR-HIGHLIGHTS" => {
             if let Some(hl) = highlighter {
                 hl.clear_all();
             }
@@ -546,6 +599,78 @@ mod tests {
             ClientMessage::CommandResult { success, data, .. } => {
                 assert!(!success);
                 assert_eq!(data["error"], "UNKNOWN_ACTION");
+            }
+            _ => panic!("Expected CommandResult"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_camel_case_action_names() {
+        // desktopScroll (camelCase)
+        let res1 = handle_execute_command(
+            "cmd_c1".to_string(),
+            "desktopScroll".to_string(),
+            serde_json::json!({ "direction": "UP", "amount": 1 }),
+            None,
+        )
+        .await;
+        match res1 {
+            ClientMessage::CommandResult { success, .. } => assert!(success),
+            _ => panic!("Expected CommandResult"),
+        }
+
+        // clearHighlights (camelCase)
+        let res2 = handle_execute_command(
+            "cmd_c2".to_string(),
+            "clearHighlights".to_string(),
+            serde_json::json!({}),
+            None,
+        )
+        .await;
+        match res2 {
+            ClientMessage::CommandResult { success, .. } => assert!(success),
+            _ => panic!("Expected CommandResult"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_key_combo_and_box_2d() {
+        // Key combo: CTRL+C
+        let res_combo = handle_execute_command(
+            "cmd_combo".to_string(),
+            "desktopPressKey".to_string(),
+            serde_json::json!({ "key": "CTRL+C" }),
+            None,
+        )
+        .await;
+        match res_combo {
+            ClientMessage::CommandResult { success, data, .. } => {
+                assert!(success);
+                assert_eq!(data["key"], "CTRL+C");
+            }
+            _ => panic!("Expected CommandResult"),
+        }
+
+        // Box 2D array parameter fallback
+        let res_box2d = handle_execute_command(
+            "cmd_b2d".to_string(),
+            "highlightElement".to_string(),
+            serde_json::json!({
+                "box_2d": [150.0, 250.0, 350.0, 450.0],
+                "style": "RING",
+                "label": "Array Target"
+            }),
+            None,
+        )
+        .await;
+        match res_box2d {
+            ClientMessage::CommandResult { success, data, .. } => {
+                assert!(success);
+                assert_eq!(data["ymin"], 150.0);
+                assert_eq!(data["xmin"], 250.0);
+                assert_eq!(data["ymax"], 350.0);
+                assert_eq!(data["xmax"], 450.0);
+                assert_eq!(data["style"], "RING");
             }
             _ => panic!("Expected CommandResult"),
         }

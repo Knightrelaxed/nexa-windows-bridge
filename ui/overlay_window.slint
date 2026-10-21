@@ -10,6 +10,12 @@ export component OverlayWindow inherits Window {
     always-on-top: true;
     background: transparent;
 
+    // Window dimensions (defaults to standard 1080p, dynamically sized via Win32 SetWindowPos)
+    in-out property <length> window_width: 1920px;
+    in-out property <length> window_height: 1080px;
+    width: root.window_width;
+    height: root.window_height;
+
     // Highlight Box / Element properties
     in-out property <bool> highlight_visible: false;
     in-out property <string> highlight_style: "BOX"; // "BOX" | "RING" | "POINTER" | "SPOTLIGHT"
