@@ -1,0 +1,195 @@
+// ============================================================
+// N.E.X.A 3.3 — WASAPI SPEAKER PLAYBACK ENGINE
+// Output Stream (24kHz Gemini Response -> Hardware Output)
+// ============================================================
+
+use super::audio_buffer::{create_audio_ring_buffer, AudioConsumer, AudioProducer};
+use super::resampler::{i16_to_f32, pcm_bytes_to_i16, resample_linear, upmix_mono_to_stereo};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{SampleFormat, Stream, StreamConfig};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tracing::{error, info, warn};
+
+pub struct SendStream(#[allow(dead_code)] pub Stream);
+unsafe impl Send for SendStream {}
+
+pub struct SpeakerPlayer {
+    _stream: Option<SendStream>,
+    producer: Option<AudioProducer<f32>>,
+    echo_ref_tx: Option<mpsc::Sender<Vec<f32>>>,
+    is_playing: Arc<AtomicBool>,
+    hardware_sample_rate: u32,
+    hardware_channels: u16,
+}
+
+impl SpeakerPlayer {
+    pub fn new(echo_ref_tx: Option<mpsc::Sender<Vec<f32>>>) -> Result<Self, String> {
+        let host = cpal::default_host();
+        let device = host
+            .default_output_device()
+            .ok_or_else(|| "No default audio output device available".to_string())?;
+
+        let device_name = device.name().unwrap_or_else(|_| "Unknown Device".into());
+        info!("[SPEAKER] Initializing playback on output device: {}", device_name);
+
+        let default_config = device
+            .default_output_config()
+            .map_err(|e| format!("Failed to get default output config: {}", e))?;
+
+        let hardware_sample_rate = default_config.sample_rate().0;
+        let hardware_channels = default_config.channels();
+        let sample_format = default_config.sample_format();
+
+        info!(
+            "[SPEAKER] Hardware Output Config: {} Hz, {} channels, format: {:?}",
+            hardware_sample_rate, hardware_channels, sample_format
+        );
+
+        // Ring buffer capacity: 1 second of hardware audio
+        let buffer_capacity = (hardware_sample_rate as usize) * (hardware_channels as usize);
+        let (producer, mut consumer) = create_audio_ring_buffer::<f32>(buffer_capacity);
+
+        let is_playing = Arc::new(AtomicBool::new(false));
+        let is_playing_clone = Arc::clone(&is_playing);
+
+        let config: StreamConfig = default_config.into();
+        let stream = match sample_format {
+            SampleFormat::F32 => device
+                .build_output_stream(
+                    &config,
+                    move |data: &mut [f32], _| {
+                        playback_callback_f32(data, &mut consumer, &is_playing_clone);
+                    },
+                    move |err| {
+                        error!("[SPEAKER] Stream error: {}", err);
+                    },
+                    None,
+                )
+                .map_err(|e| format!("Failed to build F32 output stream: {}", e))?,
+            SampleFormat::I16 => device
+                .build_output_stream(
+                    &config,
+                    move |data: &mut [i16], _| {
+                        playback_callback_i16(data, &mut consumer, &is_playing_clone);
+                    },
+                    move |err| {
+                        error!("[SPEAKER] Stream error: {}", err);
+                    },
+                    None,
+                )
+                .map_err(|e| format!("Failed to build I16 output stream: {}", e))?,
+            _ => return Err(format!("Unsupported output sample format: {:?}", sample_format)),
+        };
+
+        stream
+            .play()
+            .map_err(|e| format!("Failed to start output stream: {}", e))?;
+
+        info!("[SPEAKER] Output stream started successfully.");
+
+        Ok(Self {
+            _stream: Some(SendStream(stream)),
+            producer: Some(producer),
+            echo_ref_tx,
+            is_playing,
+            hardware_sample_rate,
+            hardware_channels,
+        })
+    }
+
+    /// Feed incoming 24kHz 16-bit Mono PCM audio bytes from Gemini Live response.
+    pub fn play_pcm_24k(&mut self, pcm_bytes: &[u8]) {
+        if pcm_bytes.is_empty() {
+            return;
+        }
+
+        // 1. Convert raw bytes to f32 samples (-1.0 to 1.0)
+        let i16_samples = pcm_bytes_to_i16(pcm_bytes);
+        let f32_24k = i16_to_f32(&i16_samples);
+
+        // 2. Dispatch a 16kHz copy to AEC reference channel
+        if let Some(ref tx) = self.echo_ref_tx {
+            let ref_16k = resample_linear(&f32_24k, 24000, 16000);
+            let _ = tx.try_send(ref_16k);
+        }
+
+        // 3. Resample from 24kHz to hardware sample rate (e.g. 48kHz)
+        let resampled = resample_linear(&f32_24k, 24000, self.hardware_sample_rate);
+
+        // 4. Upmix to stereo if hardware has 2 channels
+        let final_samples = if self.hardware_channels == 2 {
+            upmix_mono_to_stereo(&resampled)
+        } else {
+            resampled
+        };
+
+        // 5. Push to real-time ring buffer
+        if let Some(ref mut prod) = self.producer {
+            let pushed = prod.push_slice(&final_samples);
+            if pushed < final_samples.len() {
+                warn!(
+                    "[SPEAKER] Playback ring buffer full: dropped {} samples",
+                    final_samples.len() - pushed
+                );
+            }
+        }
+    }
+
+    /// Check if audio is currently playing.
+    #[allow(dead_code)]
+    pub fn is_playing(&self) -> bool {
+        self.is_playing.load(Ordering::SeqCst)
+    }
+
+    /// Stop playback immediately (used on barge-in / interrupt).
+    pub fn stop(&mut self) {
+        self.is_playing.store(false, Ordering::SeqCst);
+    }
+}
+
+fn playback_callback_f32(
+    data: &mut [f32],
+    consumer: &mut AudioConsumer<f32>,
+    is_playing: &Arc<AtomicBool>,
+) {
+    let available = consumer.len();
+    if available > 0 {
+        is_playing.store(true, Ordering::SeqCst);
+        let read = consumer.pop_slice(data);
+        if read < data.len() {
+            data[read..].fill(0.0);
+        }
+    } else {
+        is_playing.store(false, Ordering::SeqCst);
+        data.fill(0.0);
+    }
+}
+
+fn playback_callback_i16(
+    data: &mut [i16],
+    consumer: &mut AudioConsumer<f32>,
+    is_playing: &Arc<AtomicBool>,
+) {
+    let available = consumer.len();
+    if available > 0 {
+        is_playing.store(true, Ordering::SeqCst);
+        let mut temp = vec![0.0f32; data.len()];
+        let read = consumer.pop_slice(&mut temp);
+        for i in 0..read {
+            let s = temp[i].clamp(-1.0, 1.0);
+            data[i] = if s >= 0.0 {
+                (s * 32767.0).round() as i16
+            } else {
+                (s * 32768.0).round() as i16
+            };
+        }
+        if read < data.len() {
+            data[read..].fill(0);
+        }
+    } else {
+        is_playing.store(false, Ordering::SeqCst);
+        data.fill(0);
+    }
+}

@@ -7,6 +7,7 @@ mod config;
 mod network;
 mod platform;
 mod ui;
+mod audio;
 
 use config::BridgeConfig;
 use network::{ClientMessage, ConnectionState, NetworkClient, ServerMessage};
@@ -46,13 +47,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 4. Initialize Network Client
     let network_client = NetworkClient::new(Arc::clone(&config));
 
-    // 5. Hook Connection State Watcher to Slint UI
+    // 5. Initialize WASAPI Duplex Audio Engine
+    let audio_engine = Arc::new(tokio::sync::Mutex::new(
+        audio::AudioEngine::new().map_err(|e| format!("Audio engine error: {}", e))?,
+    ));
+
+    // 6. Hook Connection State Watcher & Duplex Audio Engine Lifecycle
     let window_weak = main_window.as_weak();
     let mut state_rx = network_client.subscribe_state();
+    let audio_engine_conn = Arc::clone(&audio_engine);
+    let net_client_audio = network_client.clone();
+
     tokio::spawn(async move {
+        let (mic_pcm_tx, mut mic_pcm_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
+
+        // Forward captured 16kHz PCM chunks from ThinkPad microphone to WebSocket
+        let net_client_mic = net_client_audio.clone();
+        tokio::spawn(async move {
+            while let Some(pcm_chunk) = mic_pcm_rx.recv().await {
+                if net_client_mic.is_connected() {
+                    let _ = net_client_mic.send_binary(pcm_chunk).await;
+                }
+            }
+        });
+
         while state_rx.changed().await.is_ok() {
             let state = state_rx.borrow().clone();
             let window_weak = window_weak.clone();
+
+            match &state {
+                ConnectionState::Connected => {
+                    info!("[MAIN] 🎙️ Connection active: Starting WASAPI Duplex Audio Engine...");
+                    let mut engine = audio_engine_conn.lock().await;
+                    if let Err(e) = engine.start_duplex(mic_pcm_tx.clone()) {
+                        tracing::warn!("[MAIN] Audio Duplex start warning: {}", e);
+                    }
+                }
+                ConnectionState::Disconnected | ConnectionState::Suspended => {
+                    info!("[MAIN] Connection inactive: Stopping WASAPI Duplex Audio Engine...");
+                    let mut engine = audio_engine_conn.lock().await;
+                    engine.stop_duplex();
+                }
+                _ => {}
+            }
 
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(win) = window_weak.upgrade() {
@@ -97,37 +134,110 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // 6. Hook Inbound Server Command Dispatcher
+    // 7. Hook Inbound Server Command & Audio Dispatcher
     let mut command_rx = network_client.subscribe_commands();
-    let net_client_clone = network_client.clone();
+    let net_client_cmd = network_client.clone();
+    let audio_engine_cmd = Arc::clone(&audio_engine);
+    let window_weak_cmd = main_window.as_weak();
+
     tokio::spawn(async move {
         while let Ok(msg) = command_rx.recv().await {
-            if let ServerMessage::ExecuteCommand {
-                command_id,
-                action,
-                params,
-                ..
-            } = msg
-            {
-                info!("[MAIN] 🛠️ Executing command '{}' [{}]", action, command_id);
+            match msg {
+                ServerMessage::AudioPlay { pcm_chunk } => {
+                    use base64::prelude::*;
+                    if let Ok(bytes) = BASE64_STANDARD.decode(&pcm_chunk) {
+                        let mut engine = audio_engine_cmd.lock().await;
+                        engine.play_response_pcm(&bytes);
+                    }
+                }
+                ServerMessage::AudioInterrupted => {
+                    info!("[MAIN] Server signaled audio interrupted (barge-in).");
+                    let mut engine = audio_engine_cmd.lock().await;
+                    engine.stop_speaking();
+                }
+                ServerMessage::StatusUpdate { status, text, .. } => {
+                    let status_lower = status.to_lowercase();
+                    let window_weak = window_weak_cmd.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(win) = window_weak.upgrade() {
+                            if status_lower == "speaking" {
+                                win.set_avatar_state("speaking".into());
+                            } else if status_lower == "listening" {
+                                win.set_avatar_state("listening".into());
+                            } else if status_lower == "processing" {
+                                win.set_avatar_state("thinking".into());
+                            }
+                            if let Some(t) = text {
+                                win.set_status_message(t.into());
+                            }
+                        }
+                    });
+                }
+                ServerMessage::ReplyComplete => {
+                    let window_weak = window_weak_cmd.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(win) = window_weak.upgrade() {
+                            win.set_avatar_state("idle".into());
+                        }
+                    });
+                }
+                ServerMessage::ExecuteCommand {
+                    command_id,
+                    action,
+                    params,
+                    ..
+                } => {
+                    info!("[MAIN] 🛠️ Executing command '{}' [{}]", action, command_id);
 
-                // Acknowledge receipt to server
-                let ack = ClientMessage::CommandResult {
-                    command_id: command_id.clone(),
-                    success: true,
-                    message: format!("Command '{}' received by Windows Bridge", action),
-                    data: serde_json::json!({
-                        "action": action,
-                        "params": params,
-                        "status": "ACKNOWLEDGED"
-                    }),
-                };
-                let _ = net_client_clone.send_message(ack).await;
+                    // Acknowledge receipt to server
+                    let ack = ClientMessage::CommandResult {
+                        command_id: command_id.clone(),
+                        success: true,
+                        message: format!("Command '{}' received by Windows Bridge", action),
+                        data: serde_json::json!({
+                            "action": action,
+                            "params": params,
+                            "status": "ACKNOWLEDGED"
+                        }),
+                    };
+                    let _ = net_client_cmd.send_message(ack).await;
+                }
+                _ => {}
             }
         }
     });
 
-    // 7. Register Windows OS Power Listener (Sleep & Wake)
+    // 8. Hook User Barge-In Notification (Mic energy threshold exceeded during AI speech)
+    let barge_in_notify = {
+        let engine = audio_engine.lock().await;
+        engine.barge_in_notify()
+    };
+    let net_client_barge = network_client.clone();
+    let audio_engine_barge = Arc::clone(&audio_engine);
+    let window_weak_barge = main_window.as_weak();
+
+    tokio::spawn(async move {
+        loop {
+            barge_in_notify.notified().await;
+            info!("[MAIN] 🗣️ User Barge-In detected! Preempting AI speech output.");
+            {
+                let mut engine = audio_engine_barge.lock().await;
+                engine.stop_speaking();
+            }
+            let _ = net_client_barge
+                .send_message(ClientMessage::AudioInterrupted)
+                .await;
+
+            let window_weak = window_weak_barge.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(win) = window_weak.upgrade() {
+                    win.set_avatar_state("listening".into());
+                }
+            });
+        }
+    });
+
+    // 9. Register Windows OS Power Listener (Sleep & Wake)
     let net_client_power = network_client.clone();
     let _power_listener = PowerListener::spawn(move |event| match event {
         PowerStateEvent::Suspend => {

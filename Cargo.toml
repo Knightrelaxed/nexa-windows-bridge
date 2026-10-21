@@ -15,6 +15,10 @@ serde_json = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dirs = "6.0"
+cpal = "0.15"
+ringbuf = "0.4"
+sonora = "0.2"
+base64 = "0.23"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",

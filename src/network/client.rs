@@ -268,20 +268,23 @@ async fn run_client_worker(
                                         Ok(ServerMessage::Pong { .. }) => {
                                             // Keepalive pong verified
                                         }
-                                        Ok(cmd @ ServerMessage::ExecuteCommand { .. }) => {
-                                            info!("[NETWORK] 📥 Received command from Server");
-                                            let _ = command_tx.send(cmd);
-                                        }
                                         Ok(ServerMessage::Unknown) => {
                                             // Silently ignore future extension types
+                                        }
+                                        Ok(msg) => {
+                                            let _ = command_tx.send(msg);
                                         }
                                         Err(e) => {
                                             warn!("[NETWORK] Failed to parse server message: {}", e);
                                         }
                                     }
                                 }
-                                Some(Ok(Message::Binary(_bin))) => {
-                                    // Binary frame from server (future audio payload)
+                                Some(Ok(Message::Binary(bin))) => {
+                                    use base64::prelude::*;
+                                    let b64 = BASE64_STANDARD.encode(&bin);
+                                    let _ = command_tx.send(ServerMessage::AudioPlay {
+                                        pcm_chunk: b64,
+                                    });
                                 }
                                 Some(Ok(Message::Ping(data))) => {
                                     let _ = ws_write.send(Message::Pong(data)).await;

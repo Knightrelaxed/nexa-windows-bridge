@@ -44,6 +44,9 @@ pub enum ClientMessage {
         command_id: String,
         pcm_chunk: String,
     },
+
+    #[serde(rename = "CALL_AUDIO_INTERRUPTED")]
+    AudioInterrupted,
 }
 
 impl ClientMessage {
@@ -70,6 +73,27 @@ pub enum ServerMessage {
         #[serde(default)]
         timestamp: u64,
     },
+
+    #[serde(rename = "CALL_AUDIO_PLAY")]
+    AudioPlay {
+        pcm_chunk: String,
+    },
+
+    #[serde(rename = "CALL_STATUS_UPDATE")]
+    StatusUpdate {
+        #[serde(default)]
+        status: String,
+        #[serde(default)]
+        text: Option<String>,
+        #[serde(default)]
+        user_transcript: Option<String>,
+    },
+
+    #[serde(rename = "CALL_AUDIO_INTERRUPTED")]
+    AudioInterrupted,
+
+    #[serde(rename = "CALL_REPLY_COMPLETE")]
+    ReplyComplete,
 
     #[serde(other)]
     Unknown,
@@ -142,6 +166,28 @@ mod tests {
         let json = r#"{"type": "PONG", "timestamp": 1787107000}"#;
         let msg = ServerMessage::from_json(json).unwrap();
         assert_eq!(msg, ServerMessage::Pong { timestamp: 1787107000 });
+    }
+
+    #[test]
+    fn test_server_message_audio_play_and_status() {
+        let play_json = r#"{"type": "CALL_AUDIO_PLAY", "pcm_chunk": "AQID"}"#;
+        let play_msg = ServerMessage::from_json(play_json).unwrap();
+        assert_eq!(
+            play_msg,
+            ServerMessage::AudioPlay {
+                pcm_chunk: "AQID".to_string()
+            }
+        );
+
+        let status_json = r#"{"type": "CALL_STATUS_UPDATE", "status": "SPEAKING", "text": "Halo Tuan"}"#;
+        let status_msg = ServerMessage::from_json(status_json).unwrap();
+        match status_msg {
+            ServerMessage::StatusUpdate { status, text, .. } => {
+                assert_eq!(status, "SPEAKING");
+                assert_eq!(text.unwrap(), "Halo Tuan");
+            }
+            _ => panic!("Expected StatusUpdate"),
+        }
     }
 
     #[test]
