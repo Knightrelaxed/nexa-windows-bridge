@@ -263,6 +263,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Err(e) = engine.start_duplex(mic_pcm_tx.clone()) {
                         tracing::warn!("[MAIN] Audio Duplex start warning: {}", e);
                     }
+
+                    // Explicitly notify server that desktop companion is ready for Live Voice
+                    let net_client_handshake = net_client_audio.clone();
+                    let now_ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    tokio::spawn(async move {
+                        let call_start_msg = ClientMessage::CallEvent {
+                            event: "CALL_ACCEPTED".to_string(),
+                            command_id: format!("win_desktop_{}", now_ts),
+                        };
+                        let _ = net_client_handshake.send_message(call_start_msg).await;
+                    });
                 }
                 ConnectionState::Disconnected | ConnectionState::Suspended => {
                     info!("[MAIN] Connection inactive: Stopping WASAPI Duplex Audio Engine...");
@@ -406,6 +420,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             win.set_status_message(ui::CognitiveState::Idle.status_text().into());
                             win.set_volume_level(0.0);
                             win.set_pulse_scale(1.0);
+                        }
+                    });
+                }
+                ServerMessage::LiveReady { session_id, model } => {
+                    info!("[MAIN] ⚡ Gemini Live Voice Ready! Session: {:?}, Model: {:?}", session_id, model);
+                    let window_weak = window_weak_cmd.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(win) = window_weak.upgrade() {
+                            win.set_avatar_state(ui::CognitiveState::Listening.as_str().into());
+                            win.set_status_message("N.E.X.A Siap & Mendengarkan...".into());
                         }
                     });
                 }

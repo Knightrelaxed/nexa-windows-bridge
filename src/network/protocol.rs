@@ -33,6 +33,13 @@ pub enum ClientMessage {
     #[serde(rename = "POWER_EVENT")]
     PowerEvent { event: String },
 
+    #[serde(rename = "CALL_EVENT")]
+    CallEvent {
+        event: String,
+        #[serde(default)]
+        command_id: String,
+    },
+
     #[serde(rename = "CALL_VIDEO_FRAME")]
     VideoFrame {
         command_id: String,
@@ -94,6 +101,14 @@ pub enum ServerMessage {
 
     #[serde(rename = "CALL_REPLY_COMPLETE")]
     ReplyComplete,
+
+    #[serde(rename = "CALL_LIVE_READY")]
+    LiveReady {
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default)]
+        model: Option<String>,
+    },
 
     #[serde(other)]
     Unknown,
@@ -187,6 +202,24 @@ mod tests {
                 assert_eq!(text.unwrap(), "Halo Tuan");
             }
             _ => panic!("Expected StatusUpdate"),
+        }
+    }
+
+    #[test]
+    fn test_call_event_and_live_ready() {
+        let call_event = ClientMessage::CallEvent {
+            event: "CALL_ACCEPTED".to_string(),
+            command_id: "win_123".to_string(),
+        };
+        let json = call_event.to_json().unwrap();
+        assert!(json.contains("\"type\":\"CALL_EVENT\""));
+        assert!(json.contains("\"event\":\"CALL_ACCEPTED\""));
+
+        let ready_json = r#"{"type": "CALL_LIVE_READY", "sessionId": "DESKTOP_123", "model": "gemini-3.8-live"}"#;
+        let ready_msg = ServerMessage::from_json(ready_json).unwrap();
+        match ready_msg {
+            ServerMessage::LiveReady { .. } => {}
+            _ => panic!("Expected LiveReady"),
         }
     }
 
