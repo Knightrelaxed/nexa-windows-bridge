@@ -1,19 +1,35 @@
+// ============================================================
+// N.E.X.A 3.3 — WINDOWS BRIDGE MAIN INTERFACE
+// Dual-Mode Slint Window (Windowed Companion vs Full Screen Command Center)
+// ============================================================
+
 import { Button } from "std-widgets.slint";
 import { Avatar } from "components/avatar.slint";
 import { SettingsDialog } from "settings_dialog.slint";
 
 export component MainWindow inherits Window {
     title: "N.E.X.A Windows Bridge";
+    full-screen: root.is_fullscreen;
     width: 380px;
     height: 520px;
     background: #0D1117;
     default-font-family: "Segoe UI";
 
+    // Dual-Mode State properties
+    in-out property <bool> is_fullscreen: false;
+    in-out property <bool> is_mic_muted: false;
+    in-out property <bool> is_screen_sharing: false;
     in-out property <string> connection_status: "offline"; // "connected" | "connecting" | "offline"
-    in-out property <string> avatar_state: "offline";       // "idle" | "listening" | "thinking" | "speaking" | "offline"
+    in-out property <string> avatar_state: "offline";       // "idle" | "listening" | "thinking" | "speaking" | "barge_in" | "screen_sharing" | "tool_executing" | "connecting" | "offline"
     in-out property <float> pulse_scale: 1.0;
-    in-out property <string> status_message: "Ready to connect";
+    in-out property <string> status_message: "Siap terhubung ke N.E.X.A Server";
     in-out property <bool> show_settings: false;
+
+    // Telemetry properties for Fullscreen HUD
+    in-out property <string> telemetry_cpu: "12%";
+    in-out property <string> telemetry_ram: "34%";
+    in-out property <string> telemetry_audio: "WASAPI 48kHz (AEC3)";
+    in-out property <string> telemetry_ping: "24ms";
 
     // Config bindings
     in-out property <string> cfg_server_url: "";
@@ -22,156 +38,385 @@ export component MainWindow inherits Window {
     in-out property <string> test_status_text: "";
     in-out property <bool> is_testing: false;
 
+    // Callbacks for Rust Orchestration
     callback toggle_connect();
+    callback toggle_fullscreen();
+    callback toggle_mic_mute();
+    callback toggle_screen_share();
     callback open_settings();
     callback save_settings(string, string, int, bool);
     callback test_connection(string, string);
 
-    // Main layout
-    VerticalLayout {
-        padding: 20px;
-        spacing: 16px;
+    // Primary Computed Status Text (100% Mobile Bridge Parity)
+    property <string> status_text_display:
+        root.avatar_state == "listening"      ? "Mendengarkan Tuan Faqih..." :
+        root.avatar_state == "thinking"       ? "Sedang menalar & memproses..." :
+        root.avatar_state == "speaking"       ? "N.E.X.A sedang berbicara..." :
+        root.avatar_state == "barge_in"       ? "Mendengarkan interupsi Tuan..." :
+        root.avatar_state == "screen_sharing" ? "Mentransmisikan layar & audio (D3D11 1 FPS)..." :
+        root.avatar_state == "tool_executing" ? "Mengeksekusi perintah sistem..." :
+        (root.avatar_state == "connecting" || root.avatar_state == "reconnecting") ? "Menghubungkan kembali ke server..." :
+        root.avatar_state == "idle"           ? "Online & Siaga" : "Bridge Terputus (Offline)";
 
-        // Top bar
-        HorizontalLayout {
-            alignment: space-between;
-            Text {
-                text: "N.E.X.A Bridge";
-                font-size: 16px;
-                font-weight: 700;
-                color: #58A6FF;
-                vertical-alignment: center;
+    // Top-Level Keyboard Handler (F11 Fullscreen Toggle & Escape Exit Fullscreen)
+    FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.F11) {
+                root.is_fullscreen = !root.is_fullscreen;
+                root.toggle_fullscreen();
+                accept
+            } else if (event.text == Key.Escape && root.is_fullscreen) {
+                root.is_fullscreen = false;
+                root.toggle_fullscreen();
+                accept
+            } else {
+                reject
+            }
+        }
+
+        // ==========================================
+        // MODE 1: NO-FULLSCREEN (WINDOWED COMPANION)
+        // ==========================================
+        if !root.is_fullscreen : VerticalLayout {
+            padding: 20px;
+            spacing: 14px;
+
+            // Top Bar
+            HorizontalLayout {
+                alignment: space-between;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        y: (parent.height - self.height) / 2;
+                        background: root.connection_status == "connected" ? #00E5FF :
+                                    root.connection_status == "connecting" ? #FF9100 : #546E7A;
+                    }
+                    Text {
+                        text: "N.E.X.A Bridge";
+                        font-size: 15px;
+                        font-weight: 700;
+                        color: #58A6FF;
+                        vertical-alignment: center;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 6px;
+                    Button {
+                        text: "⛶";
+                        clicked => {
+                            root.is_fullscreen = true;
+                            root.toggle_fullscreen();
+                        }
+                    }
+                    Button {
+                        text: "⚙ Settings";
+                        clicked => { root.show_settings = !root.show_settings; }
+                    }
+                }
             }
 
+            // Center Avatar & State
+            VerticalLayout {
+                alignment: center;
+                spacing: 10px;
+
+                HorizontalLayout {
+                    alignment: center;
+                    Avatar {
+                        state: root.avatar_state;
+                        pulse_scale: root.pulse_scale;
+                        eye_size: 72px;
+                    }
+                }
+
+                Text {
+                    horizontal-alignment: center;
+                    text: root.status_text_display;
+                    font-size: 15px;
+                    font-weight: 600;
+                    color: #C9D1D9;
+                }
+
+                Text {
+                    horizontal-alignment: center;
+                    text: root.status_message;
+                    font-size: 12px;
+                    color: #8B949E;
+                    overflow: elide;
+                }
+            }
+
+            // Hardware Status Indicators Card
+            Rectangle {
+                background: #161B22;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: #30363D;
+                height: 52px;
+
+                HorizontalLayout {
+                    padding: 10px;
+                    spacing: 12px;
+                    alignment: center;
+
+                    // Audio Pill
+                    HorizontalLayout {
+                        spacing: 5px;
+                        Rectangle {
+                            width: 8px;
+                            height: 8px;
+                            border-radius: 4px;
+                            y: (parent.height - self.height) / 2;
+                            background: root.connection_status == "connected" ? (root.is_mic_muted ? #FF9100 : #3FB950) : #8B949E;
+                        }
+                        Text {
+                            text: root.is_mic_muted ? "Mic Muted" : "WASAPI Audio";
+                            font-size: 11px;
+                            color: #C9D1D9;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // Echo Canceller Pill
+                    HorizontalLayout {
+                        spacing: 5px;
+                        Rectangle {
+                            width: 8px;
+                            height: 8px;
+                            border-radius: 4px;
+                            y: (parent.height - self.height) / 2;
+                            background: root.connection_status == "connected" ? #3FB950 : #8B949E;
+                        }
+                        Text {
+                            text: "AEC3 Active";
+                            font-size: 11px;
+                            color: #C9D1D9;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // Vision Pill
+                    HorizontalLayout {
+                        spacing: 5px;
+                        Rectangle {
+                            width: 8px;
+                            height: 8px;
+                            border-radius: 4px;
+                            y: (parent.height - self.height) / 2;
+                            background: root.is_screen_sharing ? #00E5FF : (root.connection_status == "connected" ? #3FB950 : #8B949E);
+                        }
+                        Text {
+                            text: root.is_screen_sharing ? "Vision Stream" : "D3D11 Vision";
+                            font-size: 11px;
+                            color: #C9D1D9;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // Quick Control Toggles
+            HorizontalLayout {
+                spacing: 8px;
+                Button {
+                    text: root.is_mic_muted ? "🔇 Unmute Mic" : "🎙️ Mute Mic";
+                    clicked => {
+                        root.is_mic_muted = !root.is_mic_muted;
+                        root.toggle_mic_mute();
+                    }
+                }
+                Button {
+                    text: root.is_screen_sharing ? "⏹️ Hentikan Layar" : "👁️ Berbagi Layar";
+                    clicked => {
+                        root.is_screen_sharing = !root.is_screen_sharing;
+                        root.toggle_screen_share();
+                    }
+                }
+            }
+
+            // Connection Action Button
             Button {
-                text: "⚙ Settings";
-                clicked => { root.show_settings = !root.show_settings; }
+                text: root.connection_status == "connected" ? "Putuskan Sambungan" :
+                      root.connection_status == "connecting" ? "Menghubungkan..." : "Hubungkan ke N.E.X.A";
+                primary: root.connection_status != "connected";
+                clicked => { root.toggle_connect(); }
             }
         }
 
-        // Center Avatar & State
-        VerticalLayout {
-            alignment: center;
-            spacing: 12px;
+        // ==========================================
+        // MODE 2: FULL SCREEN (J.A.R.V.I.S COMMAND CENTER)
+        // ==========================================
+        if root.is_fullscreen : VerticalLayout {
+            padding: 30px;
+            spacing: 24px;
 
+            // Top HUD Telemetry Bar
+            HorizontalLayout {
+                alignment: space-between;
+
+                // Left: HUD Telemetry Panel
+                Rectangle {
+                    background: #161B22CC;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: #30363D;
+                    height: 44px;
+
+                    HorizontalLayout {
+                        padding-left: 18px;
+                        padding-right: 18px;
+                        spacing: 24px;
+                        alignment: center;
+
+                        Text {
+                            text: "💻 CPU: " + root.telemetry_cpu;
+                            font-size: 12px;
+                            color: #58A6FF;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "🧠 RAM: " + root.telemetry_ram;
+                            font-size: 12px;
+                            color: #58A6FF;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "🎙️ WASAPI Audio: " + (root.connection_status == "connected" ? "Active (16kHz)" : "Standby");
+                            font-size: 12px;
+                            color: root.connection_status == "connected" ? #3FB950 : #8B949E;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "🛡️ AEC3: " + (root.connection_status == "connected" ? "Active (-18dB)" : "Standby");
+                            font-size: 12px;
+                            color: root.connection_status == "connected" ? #3FB950 : #8B949E;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "⚡ Latency: " + root.telemetry_ping;
+                            font-size: 12px;
+                            color: #79C0FF;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Right: Fullscreen Actions
+                HorizontalLayout {
+                    spacing: 10px;
+                    Button {
+                        text: "⤢ Windowed Mode [F11]";
+                        clicked => {
+                            root.is_fullscreen = false;
+                            root.toggle_fullscreen();
+                        }
+                    }
+                    Button {
+                        text: "⚙ Settings";
+                        clicked => { root.show_settings = !root.show_settings; }
+                    }
+                }
+            }
+
+            // Center: Imposing Avatar & Dialog Transcript
+            VerticalLayout {
+                alignment: center;
+                spacing: 24px;
+
+                HorizontalLayout {
+                    alignment: center;
+                    Avatar {
+                        state: root.avatar_state;
+                        pulse_scale: root.pulse_scale;
+                        eye_size: 130px;
+                        width: 380px;
+                        height: 150px;
+                    }
+                }
+
+                Text {
+                    horizontal-alignment: center;
+                    text: root.status_text_display;
+                    font-size: 26px;
+                    font-weight: 700;
+                    color: root.avatar_state == "listening" ? #00B4D8 :
+                           root.avatar_state == "thinking"  ? #FFB300 :
+                           root.avatar_state == "speaking"  ? #00FF88 :
+                           root.avatar_state == "idle"      ? #00E5FF : #C9D1D9;
+                }
+
+                Text {
+                    horizontal-alignment: center;
+                    text: root.status_message;
+                    font-size: 15px;
+                    color: #8B949E;
+                }
+            }
+
+            // Bottom Fullscreen HUD Action Dock
             HorizontalLayout {
                 alignment: center;
-                Avatar {
-                    state: root.avatar_state;
-                    pulse_scale: root.pulse_scale;
-                }
-            }
 
-            Text {
-                horizontal-alignment: center;
-                text: root.avatar_state == "listening"      ? "Mendengarkan Tuan Faqih..." :
-                      root.avatar_state == "thinking"       ? "Sedang menalar & memproses..." :
-                      root.avatar_state == "speaking"       ? "N.E.X.A sedang berbicara..." :
-                      root.avatar_state == "barge_in"       ? "Mendengarkan interupsi Tuan..." :
-                      root.avatar_state == "screen_sharing" ? "Mentransmisikan layar & audio (D3D11 1 FPS)..." :
-                      root.avatar_state == "tool_executing" ? "Mengeksekusi perintah sistem..." :
-                      (root.avatar_state == "connecting" || root.avatar_state == "reconnecting") ? "Menghubungkan kembali ke server..." :
-                      root.avatar_state == "idle"           ? "Online & Siaga" : "Bridge Terputus (Offline)";
-                font-size: 14px;
-                font-weight: 600;
-                color: #C9D1D9;
-            }
+                Rectangle {
+                    background: #161B22E6;
+                    border-radius: 20px;
+                    border-width: 1px;
+                    border-color: #30363D;
+                    height: 52px;
 
-            Text {
-                horizontal-alignment: center;
-                text: root.status_message;
-                font-size: 12px;
-                color: #8B949E;
-            }
-        }
+                    HorizontalLayout {
+                        padding-left: 20px;
+                        padding-right: 20px;
+                        spacing: 16px;
+                        alignment: center;
 
-        // Hardware Status Indicators
-        Rectangle {
-            background: #161B22;
-            border-radius: 8px;
-            height: 60px;
-
-            HorizontalLayout {
-                padding: 12px;
-                spacing: 16px;
-                alignment: center;
-
-                // Audio Pill
-                HorizontalLayout {
-                    spacing: 6px;
-                    Rectangle {
-                        width: 8px;
-                        height: 8px;
-                        border-radius: 4px;
-                        y: (parent.height - self.height) / 2;
-                        background: root.connection_status == "connected" ? #3FB950 : #8B949E;
-                    }
-                    Text {
-                        text: "WASAPI Audio";
-                        font-size: 11px;
-                        color: #C9D1D9;
-                        vertical-alignment: center;
-                    }
-                }
-
-                // Vision Pill
-                HorizontalLayout {
-                    spacing: 6px;
-                    Rectangle {
-                        width: 8px;
-                        height: 8px;
-                        border-radius: 4px;
-                        y: (parent.height - self.height) / 2;
-                        background: root.connection_status == "connected" ? #3FB950 : #8B949E;
-                    }
-                    Text {
-                        text: "D3D11 Vision";
-                        font-size: 11px;
-                        color: #C9D1D9;
-                        vertical-alignment: center;
-                    }
-                }
-
-                // Automation Pill
-                HorizontalLayout {
-                    spacing: 6px;
-                    Rectangle {
-                        width: 8px;
-                        height: 8px;
-                        border-radius: 4px;
-                        y: (parent.height - self.height) / 2;
-                        background: root.connection_status == "connected" ? #3FB950 : #8B949E;
-                    }
-                    Text {
-                        text: "AR Guidance";
-                        font-size: 11px;
-                        color: #C9D1D9;
-                        vertical-alignment: center;
+                        Button {
+                            text: root.is_mic_muted ? "🔇 Unmute Mic" : "🎙️ Mute Mic";
+                            clicked => {
+                                root.is_mic_muted = !root.is_mic_muted;
+                                root.toggle_mic_mute();
+                            }
+                        }
+                        Button {
+                            text: root.is_screen_sharing ? "⏹️ Hentikan Layar" : "👁️ Berbagi Layar (1 FPS)";
+                            clicked => {
+                                root.is_screen_sharing = !root.is_screen_sharing;
+                                root.toggle_screen_share();
+                            }
+                        }
+                        Button {
+                            text: root.connection_status == "connected" ? "Putuskan Sambungan" : "Hubungkan ke Server";
+                            primary: root.connection_status != "connected";
+                            clicked => { root.toggle_connect(); }
+                        }
+                        Text {
+                            text: "💡 [F11] Layar Penuh | [Win+Alt+N] Boss Key";
+                            font-size: 11px;
+                            color: #8B949E;
+                            vertical-alignment: center;
+                        }
                     }
                 }
             }
-        }
-
-        // Connection Action Button
-        Button {
-            text: root.connection_status == "connected" ? "Disconnect" :
-                  root.connection_status == "connecting" ? "Connecting..." : "Connect to N.E.X.A";
-            primary: root.connection_status != "connected";
-            clicked => { root.toggle_connect(); }
         }
     }
 
-    // Modal Settings Overlay
+    // Modal Settings Overlay (Shared across both modes)
     if root.show_settings : Rectangle {
         width: 100%;
         height: 100%;
-        background: #000000AA;
+        background: #000000CC;
 
         SettingsDialog {
-            width: parent.width - 32px;
-            height: parent.height - 40px;
-            x: 16px;
-            y: 20px;
+            width: root.is_fullscreen ? 480px : (parent.width - 32px);
+            height: root.is_fullscreen ? 460px : (parent.height - 40px);
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
             server_url: root.cfg_server_url;
             auth_token: root.cfg_auth_token;
             low_ram_mode: root.cfg_low_ram_mode;

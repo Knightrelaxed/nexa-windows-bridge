@@ -90,14 +90,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_main_window_pulse_scale_and_avatar_state() {
+    fn test_main_window_ui_properties_and_dual_mode() {
         let main_window = MainWindow::new().expect("Failed to initialize MainWindow");
 
+        // 1. Verify Avatar state & pulse scale
         main_window.set_avatar_state("thinking".into());
         assert_eq!(main_window.get_avatar_state().as_str(), "thinking");
 
         main_window.set_pulse_scale(1.25);
         assert_eq!(main_window.get_pulse_scale(), 1.25);
+
+        // 2. Verify initial defaults (Windowed Mode)
+        assert!(!main_window.get_is_fullscreen());
+        assert!(!main_window.get_is_mic_muted());
+        assert!(!main_window.get_is_screen_sharing());
+
+        // 3. Toggle to Fullscreen Mode
+        main_window.set_is_fullscreen(true);
+        assert!(main_window.get_is_fullscreen());
+
+        // 4. Toggle Mic Mute
+        main_window.set_is_mic_muted(true);
+        assert!(main_window.get_is_mic_muted());
+
+        // 5. Toggle Screen Share
+        main_window.set_is_screen_sharing(true);
+        assert!(main_window.get_is_screen_sharing());
+
+        // 6. Verify Telemetry HUD properties
+        assert_eq!(main_window.get_telemetry_cpu().as_str(), "12%");
+        assert_eq!(main_window.get_telemetry_ram().as_str(), "34%");
+        assert_eq!(main_window.get_telemetry_audio().as_str(), "WASAPI 48kHz (AEC3)");
+        assert_eq!(main_window.get_telemetry_ping().as_str(), "24ms");
+
+        // 7. Update Telemetry values
+        main_window.set_telemetry_cpu("18%".into());
+        assert_eq!(main_window.get_telemetry_cpu().as_str(), "18%");
     }
 
     #[test]

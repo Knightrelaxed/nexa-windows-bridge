@@ -320,6 +320,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // Hook Fullscreen Toggle
+    let window_weak = main_window.as_weak();
+    main_window.on_toggle_fullscreen(move || {
+        if let Some(win) = window_weak.upgrade() {
+            let fs = win.get_is_fullscreen();
+            info!("[MAIN] ⛶ Fullscreen toggled: {}", fs);
+            win.window().set_fullscreen(fs);
+        }
+    });
+
+    // Hook Microphone Mute Toggle
+    let audio_engine_mute = Arc::clone(&audio_engine);
+    let window_weak = main_window.as_weak();
+    main_window.on_toggle_mic_mute(move || {
+        if let Some(win) = window_weak.upgrade() {
+            let muted = win.get_is_mic_muted();
+            info!("[MAIN] 🎙️ Microphone mute toggled: {}", muted);
+            let audio_clone = Arc::clone(&audio_engine_mute);
+            tokio::spawn(async move {
+                let engine = audio_clone.lock().await;
+                engine.set_mic_muted(muted);
+            });
+        }
+    });
+
+    // Hook Screen Sharing Toggle
+    let window_weak = main_window.as_weak();
+    main_window.on_toggle_screen_share(move || {
+        if let Some(win) = window_weak.upgrade() {
+            let sharing = win.get_is_screen_sharing();
+            info!("[MAIN] 👁️ Screen share toggled: {}", sharing);
+            if sharing {
+                win.set_avatar_state(ui::CognitiveState::ScreenSharing.as_str().into());
+                win.set_status_message(ui::CognitiveState::ScreenSharing.status_text().into());
+            } else {
+                win.set_avatar_state(ui::CognitiveState::Idle.as_str().into());
+                win.set_status_message(ui::CognitiveState::Idle.status_text().into());
+            }
+        }
+    });
+
     // Run the Slint GUI Event Loop
     main_window.run()?;
     Ok(())
