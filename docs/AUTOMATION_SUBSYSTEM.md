@@ -72,6 +72,24 @@ graph TD
 * **Filtering & Rasionalitas:** Mengeliminasi elemen yang terlalu kecil (<4px) atau terlalu besar (>95% layar seperti desktop root).
 * **AI Vision Fallback:** Jika elemen berada pada kanvas tak berstruktur (diagram/game), sistem otomatis *fallback* memakai *Vision Bounding Box* dari Gemini Live tanpa error (`is_snapped: false`).
 
+### E. Stealth Overlay Window & Click Ripple Indicator (Milestone 6.3)
+* Window transparan berbasis Slint + Win32 API (`ui/overlay_window.slint` & `src/automation/highlighter.rs`).
+* **Stealth Windowing Architecture:**
+  - `WS_EX_TRANSPARENT`: 100% tembus klik mouse (*click-through*), pengguna dapat mengeklik tombol target tanpa terhalang overlay.
+  - `WS_EX_TOPMOST`: Selalu di lapisan visual teratas di atas jendela aplikasi mana pun.
+  - `WS_EX_NOACTIVATE`: Tidak pernah mencuri fokus keyboard atau kursor aktif pengguna.
+  - `WS_EX_LAYERED`: Rendering transparansi GPU yang bersih.
+* **4 Variasi Gaya Sorotan Visual:**
+  - `BOX`: Bounding box bercahaya cyan dengan label mengambang dan corner ticks futuristik.
+  - `RING`: Cincin konsentris berdenyut melingkari target.
+  - `POINTER`: Reticle dan titik penunjuk kursor.
+  - `SPOTLIGHT`: Efek peredupan layar di sekitar elemen untuk memfokuskan pandangan.
+* **Click Ripple Indicator (300ms):**
+  - Riak lingkaran cyan ekspansif (12px $\to$ 45px) dengan pemudaran halus (0.85 $\to$ 0.0) di koordinat klik setiap kali `desktopClick` dieksekusi.
+* **Siklus Hidup & Auto-Dissolve:**
+  - Timer pembubaran otomatis berbasis *epoch atomic token* untuk mencegah konflik antar-sorotan berturut-turut.
+  - Fungsi pembersihan manual `clear_all()` untuk aksi `CLEAR_HIGHLIGHTS`.
+
 ---
 
 ## 3. Rencana Milestone Subsistem Otomasi (Fase 6)
@@ -80,6 +98,6 @@ graph TD
 | :--- | :--- | :--- |
 | **Milestone 6.1** | Desktop Input Automation (`src/automation/input.rs`) — SendInput mouse & keyboard | **SELESAI ✅** |
 | **Milestone 6.2** | Magnetic Smart-Snap via Windows UI Automation (`src/automation/element_finder.rs`) | **SELESAI ✅** |
-| **Milestone 6.3** | Stealth Overlay & Click Ripple (`src/automation/highlighter.rs`) | *Berikutnya* |
-| **Milestone 6.4** | Router EXECUTE_COMMAND & WebSocket Binding di `src/main.rs` | *Terencana* |
+| **Milestone 6.3** | Stealth Overlay & Click Ripple (`src/automation/highlighter.rs`) | **SELESAI ✅** |
+| **Milestone 6.4** | Router EXECUTE_COMMAND & WebSocket Binding di `src/main.rs` | *Berikutnya* |
 | **Milestone 6.5** | Verifikasi Komprehensif, Audit Zero-Warning Clippy, & Git Push | *Terencana* |

@@ -6,8 +6,11 @@
 
 pub mod input;
 pub mod element_finder;
+pub mod highlighter;
 
 #[allow(unused_imports)]
 pub use input::*;
 #[allow(unused_imports)]
 pub use element_finder::*;
+#[allow(unused_imports)]
+pub use highlighter::*;

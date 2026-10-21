@@ -1,0 +1,248 @@
+// ============================================================
+// N.E.X.A STEALTH OVERLAY WINDOW
+// DirectComposition / Win32 Transparent Click-Through Overlay
+// Provides bounding boxes, target rings, pointers, and click ripple
+// ============================================================
+
+export component OverlayWindow inherits Window {
+    title: "N.E.X.A Overlay";
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+
+    // Highlight Box / Element properties
+    in-out property <bool> highlight_visible: false;
+    in-out property <string> highlight_style: "BOX"; // "BOX" | "RING" | "POINTER" | "SPOTLIGHT"
+    in-out property <string> highlight_label: "";
+    in-out property <length> target_x: 0px;
+    in-out property <length> target_y: 0px;
+    in-out property <length> target_w: 120px;
+    in-out property <length> target_h: 40px;
+    in-out property <float> highlight_opacity: 1.0;
+
+    // Click Ripple Indicator properties
+    in-out property <bool> ripple_visible: false;
+    in-out property <length> ripple_x: 0px;
+    in-out property <length> ripple_y: 0px;
+    in-out property <length> ripple_radius: 12px;
+    in-out property <float> ripple_opacity: 0.8;
+
+    // Root container covering the window
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+
+        // ─────────────────────────────────────────────────────────
+        // 1. SPOTLIGHT DIMMER (Only active when style == "SPOTLIGHT")
+        // ─────────────────────────────────────────────────────────
+        if root.highlight_visible && root.highlight_style == "SPOTLIGHT" : Rectangle {
+            width: 100%;
+            height: 100%;
+            background: #00000066;
+            opacity: root.highlight_opacity;
+            animate opacity { duration: 250ms; easing: ease-out; }
+        }
+
+        // ─────────────────────────────────────────────────────────
+        // 2. BOUNDING BOX (style == "BOX" or "SPOTLIGHT")
+        // ─────────────────────────────────────────────────────────
+        if root.highlight_visible && (root.highlight_style == "BOX" || root.highlight_style == "SPOTLIGHT") : Rectangle {
+            x: root.target_x;
+            y: root.target_y;
+            width: root.target_w;
+            height: root.target_h;
+            border-width: 2.5px;
+            border-color: #00E5FF;
+            border-radius: 6px;
+            background: #00E5FF18;
+            opacity: root.highlight_opacity;
+            animate opacity { duration: 200ms; easing: ease-out; }
+
+            // Floating Label Tag (above box)
+            if root.highlight_label != "" : Rectangle {
+                x: 0px;
+                y: -26px;
+                height: 22px;
+                background: #0B0F19F0;
+                border-width: 1px;
+                border-color: #00E5FFAA;
+                border-radius: 4px;
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    alignment: center;
+                    Text {
+                        text: root.highlight_label;
+                        color: #00E5FF;
+                        font-size: 11px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // Top-left precision tick
+            Rectangle {
+                x: -3px;
+                y: -3px;
+                width: 8px;
+                height: 8px;
+                border-width: 2px;
+                border-color: #E0F7FA;
+                border-radius: 1px;
+                background: transparent;
+            }
+
+            // Bottom-right precision tick
+            Rectangle {
+                x: parent.width - 5px;
+                y: parent.height - 5px;
+                width: 8px;
+                height: 8px;
+                border-width: 2px;
+                border-color: #E0F7FA;
+                border-radius: 1px;
+                background: transparent;
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────
+        // 3. TARGET RING (style == "RING")
+        // ─────────────────────────────────────────────────────────
+        if root.highlight_visible && root.highlight_style == "RING" : Rectangle {
+            // Centered on target point
+            x: root.target_x + (root.target_w / 2) - 30px;
+            y: root.target_y + (root.target_h / 2) - 30px;
+            width: 60px;
+            height: 60px;
+            border-radius: 30px;
+            border-width: 2.5px;
+            border-color: #00E5FF;
+            background: #00E5FF1A;
+            opacity: root.highlight_opacity;
+            animate opacity { duration: 200ms; easing: ease-out; }
+
+            // Inner focus dot
+            Rectangle {
+                x: 26px;
+                y: 26px;
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: #00E5FF;
+            }
+
+            // Floating Label Tag
+            if root.highlight_label != "" : Rectangle {
+                x: -10px;
+                y: -26px;
+                height: 22px;
+                background: #0B0F19F0;
+                border-width: 1px;
+                border-color: #00E5FFAA;
+                border-radius: 4px;
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    alignment: center;
+                    Text {
+                        text: root.highlight_label;
+                        color: #00E5FF;
+                        font-size: 11px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────
+        // 4. POINTER RETICLE (style == "POINTER")
+        // ─────────────────────────────────────────────────────────
+        if root.highlight_visible && root.highlight_style == "POINTER" : Rectangle {
+            x: root.target_x + (root.target_w / 2) - 16px;
+            y: root.target_y + (root.target_h / 2) - 16px;
+            width: 32px;
+            height: 32px;
+            opacity: root.highlight_opacity;
+            animate opacity { duration: 200ms; easing: ease-out; }
+
+            // Center pulsating beacon
+            Rectangle {
+                x: 10px;
+                y: 10px;
+                width: 12px;
+                height: 12px;
+                border-radius: 6px;
+                background: #00E5FF;
+                border-width: 2px;
+                border-color: #FFFFFF;
+            }
+
+            // Surrounding reticle bracket
+            Rectangle {
+                x: 2px;
+                y: 2px;
+                width: 28px;
+                height: 28px;
+                border-radius: 14px;
+                border-width: 1.5px;
+                border-color: #00E5FFCC;
+                background: transparent;
+            }
+
+            // Floating Label Tag
+            if root.highlight_label != "" : Rectangle {
+                x: 36px;
+                y: 4px;
+                height: 22px;
+                background: #0B0F19F0;
+                border-width: 1px;
+                border-color: #00E5FFAA;
+                border-radius: 4px;
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    alignment: center;
+                    Text {
+                        text: root.highlight_label;
+                        color: #00E5FF;
+                        font-size: 11px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────
+        // 5. CLICK RIPPLE INDICATOR (300ms Click Confirmation)
+        // ─────────────────────────────────────────────────────────
+        if root.ripple_visible : Rectangle {
+            x: root.ripple_x - (root.ripple_radius);
+            y: root.ripple_y - (root.ripple_radius);
+            width: root.ripple_radius * 2;
+            height: root.ripple_radius * 2;
+            border-radius: root.ripple_radius;
+            border-width: 2.5px;
+            border-color: #00E5FF;
+            background: #00E5FF26;
+            opacity: root.ripple_opacity;
+
+            // Center pulse dot
+            Rectangle {
+                x: parent.width / 2 - 3px;
+                y: parent.height / 2 - 3px;
+                width: 6px;
+                height: 6px;
+                border-radius: 3px;
+                background: #E0F7FA;
+                opacity: root.ripple_opacity;
+            }
+        }
+    }
+}

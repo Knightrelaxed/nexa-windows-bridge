@@ -1,0 +1,375 @@
+//! Stealth Overlay Window & Highlight Controller (Milestone 6.3)
+//!
+//! Provides hardware-accelerated DirectComposition / Win32 transparent click-through
+//! overlays for bounding boxes (BOX), rings (RING), pointers (POINTER), spotlight (SPOTLIGHT),
+//! and 300ms click ripple indicators.
+
+#![allow(dead_code)]
+
+use crate::automation::element_finder::smart_snap_bounding_box;
+use crate::automation::input::{denormalize_to_pixels, get_primary_screen_dimensions};
+use crate::ui::OverlayWindow;
+use slint::ComponentHandle;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use tracing::{debug, info};
+use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+/// Visual styling options for screen highlights
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HighlightStyle {
+    Box,
+    Ring,
+    Pointer,
+    Spotlight,
+}
+
+impl HighlightStyle {
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_uppercase().as_str() {
+            "RING" => HighlightStyle::Ring,
+            "POINTER" => HighlightStyle::Pointer,
+            "SPOTLIGHT" => HighlightStyle::Spotlight,
+            _ => HighlightStyle::Box,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            HighlightStyle::Box => "BOX",
+            HighlightStyle::Ring => "RING",
+            HighlightStyle::Pointer => "POINTER",
+            HighlightStyle::Spotlight => "SPOTLIGHT",
+        }
+    }
+}
+
+/// Clamps duration between 500 ms and 15,000 ms (default 4,000 ms)
+pub fn clamp_highlight_duration(duration_ms: u64) -> u64 {
+    if duration_ms == 0 {
+        4000
+    } else {
+        duration_ms.clamp(500, 15000)
+    }
+}
+
+/// Request parameters for highlighting an element
+#[derive(Debug, Clone, PartialEq)]
+pub struct HighlightRequest {
+    pub ymin: f64,
+    pub xmin: f64,
+    pub ymax: f64,
+    pub xmax: f64,
+    pub style: HighlightStyle,
+    pub label: String,
+    pub duration_ms: u64,
+}
+
+impl HighlightRequest {
+    pub fn new(
+        ymin: f64,
+        xmin: f64,
+        ymax: f64,
+        xmax: f64,
+        style: HighlightStyle,
+        label: String,
+        duration_ms: u64,
+    ) -> Self {
+        Self {
+            ymin,
+            xmin,
+            ymax,
+            xmax,
+            style,
+            label,
+            duration_ms: clamp_highlight_duration(duration_ms),
+        }
+    }
+}
+
+/// Apply Win32 Stealth windowing flags (click-through, topmost, noactivate)
+pub fn apply_stealth_window_styles() -> bool {
+    unsafe {
+        let title: Vec<u16> = "N.E.X.A Overlay\0".encode_utf16().collect();
+        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+        if hwnd.is_null() {
+            debug!("[HIGHLIGHTER] Overlay window HWND not found yet");
+            return false;
+        }
+
+        let mut ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        ex_style |= (WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_LAYERED) as i32;
+        SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style);
+
+        let screen = get_primary_screen_dimensions();
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            screen.width,
+            screen.height,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+
+        debug!("[HIGHLIGHTER] Applied WS_EX_TRANSPARENT & HWND_TOPMOST to HWND 0x{:X}", hwnd as usize);
+        true
+    }
+}
+
+/// Controller managing the lifetime, geometry, animations, and auto-dismiss of overlays
+#[derive(Clone)]
+pub struct HighlighterController {
+    overlay_window: Option<slint::Weak<OverlayWindow>>,
+    active_epoch: Arc<AtomicU64>,
+}
+
+impl HighlighterController {
+    /// Create a controller with an optional weak Slint OverlayWindow instance
+    pub fn new(overlay_window: Option<slint::Weak<OverlayWindow>>) -> Self {
+        Self {
+            overlay_window,
+            active_epoch: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Display an element highlight with magnetic snapping, optional label, and auto-dissolve
+    pub fn show_highlight(&self, req: HighlightRequest) {
+        let epoch = self.active_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+
+        // Perform Magnetic Smart-Snap via Windows UI Automation
+        let snapped = smart_snap_bounding_box(req.ymin, req.xmin, req.ymax, req.xmax);
+
+        let screen = get_primary_screen_dimensions();
+        let (px0, py0) = denormalize_to_pixels(snapped.xmin, snapped.ymin, screen.width, screen.height);
+        let (px1, py1) = denormalize_to_pixels(snapped.xmax, snapped.ymax, screen.width, screen.height);
+
+        let target_x = px0 as f32;
+        let target_y = py0 as f32;
+        let target_w = (px1 - px0).max(12) as f32;
+        let target_h = (py1 - py0).max(12) as f32;
+
+        let style_str = req.style.as_str().to_string();
+        let label = req.label.clone();
+        let duration = Duration::from_millis(req.duration_ms);
+
+        info!(
+            "[HIGHLIGHTER] 🌟 show_highlight [style={}, label='{}']: rect=({}, {} - {}x{}) duration={}ms",
+            style_str, label, target_x, target_y, target_w, target_h, req.duration_ms
+        );
+
+        if let Some(ref win_weak) = self.overlay_window {
+            let win_handle = win_weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(w) = win_handle.upgrade() {
+                    w.set_target_x(target_x);
+                    w.set_target_y(target_y);
+                    w.set_target_w(target_w);
+                    w.set_target_h(target_h);
+                    w.set_highlight_style(style_str.into());
+                    w.set_highlight_label(label.into());
+                    w.set_highlight_opacity(1.0);
+                    w.set_highlight_visible(true);
+                    let _ = w.show();
+                }
+            });
+
+            // Ensure Win32 styles are applied after window is shown
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                apply_stealth_window_styles();
+            });
+
+            // Spawn auto-dissolve timer for the current epoch
+            let active_epoch = Arc::clone(&self.active_epoch);
+            let win_handle_timer = win_weak.clone();
+
+            tokio::spawn(async move {
+                tokio::time::sleep(duration).await;
+                if active_epoch.load(Ordering::SeqCst) == epoch {
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(w) = win_handle_timer.upgrade() {
+                            w.set_highlight_visible(false);
+                            if !w.get_ripple_visible() {
+                                let _ = w.hide();
+                            }
+                        }
+                    });
+                    debug!("[HIGHLIGHTER] Auto-dissolved highlight epoch {}", epoch);
+                }
+            });
+        }
+    }
+
+    /// Point cursor at specific normalized coordinates (0..=1000)
+    pub fn point_cursor(&self, norm_x: f64, norm_y: f64, duration_ms: u64) {
+        let req = HighlightRequest::new(
+            norm_y,
+            norm_x,
+            norm_y,
+            norm_x,
+            HighlightStyle::Pointer,
+            "".to_string(),
+            duration_ms,
+        );
+        self.show_highlight(req);
+    }
+
+    /// Display expanding 300ms click ripple indicator at physical screen coordinates (px, py)
+    pub fn show_click_ripple(&self, px: i32, py: i32) {
+        let rx = px as f32;
+        let ry = py as f32;
+
+        debug!("[HIGHLIGHTER] 🔘 show_click_ripple at ({}, {})", px, py);
+
+        if let Some(ref win_weak) = self.overlay_window {
+            let win_handle = win_weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(w) = win_handle.upgrade() {
+                    w.set_ripple_x(rx);
+                    w.set_ripple_y(ry);
+                    w.set_ripple_radius(12.0);
+                    w.set_ripple_opacity(0.85);
+                    w.set_ripple_visible(true);
+                    let _ = w.show();
+                }
+            });
+
+            // Ensure window is transparent and on top
+            apply_stealth_window_styles();
+
+            // Run 300ms ripple expansion animation
+            let win_anim = win_weak.clone();
+            tokio::spawn(async move {
+                let steps = 10;
+                let step_delay = Duration::from_millis(30);
+
+                for i in 1..=steps {
+                    tokio::time::sleep(step_delay).await;
+                    let progress = (i as f32) / (steps as f32);
+                    let radius = 12.0 + (33.0 * progress); // 12px -> 45px
+                    let opacity = 0.85 * (1.0 - progress);
+
+                    let win_step = win_anim.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(w) = win_step.upgrade() {
+                            w.set_ripple_radius(radius);
+                            w.set_ripple_opacity(opacity);
+                        }
+                    });
+                }
+
+                // Finish ripple
+                let win_final = win_anim.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(w) = win_final.upgrade() {
+                        w.set_ripple_visible(false);
+                        if !w.get_highlight_visible() {
+                            let _ = w.hide();
+                        }
+                    }
+                });
+            });
+        }
+    }
+
+    /// Clear all active highlights and ripples immediately
+    pub fn clear_all(&self) {
+        self.active_epoch.fetch_add(1, Ordering::SeqCst);
+        info!("[HIGHLIGHTER] 🧹 Cleared all screen highlights and overlays");
+
+        if let Some(ref win_weak) = self.overlay_window {
+            let win_handle = win_weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(w) = win_handle.upgrade() {
+                    w.set_highlight_visible(false);
+                    w.set_ripple_visible(false);
+                    let _ = w.hide();
+                }
+            });
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unit Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_highlight_style_parsing() {
+        assert_eq!(HighlightStyle::from_str_loose("BOX"), HighlightStyle::Box);
+        assert_eq!(HighlightStyle::from_str_loose("box"), HighlightStyle::Box);
+        assert_eq!(HighlightStyle::from_str_loose("RING"), HighlightStyle::Ring);
+        assert_eq!(HighlightStyle::from_str_loose("ring"), HighlightStyle::Ring);
+        assert_eq!(HighlightStyle::from_str_loose("POINTER"), HighlightStyle::Pointer);
+        assert_eq!(HighlightStyle::from_str_loose("pointer"), HighlightStyle::Pointer);
+        assert_eq!(HighlightStyle::from_str_loose("SPOTLIGHT"), HighlightStyle::Spotlight);
+        assert_eq!(HighlightStyle::from_str_loose("spotlight"), HighlightStyle::Spotlight);
+        assert_eq!(HighlightStyle::from_str_loose("unknown"), HighlightStyle::Box);
+
+        assert_eq!(HighlightStyle::Box.as_str(), "BOX");
+        assert_eq!(HighlightStyle::Ring.as_str(), "RING");
+        assert_eq!(HighlightStyle::Pointer.as_str(), "POINTER");
+        assert_eq!(HighlightStyle::Spotlight.as_str(), "SPOTLIGHT");
+    }
+
+    #[test]
+    fn test_clamp_highlight_duration() {
+        assert_eq!(clamp_highlight_duration(0), 4000); // Default
+        assert_eq!(clamp_highlight_duration(200), 500); // Clamped minimum
+        assert_eq!(clamp_highlight_duration(5000), 5000);
+        assert_eq!(clamp_highlight_duration(25000), 15000); // Clamped maximum
+    }
+
+    #[test]
+    fn test_highlight_request_constructor() {
+        let req = HighlightRequest::new(
+            100.0,
+            200.0,
+            300.0,
+            400.0,
+            HighlightStyle::Ring,
+            "Target Icon".to_string(),
+            6000,
+        );
+
+        assert_eq!(req.ymin, 100.0);
+        assert_eq!(req.xmin, 200.0);
+        assert_eq!(req.ymax, 300.0);
+        assert_eq!(req.xmax, 400.0);
+        assert_eq!(req.style, HighlightStyle::Ring);
+        assert_eq!(req.label, "Target Icon");
+        assert_eq!(req.duration_ms, 6000);
+    }
+
+    #[test]
+    fn test_highlighter_controller_headless_lifecycle() {
+        let controller = HighlighterController::new(None);
+
+        // Can invoke show_highlight without panicking in headless mode
+        let req = HighlightRequest::new(
+            100.0,
+            100.0,
+            200.0,
+            200.0,
+            HighlightStyle::Box,
+            "Submit".to_string(),
+            3000,
+        );
+        controller.show_highlight(req);
+
+        // Can invoke point_cursor
+        controller.point_cursor(500.0, 500.0, 2000);
+
+        // Can invoke show_click_ripple
+        controller.show_click_ripple(960, 540);
+
+        // Can clear all
+        controller.clear_all();
+    }
+}
