@@ -5,6 +5,9 @@
 //! and transparent visual overlays.
 
 pub mod input;
+pub mod element_finder;
 
 #[allow(unused_imports)]
 pub use input::*;
+#[allow(unused_imports)]
+pub use element_finder::*;
