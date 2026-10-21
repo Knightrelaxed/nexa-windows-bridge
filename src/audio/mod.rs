@@ -61,12 +61,15 @@ impl AudioEngine {
         let speaker = SpeakerPlayer::new(Some(echo_ref_tx))
             .map_err(|e| format!("Failed to initialize speaker: {}", e))?;
 
+        let is_speaker_playing = speaker.is_playing_handle();
+
         // 2. Initialize Microphone (Capture with AEC3)
         let microphone = MicrophoneCapture::new(
             outbound_pcm_tx,
             echo_ref_rx,
             Arc::clone(&self.aec_engine),
             Arc::clone(&self.barge_in_notify),
+            is_speaker_playing,
         )
         .map_err(|e| format!("Failed to initialize microphone: {}", e))?;
 

@@ -30,6 +30,7 @@ impl MicrophoneCapture {
         echo_ref_rx: mpsc::Receiver<Vec<f32>>,
         aec_engine: Arc<Mutex<EchoCancellerEngine>>,
         barge_in_notify: Arc<tokio::sync::Notify>,
+        is_speaker_playing: Arc<AtomicBool>,
     ) -> Result<Self, String> {
         let host = cpal::default_host();
         let device = host
@@ -125,6 +126,7 @@ impl MicrophoneCapture {
             aec_engine,
             barge_in_notify,
             is_running,
+            is_speaker_playing,
         ));
 
         Ok(Self {
@@ -159,17 +161,33 @@ async fn run_mic_processing_worker(
     aec_engine: Arc<Mutex<EchoCancellerEngine>>,
     barge_in_notify: Arc<tokio::sync::Notify>,
     is_running: Arc<AtomicBool>,
+    is_speaker_playing: Arc<AtomicBool>,
 ) {
     let mut raw_chunk = vec![0.0f32; 1024];
     let mut outbound_accumulator: Vec<i16> = Vec::with_capacity(1600);
     const FRAME_TARGET_SAMPLES: usize = 1600; // 100ms at 16kHz for Gemini Live API
 
+    let mut last_speaker_active = std::time::Instant::now()
+        .checked_sub(Duration::from_secs(10))
+        .unwrap_or_else(std::time::Instant::now);
+
     while is_running.load(Ordering::Relaxed) {
+        let speaker_active_now = is_speaker_playing.load(Ordering::Relaxed);
+        if speaker_active_now {
+            last_speaker_active = std::time::Instant::now();
+        }
+        let is_in_speaker_or_reverb = speaker_active_now || last_speaker_active.elapsed() < Duration::from_millis(350);
+
         // 1. Drain incoming render reference samples into AEC
         while let Ok(ref_chunk) = echo_ref_rx.try_recv() {
             if let Ok(mut aec) = aec_engine.lock() {
                 aec.feed_render_samples(&ref_chunk);
             }
+        }
+
+        // Keep AEC engine state synchronized with speaker playback & acoustic reverberation tail
+        if let Ok(mut aec) = aec_engine.lock() {
+            aec.set_speaking(is_in_speaker_or_reverb);
         }
 
         // 2. Read captured mic samples from lock-free ring buffer
@@ -187,7 +205,7 @@ async fn run_mic_processing_worker(
                 mono_slice
             };
 
-            // Process through WebRTC AEC3 + Ducking Engine
+            // Process through WebRTC AEC3 + Acoustic Suppression Engine
             let mut processed_16k = Vec::with_capacity(samples_16k.len());
             let mut barge_in_fired = false;
 
@@ -210,17 +228,23 @@ async fn run_mic_processing_worker(
                 barge_in_notify.notify_waiters();
             }
 
-            // Accumulate 16-bit PCM samples into 100ms frames (1600 samples = 3200 bytes)
-            if !processed_16k.is_empty() {
-                let i16_samples = f32_to_i16(&processed_16k);
-                outbound_accumulator.extend(i16_samples);
+            // Transmit frames only if speaker is inactive, OR user deliberately barged in
+            if !is_in_speaker_or_reverb || barge_in_fired {
+                if !processed_16k.is_empty() {
+                    let i16_samples = f32_to_i16(&processed_16k);
+                    outbound_accumulator.extend(i16_samples);
 
-                while outbound_accumulator.len() >= FRAME_TARGET_SAMPLES {
-                    let frame: Vec<i16> =
-                        outbound_accumulator.drain(..FRAME_TARGET_SAMPLES).collect();
-                    let pcm_bytes = i16_to_pcm_bytes(&frame);
-                    let _ = outbound_pcm_tx.send(pcm_bytes).await;
+                    while outbound_accumulator.len() >= FRAME_TARGET_SAMPLES {
+                        let frame: Vec<i16> =
+                            outbound_accumulator.drain(..FRAME_TARGET_SAMPLES).collect();
+                        let pcm_bytes = i16_to_pcm_bytes(&frame);
+                        let _ = outbound_pcm_tx.send(pcm_bytes).await;
+                    }
                 }
+            } else {
+                // Speaker active and no barge-in: clear outbound accumulator
+                // to prevent any residual echo chunks from leaking to server
+                outbound_accumulator.clear();
             }
         } else {
             // Buffer empty: sleep briefly (10ms)

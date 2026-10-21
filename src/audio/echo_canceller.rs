@@ -16,6 +16,7 @@ pub struct EchoCancellerEngine {
     capture_accumulator: Vec<f32>,
     processed_queue: VecDeque<f32>,
     is_speaking: bool,
+    #[allow(dead_code)]
     ducking_factor: f32,       // e.g. 0.125 = -18dB
     barge_in_threshold: f32,   // RMS threshold for user interrupting AI
     barge_in_detected: bool,
@@ -43,7 +44,7 @@ impl EchoCancellerEngine {
             processed_queue: VecDeque::with_capacity(3200),
             is_speaking: false,
             ducking_factor: 0.125, // -18dB attenuation
-            barge_in_threshold: 0.07,
+            barge_in_threshold: 0.35, // Deliberate loud speech (prevents self-acoustic feedback)
             barge_in_detected: false,
         })
     }
@@ -91,15 +92,17 @@ impl EchoCancellerEngine {
             // 2. Process capture frame through WebRTC AEC3 + NS + AGC
             let mut capture_out = vec![0.0f32; CHUNK_SIZE_10MS];
             if self.apm.process_capture_f32(&[&chunk], &mut [&mut capture_out]).is_ok() {
-                // 3. Apply turn-aware ducking if speaking and no barge-in
+                // 3. Absolute acoustic muting if speaking and no barge-in to prevent echo leakage
                 if self.is_speaking && !self.barge_in_detected {
-                    for sample in &mut capture_out {
-                        *sample *= self.ducking_factor;
-                    }
+                    capture_out.fill(0.0);
                 }
                 self.processed_queue.extend(capture_out);
             } else {
-                self.processed_queue.extend(chunk);
+                if self.is_speaking && !self.barge_in_detected {
+                    self.processed_queue.extend(vec![0.0f32; CHUNK_SIZE_10MS]);
+                } else {
+                    self.processed_queue.extend(chunk);
+                }
             }
         }
     }
@@ -157,12 +160,29 @@ mod tests {
         let mut aec = EchoCancellerEngine::new().unwrap();
         aec.set_speaking(true);
 
-        // Loud vocal from user (exceeds 0.07 threshold)
+        // Loud vocal from user (exceeds 0.35 threshold)
         let loud_voice = vec![0.5f32; 160];
         aec.feed_capture_samples(&loud_voice);
 
         assert!(aec.take_barge_in());
         // After taking, it resets
         assert!(!aec.take_barge_in());
+    }
+
+    #[test]
+    fn test_acoustic_muting_during_speaking_without_barge_in() {
+        let mut aec = EchoCancellerEngine::new().unwrap();
+        aec.set_speaking(true);
+
+        // Moderate speaker echo entering mic (0.15 RMS, below 0.35 threshold)
+        let echo_voice = vec![0.15f32; 160];
+        aec.feed_capture_samples(&echo_voice);
+
+        assert!(!aec.take_barge_in());
+        let mut out = vec![1.0f32; 160];
+        let read = aec.read_processed_samples(&mut out);
+        assert_eq!(read, 160);
+        // Captured echo must be completely muted (0.0)
+        assert!(out.iter().all(|&s| s == 0.0));
     }
 }

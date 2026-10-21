@@ -48,8 +48,8 @@ impl SpeakerPlayer {
             hardware_sample_rate, hardware_channels, sample_format
         );
 
-        // Ring buffer capacity: 1 second of hardware audio
-        let buffer_capacity = (hardware_sample_rate as usize) * (hardware_channels as usize);
+        // Ring buffer capacity: 8 seconds of hardware audio (absorb Gemini Live burst streaming without sample drops)
+        let buffer_capacity = (hardware_sample_rate as usize) * (hardware_channels as usize) * 8;
         let (producer, mut consumer) = create_audio_ring_buffer::<f32>(buffer_capacity);
 
         let is_playing = Arc::new(AtomicBool::new(false));
@@ -152,6 +152,11 @@ impl SpeakerPlayer {
     #[allow(dead_code)]
     pub fn is_playing(&self) -> bool {
         self.is_playing.load(Ordering::SeqCst)
+    }
+
+    /// Cloneable atomic handle to monitor active speaker playback in real-time.
+    pub fn is_playing_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.is_playing)
     }
 
     /// Stop playback immediately (used on barge-in / interrupt).
