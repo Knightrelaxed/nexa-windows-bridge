@@ -3,6 +3,8 @@
 // Native Slint Desktop Companion for Lenovo ThinkPad X380 Yoga
 // ============================================================
 
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod config;
 mod network;
 mod platform;
@@ -31,8 +33,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Parse command line arguments (e.g. --help, --version, --autostart, --minimized)
+    // Parse command line arguments (e.g. --help, --version, --autostart, --minimized, --console)
     let args: Vec<String> = std::env::args().collect();
+
+    // Attach to parent console if requested or started with --console
+    #[cfg(not(debug_assertions))]
+    if args.iter().any(|arg| arg == "--console" || arg == "-c" || arg == "--help" || arg == "-h" || arg == "--version" || arg == "-v") {
+        unsafe {
+            use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+            AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+    }
+
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!("N.E.X.A Windows Bridge v0.1.0");
         println!("Native Windows Desktop Companion for Lenovo ThinkPad X380 Yoga");
@@ -43,6 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("OPTIONS:");
         println!("    -h, --help        Print help information");
         println!("    -v, --version     Print version information");
+        println!("    -c, --console     Attach to command line console for debugging logs");
         println!("    --autostart       Start standby quietly in the Windows system tray");
         println!("    --minimized       Start window minimized to system tray");
         return Ok(());
@@ -138,8 +151,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             cfg.capture_fps.max(1)
                         };
 
+                        // Channel capacity 1: only ever buffers 1 frame to prevent queue backlog
                         let (frame_tx, mut frame_rx) =
-                            tokio::sync::mpsc::unbounded_channel::<String>();
+                            tokio::sync::mpsc::channel::<String>(1);
                         let net_client_frame = net_client.clone();
 
                         tokio::spawn(async move {

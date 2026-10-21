@@ -6,7 +6,7 @@
 use super::encoder::{FrameEncoder, FrameRateLimiter};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 use tracing::{info, warn};
 use windows_capture::{
     capture::{CaptureControl, Context, GraphicsCaptureApiHandler},
@@ -20,14 +20,14 @@ use windows_capture::{
 };
 
 pub struct ScreenCaptureHandler {
-    frame_tx: UnboundedSender<String>,
+    frame_tx: Sender<String>,
     rate_limiter: FrameRateLimiter,
     encoder: FrameEncoder,
     is_active: Arc<AtomicBool>,
 }
 
 impl GraphicsCaptureApiHandler for ScreenCaptureHandler {
-    type Flags = (UnboundedSender<String>, u32, Arc<AtomicBool>);
+    type Flags = (Sender<String>, u32, Arc<AtomicBool>);
     type Error = Box<dyn std::error::Error + Send + Sync>;
 
     fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
@@ -39,7 +39,8 @@ impl GraphicsCaptureApiHandler for ScreenCaptureHandler {
         Ok(Self {
             frame_tx: tx,
             rate_limiter: FrameRateLimiter::new(fps),
-            encoder: FrameEncoder::new(70),
+            // Quality 55 (~120KB per frame): sharp legible text for Gemini Live Vision without choking audio bandwidth
+            encoder: FrameEncoder::new(55),
             is_active,
         })
     }
@@ -62,9 +63,16 @@ impl GraphicsCaptureApiHandler for ScreenCaptureHandler {
         let buffer = frame.buffer()?;
         match self.encoder.encode_frame_buffer(&buffer) {
             Ok(base64_str) => {
-                if let Err(e) = self.frame_tx.send(base64_str) {
-                    warn!("[CAPTURE] Frame receiver disconnected: {}", e);
-                    capture_control.stop();
+                // Non-blocking try_send: drops frame if previous frame is still transmitting
+                // This guarantees zero frame backlog and preserves 100% of WebSocket bandwidth for voice
+                match self.frame_tx.try_send(base64_str) {
+                    Ok(_) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        // Previous frame still in flight: drop stale frame
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                        capture_control.stop();
+                    }
                 }
             }
             Err(e) => {
@@ -95,7 +103,7 @@ impl ScreenCaptureController {
     }
 
     /// Start 1 FPS Direct3D 11 screen capture on the primary monitor
-    pub fn start(frame_tx: UnboundedSender<String>, fps: u32) -> Result<Self, String> {
+    pub fn start(frame_tx: Sender<String>, fps: u32) -> Result<Self, String> {
         let primary_monitor = Monitor::primary()
             .map_err(|e| format!("Primary monitor not found: {}", e))?;
 
@@ -106,7 +114,7 @@ impl ScreenCaptureController {
             CursorCaptureSettings::WithCursor,
             DrawBorderSettings::WithoutBorder,
             SecondaryWindowSettings::Default,
-            MinimumUpdateIntervalSettings::Default,
+            MinimumUpdateIntervalSettings::Custom(std::time::Duration::from_millis(1000)),
             DirtyRegionSettings::Default,
             ColorFormat::Rgba8,
             (frame_tx, fps, Arc::clone(&is_active)),

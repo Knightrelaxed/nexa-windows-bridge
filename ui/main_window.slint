@@ -1,6 +1,6 @@
 // ============================================================
 // WINDOWS BRIDGE MAIN INTERFACE
-// Dual-Mode Slint Window (Windowed Companion vs Full Screen Command Center)
+// Dual-Mode Slint Window (Compact Floating Companion vs Fullscreen Command Center)
 // ============================================================
 
 import { Button } from "std-widgets.slint";
@@ -14,8 +14,10 @@ export { OverlayWindow }
 export component MainWindow inherits Window {
     title: "N.E.X.A Windows Bridge";
     full-screen: root.is_fullscreen;
-    width: 380px;
-    height: 520px;
+    min-width: 360px;
+    min-height: 220px;
+    preferred-width: root.is_fullscreen ? 1920px : 380px;
+    preferred-height: root.is_fullscreen ? 1080px : 250px;
     background: #0D1117;
     default-font-family: "Segoe UI";
 
@@ -83,19 +85,19 @@ export component MainWindow inherits Window {
             }
         }
 
-        // ==========================================
-        // MODE 1: NO-FULLSCREEN (WINDOWED COMPANION)
-        // ==========================================
+        // ==============================================================
+        // MODE 1: COMPACT FLOATING COMPANION (NON-INTRUSIVE MINI WIDGET)
+        // ==============================================================
         if !root.is_fullscreen : VerticalLayout {
-            padding: 20px;
-            spacing: 14px;
+            padding: 12px;
+            spacing: 8px;
 
-            // Top Bar
+            // 1. Top Header Bar (Integrated Single Bar)
             HorizontalLayout {
                 alignment: space-between;
 
                 HorizontalLayout {
-                    spacing: 8px;
+                    spacing: 7px;
                     Rectangle {
                         width: 8px;
                         height: 8px;
@@ -106,7 +108,7 @@ export component MainWindow inherits Window {
                     }
                     Text {
                         text: "N.E.X.A Bridge";
-                        font-size: 15px;
+                        font-size: 13px;
                         font-weight: 700;
                         color: #58A6FF;
                         vertical-alignment: center;
@@ -116,7 +118,7 @@ export component MainWindow inherits Window {
                 HorizontalLayout {
                     spacing: 6px;
                     Button {
-                        text: "⛶";
+                        text: "⤢ Command Center [F11]";
                         clicked => {
                             root.is_fullscreen = true;
                             root.toggle_fullscreen();
@@ -129,125 +131,136 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // Center Avatar & State
-            VerticalLayout {
-                alignment: center;
-                spacing: 10px;
-
-                HorizontalLayout {
-                    alignment: center;
-                    Avatar {
-                        state: root.avatar_state;
-                        pulse_scale: root.pulse_scale;
-                        eye_size: 72px;
-                    }
-                }
-
-                Text {
-                    horizontal-alignment: center;
-                    text: root.status_text_display;
-                    font-size: 15px;
-                    font-weight: 600;
-                    color: #C9D1D9;
-                }
-
-                Text {
-                    horizontal-alignment: center;
-                    text: root.status_message;
-                    font-size: 12px;
-                    color: #8B949E;
-                    overflow: elide;
-                }
-
-                // Mini Audio Waveform Visualizer
-                AudioMeter {
-                    volume_level: root.volume_level;
-                    is_active: root.avatar_state == "speaking" || root.avatar_state == "listening";
-                    theme_color: root.avatar_state == "listening" ? #00B4D8 :
-                                 root.avatar_state == "speaking"  ? #00FF88 :
-                                 root.avatar_state == "thinking"  ? #FFB300 :
-                                 root.avatar_state == "idle"      ? #00E5FF : #546E7A;
-                    bar_count: 24;
-                    bar_width: 3px;
-                    bar_spacing: 3px;
-                    max_bar_height: 20px;
-                }
-            }
-
-            // Hardware Status Indicators Card
+            // 2. Central Companion Card: Avatar + Speech + Audio Meter
             Rectangle {
-                background: #161B22;
+                background: #161B22CC;
                 border-radius: 8px;
                 border-width: 1px;
                 border-color: #30363D;
-                height: 52px;
+                height: 86px;
 
                 HorizontalLayout {
-                    padding: 10px;
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    padding-top: 6px;
+                    padding-bottom: 6px;
                     spacing: 12px;
                     alignment: center;
 
-                    // Audio Pill
-                    HorizontalLayout {
-                        spacing: 5px;
-                        Rectangle {
-                            width: 8px;
-                            height: 8px;
-                            border-radius: 4px;
-                            y: (parent.height - self.height) / 2;
-                            background: root.connection_status == "connected" ? (root.is_mic_muted ? #FF9100 : #3FB950) : #8B949E;
-                        }
-                        Text {
-                            text: root.is_mic_muted ? "Mic Muted" : "WASAPI Audio";
-                            font-size: 11px;
-                            color: #C9D1D9;
-                            vertical-alignment: center;
-                        }
+                    // Left: Compact Cybernetic Avatar
+                    Avatar {
+                        state: root.avatar_state;
+                        pulse_scale: root.pulse_scale;
+                        eye_size: 44px;
+                        width: 130px;
+                        height: 52px;
                     }
 
-                    // Echo Canceller Pill
-                    HorizontalLayout {
-                        spacing: 5px;
-                        Rectangle {
-                            width: 8px;
-                            height: 8px;
-                            border-radius: 4px;
-                            y: (parent.height - self.height) / 2;
-                            background: root.connection_status == "connected" ? #3FB950 : #8B949E;
-                        }
-                        Text {
-                            text: "AEC3 Active";
-                            font-size: 11px;
-                            color: #C9D1D9;
-                            vertical-alignment: center;
-                        }
-                    }
+                    // Right: Status Narrative & Real-time Equalizer
+                    VerticalLayout {
+                        spacing: 3px;
+                        alignment: center;
 
-                    // Vision Pill
-                    HorizontalLayout {
-                        spacing: 5px;
-                        Rectangle {
-                            width: 8px;
-                            height: 8px;
-                            border-radius: 4px;
-                            y: (parent.height - self.height) / 2;
-                            background: root.is_screen_sharing ? #00E5FF : (root.connection_status == "connected" ? #3FB950 : #8B949E);
-                        }
                         Text {
-                            text: root.is_screen_sharing ? "Vision Stream" : "D3D11 Vision";
+                            text: root.status_text_display;
+                            font-size: 13px;
+                            font-weight: 700;
+                            color: root.avatar_state == "listening" ? #00B4D8 :
+                                   root.avatar_state == "thinking"  ? #FFB300 :
+                                   root.avatar_state == "speaking"  ? #00FF88 :
+                                   root.avatar_state == "idle"      ? #00E5FF : #C9D1D9;
+                            overflow: elide;
+                        }
+
+                        Text {
+                            text: root.status_message;
                             font-size: 11px;
-                            color: #C9D1D9;
-                            vertical-alignment: center;
+                            color: #8B949E;
+                            overflow: elide;
+                        }
+
+                        // Compact 18-bar Fluid Equalizer
+                        AudioMeter {
+                            volume_level: root.volume_level;
+                            is_active: root.avatar_state == "speaking" || root.avatar_state == "listening";
+                            theme_color: root.avatar_state == "listening" ? #00B4D8 :
+                                         root.avatar_state == "speaking"  ? #00FF88 :
+                                         root.avatar_state == "thinking"  ? #FFB300 :
+                                         root.avatar_state == "idle"      ? #00E5FF : #546E7A;
+                            bar_count: 18;
+                            bar_width: 3px;
+                            bar_spacing: 2px;
+                            max_bar_height: 16px;
                         }
                     }
                 }
             }
 
-            // Quick Control Toggles
+            // 3. Hardware Indicators Pill Row
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: center;
+
+                // Audio Pill
+                HorizontalLayout {
+                    spacing: 4px;
+                    Rectangle {
+                        width: 6px;
+                        height: 6px;
+                        border-radius: 3px;
+                        y: (parent.height - self.height) / 2;
+                        background: root.connection_status == "connected" ? (root.is_mic_muted ? #FF9100 : #3FB950) : #8B949E;
+                    }
+                    Text {
+                        text: root.is_mic_muted ? "Mic Muted" : "WASAPI 48kHz";
+                        font-size: 10px;
+                        color: #8B949E;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Echo Canceller Pill
+                HorizontalLayout {
+                    spacing: 4px;
+                    Rectangle {
+                        width: 6px;
+                        height: 6px;
+                        border-radius: 3px;
+                        y: (parent.height - self.height) / 2;
+                        background: root.connection_status == "connected" ? #3FB950 : #8B949E;
+                    }
+                    Text {
+                        text: "AEC3 Active";
+                        font-size: 10px;
+                        color: #8B949E;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Vision Pill
+                HorizontalLayout {
+                    spacing: 4px;
+                    Rectangle {
+                        width: 6px;
+                        height: 6px;
+                        border-radius: 3px;
+                        y: (parent.height - self.height) / 2;
+                        background: root.is_screen_sharing ? #00E5FF : (root.connection_status == "connected" ? #3FB950 : #8B949E);
+                    }
+                    Text {
+                        text: root.is_screen_sharing ? "D3D11 Streaming" : "D3D11 Vision";
+                        font-size: 10px;
+                        color: #8B949E;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // 4. Quick Control Action Bar (3 Balanced Action Buttons)
             HorizontalLayout {
                 spacing: 8px;
                 Button {
-                    text: root.is_mic_muted ? "🔇 Unmute Mic" : "🎙️ Mute Mic";
+                    text: root.is_mic_muted ? "🔇 Unmute" : "🎙️ Mute";
                     clicked => {
                         root.is_mic_muted = !root.is_mic_muted;
                         root.toggle_mic_mute();
@@ -257,14 +270,12 @@ export component MainWindow inherits Window {
                     text: root.is_screen_sharing ? "⏹️ Hentikan Layar" : "👁️ Berbagi Layar";
                     clicked => { root.toggle_screen_share(); }
                 }
-            }
-
-            // Connection Action Button
-            Button {
-                text: root.connection_status == "connected" ? "Putuskan Sambungan" :
-                      root.connection_status == "connecting" ? "Menghubungkan..." : "Hubungkan ke N.E.X.A";
-                primary: root.connection_status != "connected";
-                clicked => { root.toggle_connect(); }
+                Button {
+                    text: root.connection_status == "connected" ? "Putuskan" :
+                          root.connection_status == "connecting" ? "Menghubungkan..." : "Hubungkan ke Server";
+                    primary: root.connection_status != "connected";
+                    clicked => { root.toggle_connect(); }
+                }
             }
         }
 
@@ -330,7 +341,7 @@ export component MainWindow inherits Window {
                 HorizontalLayout {
                     spacing: 10px;
                     Button {
-                        text: "⤢ Windowed Mode [F11]";
+                        text: "⤡ Windowed Mode [F11]";
                         clicked => {
                             root.is_fullscreen = false;
                             root.toggle_fullscreen();
@@ -444,8 +455,8 @@ export component MainWindow inherits Window {
         background: #000000CC;
 
         SettingsDialog {
-            width: root.is_fullscreen ? 480px : (parent.width - 32px);
-            height: root.is_fullscreen ? 460px : (parent.height - 40px);
+            width: root.is_fullscreen ? 480px : (parent.width - 24px);
+            height: root.is_fullscreen ? 460px : (parent.height - 20px);
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             server_url: root.cfg_server_url;

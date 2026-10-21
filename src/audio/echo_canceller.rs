@@ -18,6 +18,7 @@ pub struct EchoCancellerEngine {
     is_speaking: bool,
     #[allow(dead_code)]
     ducking_factor: f32,       // e.g. 0.125 = -18dB
+    #[allow(dead_code)]
     barge_in_threshold: f32,   // RMS threshold for user interrupting AI
     barge_in_detected: bool,
 }
@@ -57,6 +58,12 @@ impl EchoCancellerEngine {
         }
     }
 
+    /// Explicitly trigger user barge-in (e.g. from hotkey or UI click).
+    #[allow(dead_code)]
+    pub fn trigger_barge_in(&mut self) {
+        self.barge_in_detected = true;
+    }
+
     /// Check if user barge-in was detected during active playback.
     pub fn take_barge_in(&mut self) -> bool {
         let detected = self.barge_in_detected;
@@ -83,22 +90,17 @@ impl EchoCancellerEngine {
         while self.capture_accumulator.len() >= CHUNK_SIZE_10MS {
             let chunk: Vec<f32> = self.capture_accumulator.drain(..CHUNK_SIZE_10MS).collect();
 
-            // 1. Check RMS energy for barge-in
-            let rms = (chunk.iter().map(|&s| s * s).sum::<f32>() / chunk.len() as f32).sqrt();
-            if self.is_speaking && rms > self.barge_in_threshold {
-                self.barge_in_detected = true;
-            }
-
-            // 2. Process capture frame through WebRTC AEC3 + NS + AGC
+            // Process capture frame through WebRTC AEC3 + NS + AGC
             let mut capture_out = vec![0.0f32; CHUNK_SIZE_10MS];
             if self.apm.process_capture_f32(&[&chunk], &mut [&mut capture_out]).is_ok() {
-                // 3. Absolute acoustic muting if speaking and no barge-in to prevent echo leakage
-                if self.is_speaking && !self.barge_in_detected {
+                // Absolute acoustic isolation if speaker is actively playing:
+                // Prevents laptop speaker acoustic bleed from triggering false self-interruption or echo
+                if self.is_speaking {
                     capture_out.fill(0.0);
                 }
                 self.processed_queue.extend(capture_out);
             } else {
-                if self.is_speaking && !self.barge_in_detected {
+                if self.is_speaking {
                     self.processed_queue.extend(vec![0.0f32; CHUNK_SIZE_10MS]);
                 } else {
                     self.processed_queue.extend(chunk);
@@ -160,12 +162,11 @@ mod tests {
         let mut aec = EchoCancellerEngine::new().unwrap();
         aec.set_speaking(true);
 
-        // Loud vocal from user (exceeds 0.35 threshold)
-        let loud_voice = vec![0.5f32; 160];
-        aec.feed_capture_samples(&loud_voice);
-
+        // Explicit barge-in trigger (e.g. from hotkey or UI)
+        assert!(!aec.take_barge_in());
+        aec.trigger_barge_in();
         assert!(aec.take_barge_in());
-        // After taking, it resets
+        // After taking, it resets to false
         assert!(!aec.take_barge_in());
     }
 
@@ -174,15 +175,16 @@ mod tests {
         let mut aec = EchoCancellerEngine::new().unwrap();
         aec.set_speaking(true);
 
-        // Moderate speaker echo entering mic (0.15 RMS, below 0.35 threshold)
-        let echo_voice = vec![0.15f32; 160];
-        aec.feed_capture_samples(&echo_voice);
+        // Loud speaker sound entering internal laptop mic (0.8 RMS)
+        let loud_speaker_sound = vec![0.8f32; 160];
+        aec.feed_capture_samples(&loud_speaker_sound);
 
+        // Must NOT trigger false barge-in
         assert!(!aec.take_barge_in());
         let mut out = vec![1.0f32; 160];
         let read = aec.read_processed_samples(&mut out);
         assert_eq!(read, 160);
-        // Captured echo must be completely muted (0.0)
+        // Captured speaker sound must be completely muted (0.0) to prevent self-interruption
         assert!(out.iter().all(|&s| s == 0.0));
     }
 }
