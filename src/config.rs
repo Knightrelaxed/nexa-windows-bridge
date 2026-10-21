@@ -3,6 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct BridgeConfig {
     pub server_url: String,
     pub auth_token: String,
@@ -142,5 +143,16 @@ mod tests {
             BridgeConfig::normalize_ws_url("wss://custom.domain/ws"),
             "wss://custom.domain/ws"
         );
+    }
+
+    #[test]
+    fn test_partial_json_deserialization_with_defaults() {
+        let json = r#"{"server_url": "ws://example.com/ws"}"#;
+        let cfg: BridgeConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.server_url, "ws://example.com/ws");
+        assert_eq!(cfg.low_ram_mode, true);
+        assert_eq!(cfg.capture_fps, 1);
+        assert_eq!(cfg.audio_input_device, "Default");
+        assert_eq!(cfg.auth_token, "");
     }
 }

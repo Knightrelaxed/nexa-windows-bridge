@@ -52,6 +52,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(_) => {
                 info!("Settings saved successfully.");
                 if let Some(win) = window_weak.upgrade() {
+                    win.set_cfg_server_url(url.clone());
+                    win.set_cfg_auth_token(token.clone());
+                    win.set_cfg_low_ram_mode(low_ram);
                     win.set_status_message("Settings saved & applied.".into());
                 }
             }

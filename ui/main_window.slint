@@ -173,6 +173,9 @@ export component MainWindow inherits Window {
             is_testing: root.is_testing;
 
             save_clicked(url, token, fps, low_ram) => {
+                root.cfg_server_url = url;
+                root.cfg_auth_token = token;
+                root.cfg_low_ram_mode = low_ram;
                 root.save_settings(url, token, fps, low_ram);
                 root.show_settings = false;
             }
