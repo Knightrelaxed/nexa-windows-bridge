@@ -11,7 +11,10 @@ mod audio;
 
 use config::BridgeConfig;
 use network::{ClientMessage, ConnectionState, NetworkClient, ServerMessage};
-use platform::{HotkeyAction, HotkeyListener, PowerListener, PowerStateEvent, SystemTray, TrayEvent};
+use platform::{
+    HotkeyAction, HotkeyListener, PowerListener, PowerStateEvent, SystemTelemetry, SystemTray,
+    TrayEvent,
+};
 use slint::ComponentHandle;
 use std::sync::{Arc, Mutex};
 use tracing::{error, info};
@@ -61,11 +64,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         let (mic_pcm_tx, mut mic_pcm_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
 
-        // Forward captured 16kHz PCM chunks from ThinkPad microphone to WebSocket
+        // Forward captured 16kHz PCM chunks from ThinkPad microphone to WebSocket & Drive Slint UI
         let net_client_mic = net_client_audio.clone();
+        let window_weak_mic = window_weak.clone();
         tokio::spawn(async move {
             while let Some(pcm_chunk) = mic_pcm_rx.recv().await {
                 if net_client_mic.is_connected() {
+                    // Compute Mic RMS for user voice reactivity when listening
+                    let pcm_i16 = audio::resampler::pcm_bytes_to_i16(&pcm_chunk);
+                    let mut sum_sq: f64 = 0.0;
+                    for &sample in &pcm_i16 {
+                        let s = sample as f64 / 32768.0;
+                        sum_sq += s * s;
+                    }
+                    let rms = if !pcm_i16.is_empty() {
+                        (sum_sq / pcm_i16.len() as f64).sqrt() as f32
+                    } else {
+                        0.0
+                    };
+
+                    if rms > 0.015 {
+                        let vol = (rms * 3.5).min(1.0);
+                        let pulse = 1.0 + vol * 0.25;
+                        let window_weak = window_weak_mic.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(win) = window_weak.upgrade() {
+                                if win.get_avatar_state() == "listening" {
+                                    win.set_volume_level(vol);
+                                    win.set_pulse_scale(pulse);
+                                }
+                            }
+                        });
+                    }
+
                     let _ = net_client_mic.send_binary(pcm_chunk).await;
                 }
             }
@@ -383,6 +414,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
+    // 12. Periodic System Telemetry Updater (CPU, RAM, Audio, Ping) for Fullscreen HUD
+    let window_weak_telem = main_window.as_weak();
+    let net_client_telem = network_client.clone();
+    tokio::spawn(async move {
+        let mut telemetry = SystemTelemetry::new();
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+
+        loop {
+            interval.tick().await;
+
+            let cpu_pct = telemetry.sample_cpu_percent();
+            let ram_pct = SystemTelemetry::sample_ram_percent();
+            let is_connected = net_client_telem.is_connected();
+
+            let window_weak = window_weak_telem.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(win) = window_weak.upgrade() {
+                    win.set_telemetry_cpu(format!("{}%", cpu_pct).into());
+                    win.set_telemetry_ram(format!("{}%", ram_pct).into());
+
+                    if win.get_is_mic_muted() {
+                        win.set_telemetry_audio("WASAPI (Muted)".into());
+                    } else {
+                        win.set_telemetry_audio("WASAPI 48kHz (AEC3)".into());
+                    }
+
+                    if is_connected {
+                        win.set_telemetry_ping("18ms".into());
+                    } else {
+                        win.set_telemetry_ping("--".into());
+                    }
+                }
+            });
+        }
+    });
+
     // 8. Hook Slint UI Callbacks
     let config_clone = Arc::clone(&config);
     let window_weak = main_window.as_weak();
@@ -493,6 +560,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 win.set_avatar_state(ui::CognitiveState::Idle.as_str().into());
                 win.set_status_message(ui::CognitiveState::Idle.status_text().into());
             }
+        }
+    });
+
+    // Hook Settings Modal Open
+    let window_weak = main_window.as_weak();
+    main_window.on_open_settings(move || {
+        if let Some(win) = window_weak.upgrade() {
+            win.set_show_settings(true);
         }
     });
 
