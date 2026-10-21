@@ -3,23 +3,45 @@
 // Zero-Allocation / Fast Linear Interpolation & Channel Mixers
 // ============================================================
 
-/// Downmix interleaved stereo (L, R, L, R...) into mono by averaging channels.
-pub fn downmix_stereo_to_mono(stereo: &[f32]) -> Vec<f32> {
-    let mut mono = Vec::with_capacity(stereo.len() / 2);
-    for chunk in stereo.chunks_exact(2) {
-        mono.push((chunk[0] + chunk[1]) * 0.5);
+/// Downmix interleaved multi-channel audio (stereo, quad, surround) to mono by averaging channels.
+pub fn downmix_to_mono(interleaved: &[f32], channels: u16) -> Vec<f32> {
+    if channels <= 1 || interleaved.is_empty() {
+        return interleaved.to_vec();
+    }
+    let ch = channels as usize;
+    let mut mono = Vec::with_capacity(interleaved.len() / ch);
+    for chunk in interleaved.chunks_exact(ch) {
+        let sum: f32 = chunk.iter().sum();
+        mono.push(sum / channels as f32);
     }
     mono
 }
 
-/// Upmix mono to interleaved stereo (M -> L, R).
-pub fn upmix_mono_to_stereo(mono: &[f32]) -> Vec<f32> {
-    let mut stereo = Vec::with_capacity(mono.len() * 2);
-    for &sample in mono {
-        stereo.push(sample);
-        stereo.push(sample);
+/// Downmix interleaved stereo (L, R, L, R...) into mono by averaging channels.
+#[allow(dead_code)]
+pub fn downmix_stereo_to_mono(stereo: &[f32]) -> Vec<f32> {
+    downmix_to_mono(stereo, 2)
+}
+
+/// Upmix mono audio to interleaved multi-channel (e.g. mono to stereo, quad).
+pub fn upmix_mono_to_channels(mono: &[f32], channels: u16) -> Vec<f32> {
+    if channels <= 1 {
+        return mono.to_vec();
     }
-    stereo
+    let ch = channels as usize;
+    let mut interleaved = Vec::with_capacity(mono.len() * ch);
+    for &sample in mono {
+        for _ in 0..ch {
+            interleaved.push(sample);
+        }
+    }
+    interleaved
+}
+
+/// Upmix mono to interleaved stereo (M -> L, R).
+#[allow(dead_code)]
+pub fn upmix_mono_to_stereo(mono: &[f32]) -> Vec<f32> {
+    upmix_mono_to_channels(mono, 2)
 }
 
 /// Resample single-channel f32 audio using high-precision linear interpolation.
@@ -100,10 +122,24 @@ mod tests {
     }
 
     #[test]
+    fn test_downmix_quad_channel() {
+        let quad = vec![1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0];
+        let mono = downmix_to_mono(&quad, 4);
+        assert_eq!(mono, vec![1.0, -1.0]);
+    }
+
+    #[test]
     fn test_upmix_mono() {
         let mono = vec![0.5, -0.5];
         let stereo = upmix_mono_to_stereo(&mono);
         assert_eq!(stereo, vec![0.5, 0.5, -0.5, -0.5]);
+    }
+
+    #[test]
+    fn test_upmix_quad_channel() {
+        let mono = vec![0.5];
+        let quad = upmix_mono_to_channels(&mono, 4);
+        assert_eq!(quad, vec![0.5, 0.5, 0.5, 0.5]);
     }
 
     #[test]

@@ -12,7 +12,7 @@ pub const DEFAULT_SAMPLE_RATE: u32 = 16000;
 
 pub struct EchoCancellerEngine {
     apm: AudioProcessing,
-    render_queue: VecDeque<f32>,
+    render_accumulator: Vec<f32>,
     capture_accumulator: Vec<f32>,
     processed_queue: VecDeque<f32>,
     is_speaking: bool,
@@ -38,7 +38,7 @@ impl EchoCancellerEngine {
 
         Ok(Self {
             apm,
-            render_queue: VecDeque::with_capacity(3200), // ~200ms buffer
+            render_accumulator: Vec::with_capacity(CHUNK_SIZE_10MS * 2),
             capture_accumulator: Vec::with_capacity(CHUNK_SIZE_10MS * 2),
             processed_queue: VecDeque::with_capacity(3200),
             is_speaking: false,
@@ -64,11 +64,14 @@ impl EchoCancellerEngine {
     }
 
     /// Feed reference speaker audio (16kHz mono f32) played by the speakers.
+    /// Immediately processes 10ms chunks into WebRTC AEC3 internal delay buffer.
     pub fn feed_render_samples(&mut self, samples: &[f32]) {
-        self.render_queue.extend(samples);
-        // Prevent unbounded growth if mic is inactive
-        if self.render_queue.len() > 16000 {
-            self.render_queue.drain(..self.render_queue.len() - 16000);
+        self.render_accumulator.extend_from_slice(samples);
+
+        while self.render_accumulator.len() >= CHUNK_SIZE_10MS {
+            let chunk: Vec<f32> = self.render_accumulator.drain(..CHUNK_SIZE_10MS).collect();
+            let mut render_out = vec![0.0f32; CHUNK_SIZE_10MS];
+            let _ = self.apm.process_render_f32(&[&chunk], &mut [&mut render_out]);
         }
     }
 
@@ -85,22 +88,10 @@ impl EchoCancellerEngine {
                 self.barge_in_detected = true;
             }
 
-            // 2. Prepare render reference for this 10ms slice
-            let mut render_chunk = vec![0.0f32; CHUNK_SIZE_10MS];
-            for i in 0..CHUNK_SIZE_10MS {
-                if let Some(s) = self.render_queue.pop_front() {
-                    render_chunk[i] = s;
-                }
-            }
-
-            // 3. Process render frame through WebRTC AEC3
-            let mut render_out = vec![0.0f32; CHUNK_SIZE_10MS];
-            let _ = self.apm.process_render_f32(&[&render_chunk], &mut [&mut render_out]);
-
-            // 4. Process capture frame through WebRTC AEC3 + NS + AGC
+            // 2. Process capture frame through WebRTC AEC3 + NS + AGC
             let mut capture_out = vec![0.0f32; CHUNK_SIZE_10MS];
             if self.apm.process_capture_f32(&[&chunk], &mut [&mut capture_out]).is_ok() {
-                // 5. Apply turn-aware ducking if speaking and no barge-in
+                // 3. Apply turn-aware ducking if speaking and no barge-in
                 if self.is_speaking && !self.barge_in_detected {
                     for sample in &mut capture_out {
                         *sample *= self.ducking_factor;
@@ -130,7 +121,7 @@ impl EchoCancellerEngine {
     /// Clear all queues.
     #[allow(dead_code)]
     pub fn clear(&mut self) {
-        self.render_queue.clear();
+        self.render_accumulator.clear();
         self.capture_accumulator.clear();
         self.processed_queue.clear();
         self.barge_in_detected = false;

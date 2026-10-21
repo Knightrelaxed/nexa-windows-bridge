@@ -5,7 +5,7 @@
 
 use super::audio_buffer::{create_audio_ring_buffer, AudioConsumer};
 use super::echo_canceller::EchoCancellerEngine;
-use super::resampler::{downmix_stereo_to_mono, f32_to_i16, i16_to_pcm_bytes, resample_linear};
+use super::resampler::{downmix_to_mono, f32_to_i16, i16_to_pcm_bytes, resample_linear};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -160,6 +160,8 @@ async fn run_mic_processing_worker(
     is_running: Arc<AtomicBool>,
 ) {
     let mut raw_chunk = vec![0.0f32; 1024];
+    let mut outbound_accumulator: Vec<i16> = Vec::with_capacity(1600);
+    const FRAME_TARGET_SAMPLES: usize = 1600; // 100ms at 16kHz for Gemini Live API
 
     while is_running.load(Ordering::Relaxed) {
         // 1. Drain incoming render reference samples into AEC
@@ -174,12 +176,8 @@ async fn run_mic_processing_worker(
         if read > 0 {
             let captured_slice = &raw_chunk[..read];
 
-            // Downmix to mono if stereo
-            let mono_slice = if hardware_channels == 2 {
-                downmix_stereo_to_mono(captured_slice)
-            } else {
-                captured_slice.to_vec()
-            };
+            // Downmix to mono if multi-channel (stereo, quad, etc.)
+            let mono_slice = downmix_to_mono(captured_slice, hardware_channels);
 
             // Resample to 16,000 Hz if needed
             let samples_16k = if hardware_sample_rate != 16000 {
@@ -211,15 +209,27 @@ async fn run_mic_processing_worker(
                 barge_in_notify.notify_waiters();
             }
 
-            // Convert to 16-bit PCM bytes and send downstream
+            // Accumulate 16-bit PCM samples into 100ms frames (1600 samples = 3200 bytes)
             if !processed_16k.is_empty() {
                 let i16_samples = f32_to_i16(&processed_16k);
-                let pcm_bytes = i16_to_pcm_bytes(&i16_samples);
-                let _ = outbound_pcm_tx.send(pcm_bytes).await;
+                outbound_accumulator.extend(i16_samples);
+
+                while outbound_accumulator.len() >= FRAME_TARGET_SAMPLES {
+                    let frame: Vec<i16> =
+                        outbound_accumulator.drain(..FRAME_TARGET_SAMPLES).collect();
+                    let pcm_bytes = i16_to_pcm_bytes(&frame);
+                    let _ = outbound_pcm_tx.send(pcm_bytes).await;
+                }
             }
         } else {
             // Buffer empty: sleep briefly (10ms)
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+    }
+
+    // Flush any remaining samples on exit
+    if !outbound_accumulator.is_empty() {
+        let pcm_bytes = i16_to_pcm_bytes(&outbound_accumulator);
+        let _ = outbound_pcm_tx.send(pcm_bytes).await;
     }
 }

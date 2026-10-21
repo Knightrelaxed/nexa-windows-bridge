@@ -4,7 +4,7 @@
 // ============================================================
 
 use super::audio_buffer::{create_audio_ring_buffer, AudioConsumer, AudioProducer};
-use super::resampler::{i16_to_f32, pcm_bytes_to_i16, resample_linear, upmix_mono_to_stereo};
+use super::resampler::{i16_to_f32, pcm_bytes_to_i16, resample_linear, upmix_mono_to_channels};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +20,7 @@ pub struct SpeakerPlayer {
     producer: Option<AudioProducer<f32>>,
     echo_ref_tx: Option<mpsc::Sender<Vec<f32>>>,
     is_playing: Arc<AtomicBool>,
+    flush_requested: Arc<AtomicBool>,
     hardware_sample_rate: u32,
     hardware_channels: u16,
 }
@@ -52,7 +53,10 @@ impl SpeakerPlayer {
         let (producer, mut consumer) = create_audio_ring_buffer::<f32>(buffer_capacity);
 
         let is_playing = Arc::new(AtomicBool::new(false));
+        let flush_requested = Arc::new(AtomicBool::new(false));
+
         let is_playing_clone = Arc::clone(&is_playing);
+        let flush_requested_clone = Arc::clone(&flush_requested);
 
         let config: StreamConfig = default_config.into();
         let stream = match sample_format {
@@ -60,7 +64,12 @@ impl SpeakerPlayer {
                 .build_output_stream(
                     &config,
                     move |data: &mut [f32], _| {
-                        playback_callback_f32(data, &mut consumer, &is_playing_clone);
+                        playback_callback_f32(
+                            data,
+                            &mut consumer,
+                            &is_playing_clone,
+                            &flush_requested_clone,
+                        );
                     },
                     move |err| {
                         error!("[SPEAKER] Stream error: {}", err);
@@ -72,7 +81,12 @@ impl SpeakerPlayer {
                 .build_output_stream(
                     &config,
                     move |data: &mut [i16], _| {
-                        playback_callback_i16(data, &mut consumer, &is_playing_clone);
+                        playback_callback_i16(
+                            data,
+                            &mut consumer,
+                            &is_playing_clone,
+                            &flush_requested_clone,
+                        );
                     },
                     move |err| {
                         error!("[SPEAKER] Stream error: {}", err);
@@ -94,6 +108,7 @@ impl SpeakerPlayer {
             producer: Some(producer),
             echo_ref_tx,
             is_playing,
+            flush_requested,
             hardware_sample_rate,
             hardware_channels,
         })
@@ -118,12 +133,8 @@ impl SpeakerPlayer {
         // 3. Resample from 24kHz to hardware sample rate (e.g. 48kHz)
         let resampled = resample_linear(&f32_24k, 24000, self.hardware_sample_rate);
 
-        // 4. Upmix to stereo if hardware has 2 channels
-        let final_samples = if self.hardware_channels == 2 {
-            upmix_mono_to_stereo(&resampled)
-        } else {
-            resampled
-        };
+        // 4. Upmix to hardware channels (e.g. stereo)
+        let final_samples = upmix_mono_to_channels(&resampled, self.hardware_channels);
 
         // 5. Push to real-time ring buffer
         if let Some(ref mut prod) = self.producer {
@@ -145,6 +156,7 @@ impl SpeakerPlayer {
 
     /// Stop playback immediately (used on barge-in / interrupt).
     pub fn stop(&mut self) {
+        self.flush_requested.store(true, Ordering::SeqCst);
         self.is_playing.store(false, Ordering::SeqCst);
     }
 }
@@ -153,7 +165,15 @@ fn playback_callback_f32(
     data: &mut [f32],
     consumer: &mut AudioConsumer<f32>,
     is_playing: &Arc<AtomicBool>,
+    flush_requested: &Arc<AtomicBool>,
 ) {
+    if flush_requested.swap(false, Ordering::SeqCst) {
+        consumer.clear();
+        data.fill(0.0);
+        is_playing.store(false, Ordering::SeqCst);
+        return;
+    }
+
     let available = consumer.len();
     if available > 0 {
         is_playing.store(true, Ordering::SeqCst);
@@ -171,7 +191,15 @@ fn playback_callback_i16(
     data: &mut [i16],
     consumer: &mut AudioConsumer<f32>,
     is_playing: &Arc<AtomicBool>,
+    flush_requested: &Arc<AtomicBool>,
 ) {
+    if flush_requested.swap(false, Ordering::SeqCst) {
+        consumer.clear();
+        data.fill(0);
+        is_playing.store(false, Ordering::SeqCst);
+        return;
+    }
+
     let available = consumer.len();
     if available > 0 {
         is_playing.store(true, Ordering::SeqCst);
@@ -191,5 +219,34 @@ fn playback_callback_i16(
     } else {
         is_playing.store(false, Ordering::SeqCst);
         data.fill(0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_playback_callback_normal_and_flush() {
+        let (mut prod, mut cons) = create_audio_ring_buffer::<f32>(64);
+        let is_playing = Arc::new(AtomicBool::new(false));
+        let flush_requested = Arc::new(AtomicBool::new(false));
+
+        // 1. Normal playback
+        prod.push_slice(&[0.5, 0.5, 0.5, 0.5]);
+        let mut buffer = [0.0f32; 4];
+        playback_callback_f32(&mut buffer, &mut cons, &is_playing, &flush_requested);
+        assert_eq!(buffer, [0.5, 0.5, 0.5, 0.5]);
+        assert!(is_playing.load(Ordering::SeqCst));
+
+        // 2. Queue more and trigger flush (barge-in scenario)
+        prod.push_slice(&[0.8, 0.8, 0.8, 0.8]);
+        flush_requested.store(true, Ordering::SeqCst);
+
+        let mut buffer2 = [1.0f32; 4];
+        playback_callback_f32(&mut buffer2, &mut cons, &is_playing, &flush_requested);
+        assert_eq!(buffer2, [0.0, 0.0, 0.0, 0.0]); // Silenced
+        assert!(!is_playing.load(Ordering::SeqCst));
+        assert!(cons.is_empty()); // Ring buffer drained
     }
 }
