@@ -19,9 +19,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyAction {
-    BossKey,          // Win + Alt + N (Toggle Summon / Dismiss Window)
-    ToggleMute,       // Win + Alt + M (Mute / Unmute Microphone)
-    ToggleFullscreen, // F11 or Win + Alt + F (Toggle Fullscreen / Windowed)
+    BossKey,           // Win + Alt + N (Toggle Summon / Dismiss Window)
+    ToggleMute,        // Win + Alt + M (Mute / Unmute Microphone)
+    ToggleFullscreen,  // F11 or Win + Alt + F (Toggle Fullscreen / Windowed)
+    ToggleScreenShare, // Win + Alt + S (Toggle Direct3D 11 Screen Sharing)
 }
 
 type HotkeyCallback = Box<dyn Fn(HotkeyAction) + Send + Sync>;
@@ -30,10 +31,11 @@ static HOTKEY_LISTENER_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 const WM_STOP_HOTKEYS: u32 = WM_USER + 301;
 
-const ID_HOTKEY_BOSS: i32 = 1;       // Win + Alt + N
-const ID_HOTKEY_MUTE: i32 = 2;       // Win + Alt + M
-const ID_HOTKEY_FS_F11: i32 = 3;     // F11
-const ID_HOTKEY_FS_WIN_F: i32 = 4;   // Win + Alt + F
+const ID_HOTKEY_BOSS: i32 = 1;         // Win + Alt + N
+const ID_HOTKEY_MUTE: i32 = 2;         // Win + Alt + M
+const ID_HOTKEY_FS_F11: i32 = 3;       // F11
+const ID_HOTKEY_FS_WIN_F: i32 = 4;     // Win + Alt + F
+const ID_HOTKEY_SCREEN_SHARE: i32 = 5; // Win + Alt + S
 
 pub struct HotkeyListener {
     hwnd: Option<isize>,
@@ -142,6 +144,19 @@ impl HotkeyListener {
                     info!("[HOTKEYS] ✅ Registered Global F11 Fullscreen");
                 }
 
+                // 5. Screen Sharing: Win + Alt + S
+                let res_fs_screen = RegisterHotKey(
+                    hwnd,
+                    ID_HOTKEY_SCREEN_SHARE,
+                    MOD_WIN | MOD_ALT | MOD_NOREPEAT,
+                    'S' as u32,
+                );
+                if res_fs_screen != 0 {
+                    info!("[HOTKEYS] ✅ Registered Screen Share Toggle (Win + Alt + S)");
+                } else {
+                    warn!("[HOTKEYS] ⚠️ Failed to register Screen Share Toggle (Win + Alt + S)");
+                }
+
                 let _ = hwnd_tx.send(Some(hwnd as isize));
 
                 // Win32 message pump
@@ -156,6 +171,7 @@ impl HotkeyListener {
                 UnregisterHotKey(hwnd, ID_HOTKEY_MUTE);
                 UnregisterHotKey(hwnd, ID_HOTKEY_FS_WIN_F);
                 UnregisterHotKey(hwnd, ID_HOTKEY_FS_F11);
+                UnregisterHotKey(hwnd, ID_HOTKEY_SCREEN_SHARE);
 
                 info!("[HOTKEYS] Hotkey listener loop terminated cleanly.");
             }
@@ -197,6 +213,7 @@ unsafe extern "system" fn hotkey_wnd_proc(
                 ID_HOTKEY_BOSS => Some(HotkeyAction::BossKey),
                 ID_HOTKEY_MUTE => Some(HotkeyAction::ToggleMute),
                 ID_HOTKEY_FS_F11 | ID_HOTKEY_FS_WIN_F => Some(HotkeyAction::ToggleFullscreen),
+                ID_HOTKEY_SCREEN_SHARE => Some(HotkeyAction::ToggleScreenShare),
                 _ => None,
             };
 

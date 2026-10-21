@@ -26,6 +26,7 @@ pub enum TrayEvent {
     ShowWindow,        // Context Menu "Buka N.E.X.A" (ID 1001)
     ToggleMute,        // Context Menu "Mute / Unmute" (ID 1002)
     ToggleFullscreen,  // Context Menu "Layar Penuh (F11)" (ID 1003)
+    ToggleScreenShare, // Context Menu "Berbagi Layar (Win+Alt+S)" (ID 1006)
     OpenSettings,      // Context Menu "Pengaturan" (ID 1004)
     Quit,              // Context Menu "Keluar" (ID 1005)
 }
@@ -43,6 +44,7 @@ const MENU_MUTE: usize = 1002;
 const MENU_FULLSCREEN: usize = 1003;
 const MENU_SETTINGS: usize = 1004;
 const MENU_QUIT: usize = 1005;
+const MENU_SCREEN_SHARE: usize = 1006;
 
 pub struct SystemTray {
     hwnd: Option<isize>,
@@ -218,6 +220,7 @@ unsafe extern "system" fn tray_wnd_proc(
                 MENU_OPEN => Some(TrayEvent::ShowWindow),
                 MENU_MUTE => Some(TrayEvent::ToggleMute),
                 MENU_FULLSCREEN => Some(TrayEvent::ToggleFullscreen),
+                MENU_SCREEN_SHARE => Some(TrayEvent::ToggleScreenShare),
                 MENU_SETTINGS => Some(TrayEvent::OpenSettings),
                 MENU_QUIT => Some(TrayEvent::Quit),
                 _ => None,
@@ -256,12 +259,14 @@ unsafe fn show_context_menu(hwnd: HWND) {
 
     let item_open: Vec<u16> = "👁️ Buka N.E.X.A\0".encode_utf16().collect();
     let item_mute: Vec<u16> = "🎙️ Mute / Unmute Mikrofon\0".encode_utf16().collect();
+    let item_screen: Vec<u16> = "🖥️ Mulai / Hentikan Layar (Win+Alt+S)\0".encode_utf16().collect();
     let item_fs: Vec<u16> = "⛶ Layar Penuh / Jendela (F11)\0".encode_utf16().collect();
     let item_settings: Vec<u16> = "⚙ Pengaturan (~/.nexa-bridge.json)\0".encode_utf16().collect();
     let item_quit: Vec<u16> = "❌ Keluar\0".encode_utf16().collect();
 
     AppendMenuW(hmenu, MF_STRING, MENU_OPEN, item_open.as_ptr());
     AppendMenuW(hmenu, MF_STRING, MENU_MUTE, item_mute.as_ptr());
+    AppendMenuW(hmenu, MF_STRING, MENU_SCREEN_SHARE, item_screen.as_ptr());
     AppendMenuW(hmenu, MF_STRING, MENU_FULLSCREEN, item_fs.as_ptr());
     AppendMenuW(hmenu, MF_STRING, MENU_SETTINGS, item_settings.as_ptr());
     AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());

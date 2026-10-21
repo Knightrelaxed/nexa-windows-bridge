@@ -8,6 +8,7 @@ mod network;
 mod platform;
 mod ui;
 mod audio;
+mod capture;
 
 use config::BridgeConfig;
 use network::{ClientMessage, ConnectionState, NetworkClient, ServerMessage};
@@ -55,11 +56,96 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         audio::AudioEngine::new().map_err(|e| format!("Audio engine error: {}", e))?,
     ));
 
+    // 5.1 Initialize Direct3D 11 GPU Screen Capture Controller
+    let capture_controller: Arc<Mutex<Option<capture::ScreenCaptureController>>> =
+        Arc::new(Mutex::new(None));
+
+    let toggle_screen_share: Arc<dyn Fn(Option<bool>) + Send + Sync> = {
+        let capture_ctrl = Arc::clone(&capture_controller);
+        let net_client = network_client.clone();
+        let window_weak = main_window.as_weak();
+        let config_clone = Arc::clone(&config);
+
+        Arc::new(move |target_state: Option<bool>| {
+            let window_weak = window_weak.clone();
+            let capture_ctrl = Arc::clone(&capture_ctrl);
+            let net_client = net_client.clone();
+            let config_clone = Arc::clone(&config_clone);
+
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(win) = window_weak.upgrade() {
+                    let current = win.get_is_screen_sharing();
+                    let new_state = target_state.unwrap_or(!current);
+
+                    win.set_is_screen_sharing(new_state);
+                    info!("[MAIN] 👁️ Screen Sharing toggled to: {}", new_state);
+
+                    let mut ctrl = capture_ctrl.lock().unwrap();
+
+                    if new_state {
+                        let fps = {
+                            let cfg = config_clone.lock().unwrap();
+                            cfg.capture_fps.max(1)
+                        };
+
+                        let (frame_tx, mut frame_rx) =
+                            tokio::sync::mpsc::unbounded_channel::<String>();
+                        let net_client_frame = net_client.clone();
+
+                        tokio::spawn(async move {
+                            while let Some(image_base64) = frame_rx.recv().await {
+                                if net_client_frame.is_connected() {
+                                    let now_ts = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs();
+
+                                    let frame_msg = ClientMessage::VideoFrame {
+                                        command_id: format!("session_desktop_{}", now_ts),
+                                        image_chunk: image_base64,
+                                    };
+                                    let _ = net_client_frame.send_message(frame_msg).await;
+                                }
+                            }
+                            info!("[MAIN] Screen capture frame transmitter loop ended.");
+                        });
+
+                        match capture::ScreenCaptureController::start(frame_tx, fps) {
+                            Ok(c) => {
+                                *ctrl = Some(c);
+                                win.set_avatar_state(
+                                    ui::CognitiveState::ScreenSharing.as_str().into(),
+                                );
+                                win.set_status_message(
+                                    ui::CognitiveState::ScreenSharing.status_text().into(),
+                                );
+                            }
+                            Err(e) => {
+                                error!("[MAIN] Failed to start screen capture: {}", e);
+                                win.set_is_screen_sharing(false);
+                                win.set_status_message(
+                                    format!("Screen Capture Error: {}", e).into(),
+                                );
+                            }
+                        }
+                    } else {
+                        if let Some(mut c) = ctrl.take() {
+                            c.stop();
+                        }
+                        win.set_avatar_state(ui::CognitiveState::Idle.as_str().into());
+                        win.set_status_message(ui::CognitiveState::Idle.status_text().into());
+                    }
+                }
+            });
+        })
+    };
+
     // 6. Hook Connection State Watcher & Duplex Audio Engine Lifecycle
     let window_weak = main_window.as_weak();
     let mut state_rx = network_client.subscribe_state();
     let audio_engine_conn = Arc::clone(&audio_engine);
     let net_client_audio = network_client.clone();
+    let toggle_share_conn = Arc::clone(&toggle_screen_share);
 
     tokio::spawn(async move {
         let (mic_pcm_tx, mut mic_pcm_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
@@ -135,6 +221,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => {}
             }
 
+            let toggle_share_conn = toggle_share_conn.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(win) = window_weak.upgrade() {
                     match state {
@@ -168,6 +255,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             win.set_status_message(ui::CognitiveState::Offline.status_text().into());
                             win.set_volume_level(0.0);
                             win.set_pulse_scale(1.0);
+                            if win.get_is_screen_sharing() {
+                                toggle_share_conn(Some(false));
+                            }
                         }
                         ConnectionState::Suspended => {
                             win.set_connection_status("offline".into());
@@ -175,6 +265,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             win.set_status_message("Laptop Tertidur (Suspended).".into());
                             win.set_volume_level(0.0);
                             win.set_pulse_scale(1.0);
+                            if win.get_is_screen_sharing() {
+                                toggle_share_conn(Some(false));
+                            }
                         }
                     }
                 }
@@ -337,9 +430,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 10. Register Windows Native System Tray Controller
     let window_weak_tray = main_window.as_weak();
     let audio_engine_tray = Arc::clone(&audio_engine);
+    let toggle_share_tray = Arc::clone(&toggle_screen_share);
     let _system_tray = SystemTray::spawn(move |event| {
         let window_weak = window_weak_tray.clone();
         let audio_engine = Arc::clone(&audio_engine_tray);
+        let toggle_share = Arc::clone(&toggle_share_tray);
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(win) = window_weak.upgrade() {
                 match event {
@@ -377,6 +472,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         win.set_is_fullscreen(fs);
                         win.window().set_fullscreen(fs);
                     }
+                    TrayEvent::ToggleScreenShare => {
+                        info!("[TRAY] Context menu 'Berbagi Layar' activated.");
+                        toggle_share(None);
+                    }
                     TrayEvent::OpenSettings => {
                         info!("[TRAY] Context menu 'Pengaturan' activated.");
                         win.window().set_minimized(false);
@@ -392,12 +491,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
-    // 11. Register Windows Global Hotkeys (Boss Key, Mic Mute, Fullscreen)
+    // 11. Register Windows Global Hotkeys (Boss Key, Mic Mute, Fullscreen, Screen Share)
     let window_weak_hotkey = main_window.as_weak();
     let audio_engine_hotkey = Arc::clone(&audio_engine);
+    let toggle_share_hotkey = Arc::clone(&toggle_screen_share);
     let _hotkey_listener = HotkeyListener::spawn(move |action| {
         let window_weak = window_weak_hotkey.clone();
         let audio_engine = Arc::clone(&audio_engine_hotkey);
+        let toggle_share = Arc::clone(&toggle_share_hotkey);
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(win) = window_weak.upgrade() {
                 match action {
@@ -429,6 +530,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         info!("[HOTKEY] ⛶ Fullscreen Toggle (F11 / Win+Alt+F) triggered: fs={}", fs);
                         win.set_is_fullscreen(fs);
                         win.window().set_fullscreen(fs);
+                    }
+                    HotkeyAction::ToggleScreenShare => {
+                        info!("[HOTKEY] 🖥️ Screen Share (Win+Alt+S) triggered.");
+                        toggle_share(None);
                     }
                 }
             }
@@ -573,19 +678,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Hook Screen Sharing Toggle
-    let window_weak = main_window.as_weak();
+    let toggle_share_ui = Arc::clone(&toggle_screen_share);
     main_window.on_toggle_screen_share(move || {
-        if let Some(win) = window_weak.upgrade() {
-            let sharing = win.get_is_screen_sharing();
-            info!("[MAIN] 👁️ Screen share toggled: {}", sharing);
-            if sharing {
-                win.set_avatar_state(ui::CognitiveState::ScreenSharing.as_str().into());
-                win.set_status_message(ui::CognitiveState::ScreenSharing.status_text().into());
-            } else {
-                win.set_avatar_state(ui::CognitiveState::Idle.as_str().into());
-                win.set_status_message(ui::CognitiveState::Idle.status_text().into());
-            }
-        }
+        toggle_share_ui(None);
     });
 
     // Hook Settings Modal Open

@@ -19,6 +19,8 @@ cpal = "0.15"
 ringbuf = "0.4"
 sonora = "0.2"
 base64 = "0.23"
+windows-capture = "2.0.1"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
