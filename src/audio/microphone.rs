@@ -1,5 +1,5 @@
 // ============================================================
-// N.E.X.A 3.3 — WASAPI MICROPHONE CAPTURE ENGINE
+// WASAPI MICROPHONE CAPTURE ENGINE
 // Input Stream (ThinkPad Conexant Dual-Array Mic -> 16kHz PCM)
 // ============================================================
 

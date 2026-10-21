@@ -1,5 +1,5 @@
 // ============================================================
-// N.E.X.A 3.3 — WINDOWS BRIDGE CAPTURE MODULE
+// WINDOWS BRIDGE CAPTURE MODULE
 // Direct3D 11 GPU Screen Capture & TurboJPEG Frame Pipeline
 // ============================================================
 

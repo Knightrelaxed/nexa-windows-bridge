@@ -1,5 +1,5 @@
 // ============================================================
-// N.E.X.A 3.3 — WINDOWS BRIDGE WEBSOCKET CLIENT
+// WINDOWS BRIDGE WEBSOCKET CLIENT
 // Resilient Async Client with Exponential Backoff & Keepalive
 // ============================================================
 

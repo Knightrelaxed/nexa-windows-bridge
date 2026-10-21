@@ -1,5 +1,5 @@
 // ============================================================
-// N.E.X.A 3.3 — ACOUSTIC ECHO CANCELLATION (AEC3)
+// ACOUSTIC ECHO CANCELLATION (AEC3)
 // WebRTC AEC3, Noise Suppression & Dynamic Ducking Engine
 // ============================================================
 

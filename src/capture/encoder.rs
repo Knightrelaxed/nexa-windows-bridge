@@ -1,5 +1,5 @@
 // ============================================================
-// N.E.X.A 3.3 — WINDOWS BRIDGE FRAME ENCODER & RATE LIMITER
+// WINDOWS BRIDGE FRAME ENCODER & RATE LIMITER
 // Direct3D 11 GPU Frame to Base64 JPEG Compression Pipeline
 // ============================================================
 

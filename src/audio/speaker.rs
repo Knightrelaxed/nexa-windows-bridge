@@ -1,5 +1,5 @@
 // ============================================================
-// N.E.X.A 3.3 — WASAPI SPEAKER PLAYBACK ENGINE
+// WASAPI SPEAKER PLAYBACK ENGINE
 // Output Stream (24kHz Gemini Response -> Hardware Output)
 // ============================================================
 

@@ -1,5 +1,5 @@
 // ============================================================
-// N.E.X.A 3.3 — WINDOWS POWER BROADCAST LISTENER
+// WINDOWS POWER BROADCAST LISTENER
 // Detects Laptop Sleep & Wake Events (ThinkPad Lid Close/Open)
 // ============================================================
 

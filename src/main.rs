@@ -9,6 +9,7 @@ mod platform;
 mod ui;
 mod audio;
 mod capture;
+mod automation;
 
 use config::BridgeConfig;
 use network::{ClientMessage, ConnectionState, NetworkClient, ServerMessage};

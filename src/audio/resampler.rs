@@ -1,5 +1,5 @@
 // ============================================================
-// N.E.X.A 3.3 — AUDIO RESAMPLER & FORMAT CONVERTER
+// AUDIO RESAMPLER & FORMAT CONVERTER
 // Zero-Allocation / Fast Linear Interpolation & Channel Mixers
 // ============================================================
 

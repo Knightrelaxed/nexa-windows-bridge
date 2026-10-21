@@ -1,6 +1,6 @@
 # Protokol Komunikasi WebSocket — N.E.X.A Windows Bridge
 
-Dokumen ini mendokumentasikan spesifikasi protokol pertukaran pesan antara **N.E.X.A Windows Bridge** dan **N.E.X.A 3.3 Server**.
+Dokumen ini mendokumentasikan spesifikasi protokol pertukaran pesan antara **N.E.X.A Windows Bridge** dan **N.E.X.A Server**.
 
 ---
 
@@ -98,6 +98,14 @@ Digunakan untuk transmisi rekaman mikrofon lokal ke server N.E.X.A.
 }
 ```
 
+#### 7. `CALL_AUDIO_INTERRUPTED` (Notifikasi Interupsi Pengguna / Barge-In)
+Dikirim ke server saat detektor energi suara mendeteksi bahwa pengguna mulai berbicara menyela keluaran suara AI.
+```json
+{
+  "type": "CALL_AUDIO_INTERRUPTED"
+}
+```
+
 ---
 
 ### B. Pesan dari Server ke Klien (`ServerMessage`)
@@ -127,7 +135,43 @@ Instruksi dari server AI untuk mengendalikan perangkat Windows.
 }
 ```
 
-#### 3. `Unknown` (Tipe Tak Dikenal)
+#### 3. `CALL_AUDIO_PLAY` (Stream Audio Balasan Suara AI)
+Chunk audio respons vokal AI (format PCM 24 kHz 16-bit mono Base64) untuk diputar langsung melalui speaker WASAPI.
+```json
+{
+  "type": "CALL_AUDIO_PLAY",
+  "pcm_chunk": "<base64_encoded_pcm_24k>"
+}
+```
+
+#### 4. `CALL_STATUS_UPDATE` (Pembaruan Status Kognitif AI)
+Mengubah status kognitif avatar dan teks status HUD antarmuka secara dinamis.
+```json
+{
+  "type": "CALL_STATUS_UPDATE",
+  "status": "thinking",
+  "text": "Sedang menganalisis struktur kode...",
+  "user_transcript": "Bisa jelaskan arsitekturnya?"
+}
+```
+
+#### 5. `CALL_AUDIO_INTERRUPTED` (Interupsi Audio dari Sisi Server)
+Instruksi dari server agar klien menghentikan pemutaran audio speaker seketika.
+```json
+{
+  "type": "CALL_AUDIO_INTERRUPTED"
+}
+```
+
+#### 6. `CALL_REPLY_COMPLETE` (Selesai Berbicara)
+Sinyal bahwa seluruh rangkaian audio respons telah selesai dipancarkan server, mengembalikan avatar ke status `idle`.
+```json
+{
+  "type": "CALL_REPLY_COMPLETE"
+}
+```
+
+#### 7. `Unknown` (Tipe Tak Dikenal)
 Jika server di masa mendatang mengirimkan tipe baru yang belum didukung, deserializer JSON Rust menggunakan atribut `#[serde(other)]` sehingga paket tidak menyebabkan aplikasi *crash*, melainkan diabaikan secara aman.
 
 ---

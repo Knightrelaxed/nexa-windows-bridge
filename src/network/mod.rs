@@ -1,5 +1,5 @@
 // ============================================================
-// N.E.X.A 3.3 — WINDOWS BRIDGE NETWORK SUBSYSTEM
+// WINDOWS BRIDGE NETWORK SUBSYSTEM
 // ============================================================
 
 pub mod client;

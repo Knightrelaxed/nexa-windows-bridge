@@ -1,5 +1,5 @@
 // ============================================================
-// N.E.X.A 3.3 — WINDOWS GPU SCREEN CAPTURE ENGINE
+// WINDOWS GPU SCREEN CAPTURE ENGINE
 // Direct3D 11 / Windows.Graphics.Capture API Implementation
 // ============================================================
 

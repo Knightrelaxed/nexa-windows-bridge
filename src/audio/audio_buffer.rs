@@ -1,5 +1,5 @@
 // ============================================================
-// N.E.X.A 3.3 — LOCK-FREE SPSC AUDIO RING BUFFER
+// LOCK-FREE SPSC AUDIO RING BUFFER
 // Zero-Allocation, Lock-Free Transfer for Real-Time Audio Threads
 // ============================================================
 

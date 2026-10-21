@@ -1,5 +1,5 @@
 // ============================================================
-// N.E.X.A 3.3 — WINDOWS BRIDGE NETWORK PROTOCOL
+// WINDOWS BRIDGE NETWORK PROTOCOL
 // Strongly-Typed Messages for Client-Server WebSocket Exchange
 // ============================================================
 

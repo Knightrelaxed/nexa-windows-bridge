@@ -1,5 +1,5 @@
 // ============================================================
-// N.E.X.A 3.3 — AUDIO SUBSYSTEM ORCHESTRATOR
+// AUDIO SUBSYSTEM ORCHESTRATOR
 // WASAPI Duplex Audio Engine with WebRTC AEC3 Echo Cancellation
 // Tuned for Lenovo ThinkPad X380 Yoga (Headset-Free Operation)
 // ============================================================

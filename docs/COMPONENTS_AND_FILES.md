@@ -1,141 +1,122 @@
 # Katalog Berkas & Komponen — N.E.X.A Windows Bridge
 
-Dokumen ini menyediakan referensi mendetail dari setiap berkas kode yang ada di dalam repositori `nexa-windows-bridge`.
+Dokumen ini menyediakan referensi teknis mendetail dari setiap berkas kode yang ada di dalam repositori `nexa-windows-bridge`.
 
 ---
 
 ## 1. Berkas Konfigurasi & Root Proyek
 
 ### 📄 `Cargo.toml`
-* **Fungsi:** Manifest paket Rust dan deklarasi dependensi.
+* **Fungsi:** Manifest paket Rust dan deklarasi dependensi pihak ketiga.
 * **Dependensi Utama:**
-  * `slint` (v1.18.1): Framework GUI desktop native.
-  * `tokio` (v1, fitur `full`): Asynchronous runtime untuk I/O dan konkurensi.
-  * `tokio-tungstenite` (v0.26, fitur `native-tls`): Klien WebSocket asinkron dengan enkripsi TLS.
-  * `serde` & `serde_json`: Serialisasi/deserialisasi objek dan protokol JSON.
-  * `windows-sys` (v0.59): FFI langsung ke Windows Win32 API (`Win32_Foundation`, `Win32_UI_WindowsAndMessaging`, `Win32_System_Power`, dll.).
-  * `tracing` & `tracing-subscriber`: Sistem logging terstruktur ke stdout/stderr.
-  * `dirs`: Helper lintas platform untuk menemukan direktori profil user (`~`).
+  * `slint`: Framework GUI desktop native ultra-cepat dan irit RAM.
+  * `tokio` (fitur `full`): Asynchronous runtime untuk konkurensi dan I/O jaringan.
+  * `tokio-tungstenite`: Klien WebSocket asinkron dengan native TLS.
+  * `windows-capture`: Windows Graphics Capture API berbasis Direct3D 11 untuk pengambilan layar monitor.
+  * `cpal`: Antarmuka audio lintas platform tingkat rendah (WASAPI di Windows).
+  * `sonora`: Mesin Digital Signal Processing (DSP) WebRTC AEC3 untuk pembatalan gema.
+  * `ringbuf`: Struktur data *lock-free SPSC circular ring buffer*.
+  * `windows-sys`: FFI langsung ke Win32 API (`Foundation`, `UI_WindowsAndMessaging`, `UI_Shell`, `SystemInformation`, `Threading`, `Power`).
+  * `serde` & `serde_json`: Serialisasi protokol JSON.
+  * `tracing` & `tracing-subscriber`: Sistem logging terstruktur.
 
 ### 📄 `build.rs`
 * **Fungsi:** Skrip pra-kompilasi (*custom build script*).
-* **Operasi:** Memanggil `slint_build::compile("ui/main_window.slint")` sebelum kompilasi Rust dimulai untuk mengubah DSL markup Slint menjadi kode Rust native di dalam folder `target/`.
+* **Operasi:** Menjalankan `slint_build::compile("ui/main_window.slint")` sebelum kompilasi Rust dimulai untuk menerjemahkan file markup `.slint` menjadi kode Rust native di dalam folder `target/`.
 
 ### 📄 `Cargo.lock`
-* **Fungsi:** Catatan versi eksak (*exact lockfile*) untuk menjamin *reproducible builds* dan verifikasi integritas hash (*checksum*).
+* **Fungsi:** Mengunci versi eksak (*exact version lockfile*) seluruh *dependency tree* demi *deterministic & reproducible builds*.
 
 ---
 
-## 2. Direktori `src/` (Logika Inti Rust)
+## 2. Logika Utama Root `src/`
 
 ### 📄 `src/main.rs`
-* **Fungsi:** Titik masuk utama aplikasi (*entry point*).
-* **Tanggung Jawab:**
-  1. Menginisialisasi logging `tracing_subscriber` dengan filter level `debug`/`info`.
-  2. Membaca konfigurasi `BridgeConfig::load()` ke dalam pointer bersama `Arc<Mutex<BridgeConfig>>`.
-  3. Membuka jendela Slint GUI (`MainWindow::new()`).
-  4. Menjalankan instance [`NetworkClient`](../src/network/client.rs).
-  5. Menghubungkan perubahan state jaringan ke UI secara thread-safe (`invoke_from_event_loop`).
-  6. Mengatur dispatcher perintah `EXECUTE_COMMAND` yang dikirim dari server N.E.X.A.
-  7. Menjalankan thread pendengar daya laptop [`PowerListener`](../src/platform/power.rs).
-  8. Mengikat callback tombol UI (Simpan pengaturan, Uji koneksi WebSocket, Hubungkan/Putuskan).
+* **Fungsi:** Titik masuk utama aplikasi (*entry point / orchestrator*).
+* **Tanggung Jawab Teknis:**
+  1. Bootstrapping logging runtime `tracing_subscriber`.
+  2. Memuat dan mengikat konfigurasi `BridgeConfig`.
+  3. Membuka jendela Slint (`MainWindow`) dan menyinkronkan event loop UI dengan Tokio runtime.
+  4. Menginisialisasi `NetworkClient`, `AudioEngine`, dan `ScreenCaptureController`.
+  5. Menjalankan *worker loop* audio mic streaming ke WebSocket dan pemutaran audio balasan server ke speaker.
+  6. Mengelola event interupsi suara pengguna (*barge-in notification*).
+  7. Mendaftarkan pendengar daya Win32 (`PowerListener`), System Tray (`SystemTray`), dan Hotkeys global (`HotkeyListener`).
+  8. Menjalankan sampler telemetri sistem berkala (CPU & RAM) untuk HUD Command Center.
 
 ### 📄 `src/config.rs`
-* **Fungsi:** Struktur data dan manipulasi konfigurasi.
+* **Fungsi:** Model data konfigurasi dan utilitas persistensi.
 * **Komponen:**
-  * Struct `BridgeConfig`: Menyimpan properti `server_url`, `auth_token`, `audio_input_device`, `audio_output_device`, `capture_fps`, `low_ram_mode`, `auto_connect`.
-  * `load()` & `save()`: Manajemen berkas `~/.nexa-bridge.json` dan konversi otomatis dari konfigurasi versi lama (`~/.nexa-config.json`).
-  * `normalize_ws_url()`: Helper untuk memformat URL HTTP/HTTPS/IP menjadi endpoint WebSocket yang valid.
-  * Unit test untuk pengujian deserialisasi dan normalisasi URL.
+  * `BridgeConfig`: Menyimpan URL endpoint, token otentikasi, mode low RAM, FPS tangkapan layar, dan preferensi audio.
+  * `load()` & `save()`: Membaca/menulis file `~/.nexa-bridge.json` dan migrasi otomatis dari format lama `~/.nexa-config.json`.
+  * `normalize_ws_url()`: Sanitasi alamat HTTP/HTTPS/IP ke format WebSocket sah (`ws://` atau `wss://`).
 
 ---
 
 ## 3. Submodul Audio & WASAPI (`src/audio/`)
 
-Modul ini bertanggung jawab atas pemrosesan audio dua arah (*duplex*) bersuara jernih tanpa headset (*headset-free*) yang disetel khusus untuk speaker & microphone array Lenovo ThinkPad X380 Yoga.
-
 * **`src/audio/mod.rs` (`AudioEngine`):**
-  Orkestrator subsistem audio. Menginisialisasi `SpeakerPlayer`, `MicrophoneCapture`, dan menghubungkan loop referensi gema ke `EchoCancellerEngine`.
+  Orkestrator subsistem audio duplex. Menginisialisasi speaker, mikrofon, loop referensi AEC, dan menyalurkan notifikasi interupsi suara (*barge-in*).
 * **`src/audio/speaker.rs` (`SpeakerPlayer`):**
-  Menangani pemutaran audio balasan (misal respon Gemini Live PCM 24kHz mono) ke output speaker Windows melalui driver WASAPI / cpal.
+  Memutar audio respons server (24 kHz PCM) ke speaker fisik laptop via WASAPI dan mengirimkan salinan render frame ke AEC.
 * **`src/audio/microphone.rs` (`MicrophoneCapture`):**
-  Menangkap suara pengguna dari mikrofon, menjalankan filtering pembatalan gema, dan mengirimkan chunk PCM 16kHz bersih ke antrean pengiriman WebSocket.
+  Merekam suara dari mic fisik laptop, memprosesnya melalui filter WebRTC AEC3, dan mengirimkan chunk PCM 16 kHz bersih ke jaringan.
 * **`src/audio/echo_canceller.rs` (`EchoCancellerEngine`):**
-  Mesin peredam gema berbasis WebRTC AEC3 (Acoustic Echo Cancellation) dengan deteksi *double-talk* dan *barge-in notification*.
+  Mesin peredam gema WebRTC AEC3, peredam bising (*noise suppression*), dan *dynamic ducking* (-18 dB) saat AI berbicara.
 * **`src/audio/resampler.rs`:**
-  Konverter sample rate audio berkualitas tinggi (misalnya konversi antara 16kHz, 24kHz, dan 48kHz).
+  Konverter sample rate audio berlatensi rendah (konversi antara 16 kHz, 24 kHz, dan 48 kHz).
 * **`src/audio/audio_buffer.rs`:**
-  Struktur data *lock-free circular ring buffer* untuk pertukaran frame audio berlatensi rendah antar thread audio real-time.
+  Struktur data *lock-free SPSC circular ring buffer* (`ringbuf`) untuk pertukaran audio real-time tanpa alokasi heap.
 
 ---
 
-## 4. Submodul Jaringan (`src/network/`)
+## 4. Submodul Penangkapan Layar & Vision (`src/capture/`)
 
-### 📄 `src/network/mod.rs`
-* **Fungsi:** Root modul jaringan, mengekspor tipe-tipe publik: `ClientMessage`, `ServerMessage`, `NetworkClient`, dan `ConnectionState`.
-
-### 📄 `src/network/protocol.rs`
-* **Fungsi:** Kontrak skema protokol pesan WebSocket.
-* **Tipe:**
-  * Enum `ClientMessage`: Berisi varian `Ping`, `CommandResult`, `Telemetry`, `PowerEvent`, `VideoFrame`, `AudioStream`.
-  * Enum `ServerMessage`: Berisi varian `Pong`, `ExecuteCommand`, dan `Unknown` (fallback toleran pembaruan server).
-  * Dilengkapi pengujian unit serialisasi JSON.
-
-### 📄 `src/network/client.rs`
-* **Fungsi:** Klien WebSocket asinkron tangguh.
-* **Fitur Utama:**
-  * `run_client_worker`: Loop koneksi mandiri dengan *exponential backoff* (500 ms hingga 10 detik).
-  * Watchdog keepalive: Mengirim paket `PING` setiap 20 detik untuk mencegah koneksi terputus diam-diam oleh router/NAT.
-  * Antrean pengiriman keluar (`mpsc::channel` kapasitas 128 pesan).
-  * Event interrupt seketika (`tokio::sync::Notify`) saat pengguna memilih diskonek atau saat laptop sleep.
-  * Handshake builder yang menyertakan header `Authorization: Bearer` dan `X-Device-Type: windows`.
+* **`src/capture/mod.rs`:**
+  Mengekspor `ScreenCaptureController`, `FrameEncoder`, dan `FrameRateLimiter`.
+* **`src/capture/screen_capture.rs` (`ScreenCaptureController` & `ScreenCaptureHandler`):**
+  Menggunakan Windows Graphics Capture API (WGC) modern berbasis Direct3D 11 untuk menangkap frame desktop monitor utama langsung dari buffer GPU.
+* **`src/capture/encoder.rs` (`FrameEncoder` & `FrameRateLimiter`):**
+  Membatasi laju frame (misal 1 FPS untuk Gemini Live Vision) dan mengompresi buffer RGBA mentah menjadi byte JPEG lalu mengubahnya ke string Base64.
 
 ---
 
-## 4. Submodul Platform OS (`src/platform/`)
+## 5. Submodul Jaringan WebSocket (`src/network/`)
 
-### 📄 `src/platform/mod.rs`
-* **Fungsi:** Mengekspor modul platform Windows, mendefinisikan `PowerListener` dan enum `PowerStateEvent`.
-
-### 📄 `src/platform/power.rs`
-* **Fungsi:** Pemantau status daya laptop ThinkPad.
-* **Mekanisme Kerja:**
-  * Membuka thread dedicated yang memanggil Win32 `CreateWindowExW` terhubung ke `HWND_MESSAGE`.
-  * Mendengarkan event pesan window `WM_POWERBROADCAST`:
-    * `PBT_APMSUSPEND` $\to$ Laptop masuk mode tidur / engsel ditutup.
-    * `PBT_APMRESUMESUSPEND` & `PBT_APMRESUMEAUTOMATIC` $\to$ Laptop dibuka / dibangunkan.
-  * Mengirimkan callback ke klien jaringan agar tidak melakukan spam reconnect saat laptop dalam keadaan sleep.
+* **`src/network/mod.rs`:**
+  Pintu masuk modul jaringan, mengekspor tipe publik: `ClientMessage`, `ServerMessage`, `NetworkClient`, dan `ConnectionState`.
+* **`src/network/protocol.rs`:**
+  Definisi kontrak pesan JSON:
+  * `ClientMessage`: `Ping`, `CommandResult`, `Telemetry`, `PowerEvent`, `VideoFrame`, `AudioStream`, `AudioInterrupted`.
+  * `ServerMessage`: `Pong`, `ExecuteCommand`, `AudioPlay`, `AudioInterrupted`, `StatusUpdate`, `ReplyComplete`, `Unknown`.
+* **`src/network/client.rs` (`NetworkClient`):**
+  Klien WebSocket asinkron dengan *exponential backoff reconnection* otomatis (500 ms – 10 detik), *heartbeat keepalive* (20 detik), serta antrean pesan keluar berbasis channel MPSC.
 
 ---
 
-## 5. Direktori Antarmuka (`ui/`)
+## 6. Submodul Integrasi Platform Windows (`src/platform/`)
 
-### 📄 `ui/main_window.slint`
-* **Fungsi:** Tata letak antarmuka utama bridge (lebar 380px, tinggi 520px).
-* **Fitur UI:**
-  * Header judul dengan tombol pintasan `⚙ Settings`.
-  * Penampil animasi avatar N.E.X.A di bagian tengah.
-  * Teks status kontekstual ("Listening to Tuan Faqih...", "Cognitive Extended Thinking...", "Online & Ready", dll.).
-  * Tiga indikator status hardware: *WASAPI Audio*, *D3D11 Vision*, dan *AR Guidance*.
-  * Tombol aksi koneksi utama (*Connect to N.E.X.A / Disconnect / Connecting...*).
-  * Lapisan overlay modal untuk dialog pengaturan.
+* **`src/platform/mod.rs`:**
+  Mengekspor komponen platform: `PowerListener`, `HotkeyListener`, `SystemTray`, dan `SystemTelemetry`.
+* **`src/platform/power.rs` (`PowerListener`):**
+  Mendengarkan event daya kernel Windows `WM_POWERBROADCAST` pada `HWND_MESSAGE` (`PBT_APMSUSPEND` saat layar ditutup & `PBT_APMRESUMEAUTOMATIC` saat dibuka kembali).
+* **`src/platform/system_tray.rs` (`SystemTray`):**
+  Mengelola ikon di area notifikasi Windows via `Shell_NotifyIconW`, klik kiri untuk toggle jendela, dan menu klik kanan (Buka, Mute, Layar Penuh, Berbagi Layar, Pengaturan, Keluar).
+* **`src/platform/hotkeys.rs` (`HotkeyListener`):**
+  Mendaftarkan pintasan keyboard global via `RegisterHotKey`: Boss Key (`Win+Alt+N`), Mic Mute (`Win+Alt+M`), Fullscreen (`F11` / `Win+Alt+F`), dan Berbagi Layar (`Win+Alt+S`).
+* **`src/platform/telemetry.rs` (`SystemTelemetry`):**
+  Mengukur persentase beban CPU (`GetSystemTimes`) dan memori RAM fisik (`GlobalMemoryStatusEx`) dengan alokasi memori nol.
 
-### 📄 `ui/settings_dialog.slint`
-* **Fungsi:** Modal pengaturan konfigurasi.
-* **Fitur:**
-  * Input Server Endpoint WebSocket.
-  * Input Device Authorization Token (tipe password terlindungi).
-  * Checkbox *Ultra-Low RAM Mode (<25MB, Lean Buffer)*.
-  * Tombol *Test Connection* interaktif dengan teks respon hasil handshake langsung.
-  * Tombol *Save & Apply* dan *Close*.
+---
 
-### 📄 `ui/components/avatar.slint`
-* **Fungsi:** Komponen grafis avatar responsif.
-* **Fitur:**
-  * Lingkaran cincin luar bersinar (*outer glow ring*) dan inti dalam (*pulsing core*).
-  * Transisi warna dan animasi berbasis status:
-    * `listening`: Sian (#00E5FF)
-    * `speaking`: Hijau (#00FF88)
-    * `thinking`: Amber (#FFB300)
-    * `idle`: Biru kehijauan (#4DD0E1)
-    * `offline`: Abu-abu (#546E7A)
+## 7. Direktori Antarmuka Slint (`ui/`)
+
+* **`ui/main_window.slint`:**
+  Jendela antarmuka utama yang mendukung **Dual-Mode**:
+  1. *Compact Companion Mode* (380x520): Jendela ringkas di sudut layar dengan visualisasi avatar dan status.
+  2. *Fullscreen Cybernetic Command Center* (Resolusi Penuh / F11): HUD bergaya J.A.R.V.I.S dengan visualisator frekuensi audio, telemetri CPU/RAM, dan indikator perangkat keras aktif.
+* **`ui/settings_dialog.slint`:**
+  Modal dialog pengaturan endpoint server, token otentikasi, profil low RAM, serta uji coba handshake WebSocket secara live.
+* **`ui/components/avatar.slint`:**
+  Avatar cybernetic responsif dengan visualisasi dual-ocular ring dan rotasi giroskopik yang mendukung 9 status kognitif AI (`idle`, `listening`, `thinking`, `speaking`, `screen_sharing`, `barge_in`, `offline`, `connecting`, `error`).
+* **`ui/components/audio_meter.slint`:**
+  Visualisator spektrum audio real-time dengan 12 batang frekuensi teranimasi dinamis yang bereaksi terhadap suara pengguna dan suara AI.
