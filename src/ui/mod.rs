@@ -1,5 +1,5 @@
 // ============================================================
-// N.E.X.A 3.3 — WINDOWS BRIDGE UI MODULE
+// WINDOWS BRIDGE UI MODULE
 // Slint Desktop Companion Interface & Event Controllers
 // ============================================================
 
@@ -131,6 +131,23 @@ mod tests {
         assert_eq!(main_window.get_volume_level(), 0.0);
         main_window.set_volume_level(0.75);
         assert_eq!(main_window.get_volume_level(), 0.75);
+
+        // 9. Verify Settings Modal visibility toggle
+        assert!(!main_window.get_show_settings());
+        main_window.set_show_settings(true);
+        assert!(main_window.get_show_settings());
+
+        // 10. Verify Configuration Bindings
+        main_window.set_cfg_server_url("ws://localhost:3000/ws".into());
+        assert_eq!(main_window.get_cfg_server_url().as_str(), "ws://localhost:3000/ws");
+        main_window.set_cfg_auth_token("secret_token_123".into());
+        assert_eq!(main_window.get_cfg_auth_token().as_str(), "secret_token_123");
+        main_window.set_cfg_low_ram_mode(true);
+        assert!(main_window.get_cfg_low_ram_mode());
+
+        // 11. Verify Status Message Binding
+        main_window.set_status_message("N.E.X.A Connected".into());
+        assert_eq!(main_window.get_status_message().as_str(), "N.E.X.A Connected");
     }
 
     #[test]
