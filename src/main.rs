@@ -4,9 +4,13 @@
 // ============================================================
 
 mod config;
+mod network;
+mod platform;
 mod ui;
 
 use config::BridgeConfig;
+use network::{ClientMessage, ConnectionState, NetworkClient, ServerMessage};
+use platform::{PowerListener, PowerStateEvent};
 use slint::ComponentHandle;
 use std::sync::{Arc, Mutex};
 use tracing::{error, info};
@@ -36,10 +40,105 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         main_window.set_cfg_server_url(cfg.server_url.clone().into());
         main_window.set_cfg_auth_token(cfg.auth_token.clone().into());
         main_window.set_cfg_low_ram_mode(cfg.low_ram_mode);
-        main_window.set_status_message("Loaded configuration successfully.".into());
+        main_window.set_status_message("Ready to connect.".into());
     }
 
-    // 4. Hook Save Settings Callback
+    // 4. Initialize Network Client
+    let network_client = NetworkClient::new(Arc::clone(&config));
+
+    // 5. Hook Connection State Watcher to Slint UI
+    let window_weak = main_window.as_weak();
+    let mut state_rx = network_client.subscribe_state();
+    tokio::spawn(async move {
+        while state_rx.changed().await.is_ok() {
+            let state = state_rx.borrow().clone();
+            let window_weak = window_weak.clone();
+
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(win) = window_weak.upgrade() {
+                    match state {
+                        ConnectionState::Connected => {
+                            win.set_connection_status("connected".into());
+                            win.set_avatar_state("idle".into());
+                            win.set_status_message("Online & Connected to N.E.X.A Server".into());
+                        }
+                        ConnectionState::Connecting => {
+                            win.set_connection_status("connecting".into());
+                            win.set_avatar_state("idle".into());
+                            win.set_status_message("Connecting to Server...".into());
+                        }
+                        ConnectionState::Reconnecting {
+                            attempt,
+                            next_retry_ms,
+                        } => {
+                            win.set_connection_status("connecting".into());
+                            win.set_avatar_state("idle".into());
+                            win.set_status_message(
+                                format!(
+                                    "Reconnecting in {}ms (Attempt #{})",
+                                    next_retry_ms, attempt
+                                )
+                                .into(),
+                            );
+                        }
+                        ConnectionState::Disconnected => {
+                            win.set_connection_status("offline".into());
+                            win.set_avatar_state("offline".into());
+                            win.set_status_message("Disconnected.".into());
+                        }
+                        ConnectionState::Suspended => {
+                            win.set_connection_status("offline".into());
+                            win.set_avatar_state("offline".into());
+                            win.set_status_message("Laptop Sleeping (Suspended).".into());
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    // 6. Hook Inbound Server Command Dispatcher
+    let mut command_rx = network_client.subscribe_commands();
+    let net_client_clone = network_client.clone();
+    tokio::spawn(async move {
+        while let Ok(msg) = command_rx.recv().await {
+            if let ServerMessage::ExecuteCommand {
+                command_id,
+                action,
+                params,
+                ..
+            } = msg
+            {
+                info!("[MAIN] 🛠️ Executing command '{}' [{}]", action, command_id);
+
+                // Acknowledge receipt to server
+                let ack = ClientMessage::CommandResult {
+                    command_id: command_id.clone(),
+                    success: true,
+                    message: format!("Command '{}' received by Windows Bridge", action),
+                    data: serde_json::json!({
+                        "action": action,
+                        "params": params,
+                        "status": "ACKNOWLEDGED"
+                    }),
+                };
+                let _ = net_client_clone.send_message(ack).await;
+            }
+        }
+    });
+
+    // 7. Register Windows OS Power Listener (Sleep & Wake)
+    let net_client_power = network_client.clone();
+    let _power_listener = PowerListener::spawn(move |event| match event {
+        PowerStateEvent::Suspend => {
+            net_client_power.notify_suspend();
+        }
+        PowerStateEvent::Resume => {
+            net_client_power.notify_resume();
+        }
+    });
+
+    // 8. Hook Slint UI Callbacks
     let config_clone = Arc::clone(&config);
     let window_weak = main_window.as_weak();
     main_window.on_save_settings(move |url, token, _fps, low_ram| {
@@ -67,7 +166,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // 5. Hook Test Connection Callback
     let window_weak = main_window.as_weak();
     main_window.on_test_connection(move |url, token| {
         let url_str = url.to_string();
@@ -90,7 +188,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     win.set_is_testing(false);
                     match res {
                         Ok(_) => {
-                            win.set_test_status_text("✅ Handshake Succeeded! Connected & Authenticated.".into());
+                            win.set_test_status_text(
+                                "✅ Handshake Succeeded! Connected & Authenticated.".into(),
+                            );
                         }
                         Err(e) => {
                             win.set_test_status_text(format!("❌ Failed: {}", e).into());
@@ -101,20 +201,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
-    // 6. Hook Toggle Connect Callback
-    let window_weak = main_window.as_weak();
+    let net_client_toggle = network_client.clone();
     main_window.on_toggle_connect(move || {
-        if let Some(win) = window_weak.upgrade() {
-            let current = win.get_connection_status();
-            if current == "connected" {
-                win.set_connection_status("offline".into());
-                win.set_avatar_state("offline".into());
-                win.set_status_message("Disconnected.".into());
-            } else {
-                win.set_connection_status("connecting".into());
-                win.set_avatar_state("idle".into());
-                win.set_status_message("Connecting to N.E.X.A Server...".into());
-            }
+        if net_client_toggle.is_connected() {
+            net_client_toggle.disconnect();
+        } else {
+            net_client_toggle.connect();
         }
     });
 
