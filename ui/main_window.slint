@@ -1,0 +1,187 @@
+import { Button } from "std-widgets.slint";
+import { Avatar } from "components/avatar.slint";
+import { SettingsDialog } from "settings_dialog.slint";
+
+export component MainWindow inherits Window {
+    title: "N.E.X.A Windows Bridge";
+    width: 380px;
+    height: 520px;
+    background: #0D1117;
+    default-font-family: "Segoe UI";
+
+    in-out property <string> connection_status: "offline"; // "connected" | "connecting" | "offline"
+    in-out property <string> avatar_state: "offline";       // "idle" | "listening" | "thinking" | "speaking" | "offline"
+    in-out property <string> status_message: "Ready to connect";
+    in-out property <bool> show_settings: false;
+
+    // Config bindings
+    in-out property <string> cfg_server_url: "";
+    in-out property <string> cfg_auth_token: "";
+    in-out property <bool> cfg_low_ram_mode: true;
+    in-out property <string> test_status_text: "";
+    in-out property <bool> is_testing: false;
+
+    callback toggle_connect();
+    callback open_settings();
+    callback save_settings(string, string, int, bool);
+    callback test_connection(string, string);
+
+    // Main layout
+    VerticalLayout {
+        padding: 20px;
+        spacing: 16px;
+
+        // Top bar
+        HorizontalLayout {
+            alignment: space-between;
+            Text {
+                text: "N.E.X.A Bridge";
+                font-size: 16px;
+                font-weight: 700;
+                color: #58A6FF;
+                vertical-alignment: center;
+            }
+
+            Button {
+                text: "⚙ Settings";
+                clicked => { root.show_settings = !root.show_settings; }
+            }
+        }
+
+        // Center Avatar & State
+        VerticalLayout {
+            alignment: center;
+            spacing: 12px;
+
+            HorizontalLayout {
+                alignment: center;
+                Avatar {
+                    state: root.avatar_state;
+                }
+            }
+
+            Text {
+                horizontal-alignment: center;
+                text: root.avatar_state == "listening" ? "Listening to Tuan Faqih..." :
+                      root.avatar_state == "thinking"  ? "Cognitive Extended Thinking..." :
+                      root.avatar_state == "speaking"  ? "N.E.X.A is Speaking..." :
+                      root.avatar_state == "idle"      ? "Online & Ready" : "Bridge Offline";
+                font-size: 14px;
+                font-weight: 600;
+                color: #C9D1D9;
+            }
+
+            Text {
+                horizontal-alignment: center;
+                text: root.status_message;
+                font-size: 12px;
+                color: #8B949E;
+            }
+        }
+
+        // Hardware Status Indicators
+        Rectangle {
+            background: #161B22;
+            border-radius: 8px;
+            height: 60px;
+
+            HorizontalLayout {
+                padding: 12px;
+                spacing: 16px;
+                alignment: center;
+
+                // Audio Pill
+                HorizontalLayout {
+                    spacing: 6px;
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        y: (parent.height - self.height) / 2;
+                        background: root.connection_status == "connected" ? #3FB950 : #8B949E;
+                    }
+                    Text {
+                        text: "WASAPI Audio";
+                        font-size: 11px;
+                        color: #C9D1D9;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Vision Pill
+                HorizontalLayout {
+                    spacing: 6px;
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        y: (parent.height - self.height) / 2;
+                        background: root.connection_status == "connected" ? #3FB950 : #8B949E;
+                    }
+                    Text {
+                        text: "D3D11 Vision";
+                        font-size: 11px;
+                        color: #C9D1D9;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Automation Pill
+                HorizontalLayout {
+                    spacing: 6px;
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        y: (parent.height - self.height) / 2;
+                        background: root.connection_status == "connected" ? #3FB950 : #8B949E;
+                    }
+                    Text {
+                        text: "AR Guidance";
+                        font-size: 11px;
+                        color: #C9D1D9;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // Connection Action Button
+        Button {
+            text: root.connection_status == "connected" ? "Disconnect" :
+                  root.connection_status == "connecting" ? "Connecting..." : "Connect to N.E.X.A";
+            primary: root.connection_status != "connected";
+            clicked => { root.toggle_connect(); }
+        }
+    }
+
+    // Modal Settings Overlay
+    if root.show_settings : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #000000AA;
+
+        SettingsDialog {
+            width: parent.width - 32px;
+            height: parent.height - 40px;
+            x: 16px;
+            y: 20px;
+            server_url: root.cfg_server_url;
+            auth_token: root.cfg_auth_token;
+            low_ram_mode: root.cfg_low_ram_mode;
+            test_status_text: root.test_status_text;
+            is_testing: root.is_testing;
+
+            save_clicked(url, token, fps, low_ram) => {
+                root.save_settings(url, token, fps, low_ram);
+                root.show_settings = false;
+            }
+            test_connection_clicked(url, token) => {
+                root.test_connection(url, token);
+            }
+            close_clicked => {
+                root.show_settings = false;
+            }
+        }
+    }
+}

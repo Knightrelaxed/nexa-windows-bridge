@@ -1,0 +1,119 @@
+import { Button, LineEdit, CheckBox } from "std-widgets.slint";
+
+export component SettingsDialog inherits Rectangle {
+    in-out property <string> server_url: "ws://127.0.0.1:3000/ws";
+    in-out property <string> auth_token: "";
+    in-out property <int> capture_fps: 1;
+    in-out property <bool> low_ram_mode: true;
+    in property <string> test_status_text: "";
+    in property <bool> is_testing: false;
+
+    callback save_clicked(string, string, int, bool);
+    callback test_connection_clicked(string, string);
+    callback close_clicked();
+
+    background: #1A1F2C;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: #2D3748;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 16px;
+
+        // Header
+        HorizontalLayout {
+            Text {
+                text: "Bridge Settings";
+                font-size: 18px;
+                font-weight: 700;
+                color: #F7FAFC;
+                vertical-alignment: center;
+            }
+        }
+
+        // Server URL
+        VerticalLayout {
+            spacing: 6px;
+            Text {
+                text: "Server Endpoint (WebSocket)";
+                font-size: 13px;
+                color: #A0AEC0;
+            }
+            url_input := LineEdit {
+                text: root.server_url;
+                placeholder-text: "wss://nexa-server.example.com/ws";
+            }
+        }
+
+        // Auth Token
+        VerticalLayout {
+            spacing: 6px;
+            Text {
+                text: "Device Authorization Token";
+                font-size: 13px;
+                color: #A0AEC0;
+            }
+            token_input := LineEdit {
+                text: root.auth_token;
+                placeholder-text: "Enter secret token";
+                input-type: password;
+            }
+        }
+
+        // Performance & Capture
+        VerticalLayout {
+            spacing: 8px;
+            Text {
+                text: "Performance Profile";
+                font-size: 13px;
+                color: #A0AEC0;
+            }
+            low_ram_check := CheckBox {
+                text: "Ultra-Low RAM Mode (<25MB, Lean Buffer)";
+                checked: root.low_ram_mode;
+            }
+        }
+
+        // Test status feedback
+        if root.test_status_text != "" : Text {
+            text: root.test_status_text;
+            font-size: 12px;
+            color: #48BB78;
+        }
+
+        // Action Buttons
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: end;
+
+            Button {
+                text: root.is_testing ? "Testing..." : "Test Connection";
+                enabled: !root.is_testing;
+                clicked => {
+                    root.test_connection_clicked(url_input.text, token_input.text);
+                }
+            }
+
+            Button {
+                text: "Save & Apply";
+                primary: true;
+                clicked => {
+                    root.save_clicked(
+                        url_input.text,
+                        token_input.text,
+                        root.capture_fps,
+                        low_ram_check.checked
+                    );
+                }
+            }
+
+            Button {
+                text: "Close";
+                clicked => {
+                    root.close_clicked();
+                }
+            }
+        }
+    }
+}

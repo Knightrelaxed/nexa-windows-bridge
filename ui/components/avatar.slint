@@ -1,0 +1,42 @@
+export component Avatar inherits Rectangle {
+    in property <string> state: "offline"; // "idle" | "listening" | "thinking" | "speaking" | "offline"
+    in property <float> pulse_scale: 1.0;
+
+    width: 90px;
+    height: 90px;
+    background: transparent;
+
+    // Outer glow ring
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: self.width / 2;
+        border-width: 2px;
+        border-color: root.state == "listening" ? #00E5FF :
+                      root.state == "speaking"  ? #00FF88 :
+                      root.state == "thinking"  ? #FFB300 :
+                      root.state == "idle"      ? #4DD0E1 : #546E7A;
+        background: root.state == "listening" ? #00E5FF18 :
+                    root.state == "speaking"  ? #00FF8818 :
+                    root.state == "thinking"  ? #FFB30018 :
+                    root.state == "idle"      ? #4DD0E110 : #26323830;
+    }
+
+    // Inner core
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 44px * root.pulse_scale;
+        height: 44px * root.pulse_scale;
+        border-radius: self.width / 2;
+        background: root.state == "listening" ? #00E5FF :
+                    root.state == "speaking"  ? #00FF88 :
+                    root.state == "thinking"  ? #FFB300 :
+                    root.state == "idle"      ? #80DEEA : #78909C;
+
+        animate width, height {
+            duration: 250ms;
+            easing: ease-in-out;
+        }
+    }
+}
