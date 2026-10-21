@@ -293,8 +293,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match event {
                     TrayEvent::ToggleWindow => {
                         let is_vis = win.window().is_visible();
-                        info!("[TRAY] 🖱️ Tray icon clicked. Toggling window visibility (visible={})", !is_vis);
-                        if is_vis {
+                        let is_min = win.window().is_minimized();
+                        info!("[TRAY] 🖱️ Tray icon clicked (visible={}, minimized={})", is_vis, is_min);
+                        if is_min {
+                            win.window().set_minimized(false);
+                            let _ = win.window().show();
+                        } else if is_vis {
                             let _ = win.window().hide();
                         } else {
                             let _ = win.window().show();
@@ -302,6 +306,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     TrayEvent::ShowWindow => {
                         info!("[TRAY] Context menu 'Buka N.E.X.A' activated.");
+                        win.window().set_minimized(false);
                         let _ = win.window().show();
                     }
                     TrayEvent::ToggleMute => {
@@ -322,12 +327,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     TrayEvent::OpenSettings => {
                         info!("[TRAY] Context menu 'Pengaturan' activated.");
+                        win.window().set_minimized(false);
                         let _ = win.window().show();
                         win.set_show_settings(true);
                     }
                     TrayEvent::Quit => {
-                        info!("[TRAY] Context menu 'Keluar' activated. Exiting application.");
-                        std::process::exit(0);
+                        info!("[TRAY] Context menu 'Keluar' activated. Exiting application gracefully.");
+                        let _ = slint::quit_event_loop();
                     }
                 }
             }
@@ -345,8 +351,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match action {
                     HotkeyAction::BossKey => {
                         let is_vis = win.window().is_visible();
-                        info!("[HOTKEY] 🕶️ Boss Key (Win+Alt+N) triggered. Window visible -> {}", !is_vis);
-                        if is_vis {
+                        let is_min = win.window().is_minimized();
+                        info!("[HOTKEY] 🕶️ Boss Key (Win+Alt+N) triggered (visible={}, minimized={})", is_vis, is_min);
+                        if is_min {
+                            win.window().set_minimized(false);
+                            let _ = win.window().show();
+                        } else if is_vis {
                             let _ = win.window().hide();
                         } else {
                             let _ = win.window().show();
@@ -484,6 +494,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 win.set_status_message(ui::CognitiveState::Idle.status_text().into());
             }
         }
+    });
+
+    // Intercept Window Close Button [X]: Hide window to system tray instead of abrupt termination
+    main_window.window().on_close_requested(|| {
+        info!("[MAIN] Window close [X] requested. Hiding window to system tray.");
+        slint::CloseRequestResponse::HideWindow
     });
 
     // Run the Slint GUI Event Loop

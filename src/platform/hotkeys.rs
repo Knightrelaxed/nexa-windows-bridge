@@ -8,6 +8,7 @@ use std::sync::Mutex;
 use std::thread;
 use tracing::{error, info, warn};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_NOREPEAT, MOD_WIN, VK_F11,
 };
@@ -56,12 +57,13 @@ impl HotkeyListener {
             let class_name: Vec<u16> = "NexaHotkeyListenerClass\0".encode_utf16().collect();
 
             unsafe {
+                let hinstance = GetModuleHandleW(std::ptr::null());
                 let wnd_class = WNDCLASSW {
                     style: 0,
                     lpfnWndProc: Some(hotkey_wnd_proc),
                     cbClsExtra: 0,
                     cbWndExtra: 0,
-                    hInstance: 0 as _,
+                    hInstance: hinstance,
                     hIcon: 0 as _,
                     hCursor: 0 as _,
                     hbrBackground: 0 as _,
@@ -82,7 +84,7 @@ impl HotkeyListener {
                     0,
                     0 as _,
                     0 as _,
-                    0 as _,
+                    hinstance,
                     std::ptr::null(),
                 );
 
