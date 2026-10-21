@@ -5,10 +5,11 @@ export component SettingsDialog inherits Rectangle {
     in-out property <string> auth_token: "";
     in-out property <int> capture_fps: 1;
     in-out property <bool> low_ram_mode: true;
+    in-out property <bool> autostart: false;
     in property <string> test_status_text: "";
     in property <bool> is_testing: false;
 
-    callback save_clicked(string, string, int, bool);
+    callback save_clicked(string, string, int, bool, bool);
     callback test_connection_clicked(string, string);
     callback close_clicked();
 
@@ -65,13 +66,17 @@ export component SettingsDialog inherits Rectangle {
         VerticalLayout {
             spacing: 8px;
             Text {
-                text: "Performance Profile";
+                text: "Performance & Startup";
                 font-size: 13px;
                 color: #A0AEC0;
             }
             low_ram_check := CheckBox {
                 text: "Ultra-Low RAM Mode (<25MB, Lean Buffer)";
                 checked: root.low_ram_mode;
+            }
+            autostart_check := CheckBox {
+                text: "Mulai Otomatis saat Windows Menyala (Standby di Tray)";
+                checked: root.autostart;
             }
         }
 
@@ -103,7 +108,8 @@ export component SettingsDialog inherits Rectangle {
                         url_input.text,
                         token_input.text,
                         root.capture_fps,
-                        low_ram_check.checked
+                        low_ram_check.checked,
+                        autostart_check.checked
                     );
                 }
             }

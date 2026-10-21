@@ -40,6 +40,7 @@ export component MainWindow inherits Window {
     in-out property <string> cfg_server_url: "";
     in-out property <string> cfg_auth_token: "";
     in-out property <bool> cfg_low_ram_mode: true;
+    in-out property <bool> cfg_autostart: false;
     in-out property <string> test_status_text: "";
     in-out property <bool> is_testing: false;
 
@@ -49,7 +50,7 @@ export component MainWindow inherits Window {
     callback toggle_mic_mute();
     callback toggle_screen_share();
     callback open_settings();
-    callback save_settings(string, string, int, bool);
+    callback save_settings(string, string, int, bool, bool);
     callback test_connection(string, string);
 
     // Primary Computed Status Text (100% Mobile Bridge Parity)
@@ -456,14 +457,16 @@ export component MainWindow inherits Window {
             server_url: root.cfg_server_url;
             auth_token: root.cfg_auth_token;
             low_ram_mode: root.cfg_low_ram_mode;
+            autostart: root.cfg_autostart;
             test_status_text: root.test_status_text;
             is_testing: root.is_testing;
 
-            save_clicked(url, token, fps, low_ram) => {
+            save_clicked(url, token, fps, low_ram, autostart) => {
                 root.cfg_server_url = url;
                 root.cfg_auth_token = token;
                 root.cfg_low_ram_mode = low_ram;
-                root.save_settings(url, token, fps, low_ram);
+                root.cfg_autostart = autostart;
+                root.save_settings(url, token, fps, low_ram, autostart);
                 root.show_settings = false;
             }
             test_connection_clicked(url, token) => {

@@ -12,6 +12,7 @@ pub struct BridgeConfig {
     pub capture_fps: u32,
     pub low_ram_mode: bool,
     pub auto_connect: bool,
+    pub autostart: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,6 +32,7 @@ impl Default for BridgeConfig {
             capture_fps: 1,
             low_ram_mode: true,
             auto_connect: false,
+            autostart: false,
         }
     }
 }

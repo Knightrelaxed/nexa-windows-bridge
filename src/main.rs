@@ -24,6 +24,35 @@ use ui::MainWindow;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 0. Single-Instance Mutex Arbiter (Milestone 7.4)
+    let _single_instance = platform::SingleInstanceGuard::acquire();
+    if !_single_instance.is_unique() {
+        eprintln!("N.E.X.A Bridge is already running. Focusing existing instance.");
+        return Ok(());
+    }
+
+    // Parse command line arguments (e.g. --help, --version, --autostart, --minimized)
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        println!("N.E.X.A Windows Bridge v0.1.0");
+        println!("Native Windows Desktop Companion for Lenovo ThinkPad X380 Yoga");
+        println!();
+        println!("USAGE:");
+        println!("    nexa-windows-bridge.exe [OPTIONS]");
+        println!();
+        println!("OPTIONS:");
+        println!("    -h, --help        Print help information");
+        println!("    -v, --version     Print version information");
+        println!("    --autostart       Start standby quietly in the Windows system tray");
+        println!("    --minimized       Start window minimized to system tray");
+        return Ok(());
+    }
+    if args.iter().any(|arg| arg == "--version" || arg == "-v") {
+        println!("nexa-windows-bridge 0.1.0");
+        return Ok(());
+    }
+    let start_minimized = args.iter().any(|arg| arg == "--autostart" || arg == "--minimized");
+
     // 1. Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -40,13 +69,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 3. Initialize Slint MainWindow
     let main_window = MainWindow::new()?;
 
-    // Sync initial configuration to UI
+    // Sync initial configuration & Auto-Start status to UI
     {
         let cfg = config.lock().unwrap();
+        let is_autostart = platform::is_autostart_enabled();
         main_window.set_cfg_server_url(cfg.server_url.clone().into());
         main_window.set_cfg_auth_token(cfg.auth_token.clone().into());
         main_window.set_cfg_low_ram_mode(cfg.low_ram_mode);
+        main_window.set_cfg_autostart(is_autostart);
         main_window.set_status_message("Ready to connect.".into());
+    }
+
+    // If started via Windows startup, hide window to system tray silently
+    if start_minimized {
+        let window_weak = main_window.as_weak();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(win) = window_weak.upgrade() {
+                let _ = win.window().hide();
+            }
+        });
+        info!("[MAIN] 🔕 Started in Auto-Start Standby mode (minimized to system tray)");
+        platform::trim_working_set();
     }
 
     // 3.1 Initialize Slint OverlayWindow and Stealth Highlighter Controller
@@ -139,6 +182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(mut c) = ctrl.take() {
                             c.stop();
                         }
+                        platform::compact_memory_if_low_ram(true);
                         win.set_avatar_state(ui::CognitiveState::Idle.as_str().into());
                         win.set_status_message(ui::CognitiveState::Idle.status_text().into());
                     }
@@ -456,6 +500,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let _ = win.window().show();
                         } else if is_vis {
                             let _ = win.window().hide();
+                            platform::trim_working_set();
                         } else {
                             let _ = win.window().show();
                         }
@@ -520,6 +565,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let _ = win.window().show();
                         } else if is_vis {
                             let _ = win.window().hide();
+                            platform::trim_working_set();
                         } else {
                             let _ = win.window().show();
                         }
@@ -592,19 +638,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 8. Hook Slint UI Callbacks
     let config_clone = Arc::clone(&config);
     let window_weak = main_window.as_weak();
-    main_window.on_save_settings(move |url, token, _fps, low_ram| {
+    main_window.on_save_settings(move |url, token, _fps, low_ram, autostart| {
         let mut cfg = config_clone.lock().unwrap();
         cfg.server_url = url.to_string();
         cfg.auth_token = token.to_string();
         cfg.low_ram_mode = low_ram;
+        cfg.autostart = autostart;
+
+        let _ = platform::set_autostart_enabled(autostart);
 
         match cfg.save() {
             Ok(_) => {
-                info!("Settings saved successfully.");
+                info!("Settings saved successfully (autostart={}).", autostart);
                 if let Some(win) = window_weak.upgrade() {
                     win.set_cfg_server_url(url.clone());
                     win.set_cfg_auth_token(token.clone());
                     win.set_cfg_low_ram_mode(low_ram);
+                    win.set_cfg_autostart(autostart);
                     win.set_status_message("Settings saved & applied.".into());
                 }
             }
@@ -703,6 +753,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Intercept Window Close Button [X]: Hide window to system tray instead of abrupt termination
     main_window.window().on_close_requested(|| {
         info!("[MAIN] Window close [X] requested. Hiding window to system tray.");
+        platform::trim_working_set();
         slint::CloseRequestResponse::HideWindow
     });
 

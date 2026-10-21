@@ -149,7 +149,12 @@ mod tests {
         main_window.set_cfg_low_ram_mode(true);
         assert!(main_window.get_cfg_low_ram_mode());
 
-        // 11. Verify Status Message Binding
+        // 11. Verify Autostart Binding
+        assert!(!main_window.get_cfg_autostart());
+        main_window.set_cfg_autostart(true);
+        assert!(main_window.get_cfg_autostart());
+
+        // 12. Verify Status Message Binding
         main_window.set_status_message("N.E.X.A Connected".into());
         assert_eq!(main_window.get_status_message().as_str(), "N.E.X.A Connected");
     }
