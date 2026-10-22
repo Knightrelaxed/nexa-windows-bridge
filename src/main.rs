@@ -485,7 +485,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::spawn(async move {
         let mut last_ui_audio_tick = std::time::Instant::now();
-        while let Ok(msg) = command_rx.recv().await {
+        loop {
+            let msg = match command_rx.recv().await {
+                Ok(m) => m,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                    warn!("[MAIN] Command queue lagged by {} messages; continuing dispatch loop", missed);
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    info!("[MAIN] Command queue closed; terminating dispatch loop");
+                    break;
+                }
+            };
             match msg {
                 ServerMessage::AudioPlay { pcm_chunk } => {
                     use base64::prelude::*;

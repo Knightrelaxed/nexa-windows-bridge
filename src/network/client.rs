@@ -49,7 +49,7 @@ impl NetworkClient {
     pub fn new(config: Arc<Mutex<BridgeConfig>>) -> Self {
         let (state_tx, _) = watch::channel(ConnectionState::Disconnected);
         let (outbound_tx, outbound_rx) = mpsc::channel::<OutboundItem>(128);
-        let (command_tx, _) = broadcast::channel::<ServerMessage>(64);
+        let (command_tx, _) = broadcast::channel::<ServerMessage>(256);
         let reconnect_notify = Arc::new(Notify::new());
         let session_interrupt = Arc::new(Notify::new());
         let enabled = Arc::new(Mutex::new(false));
