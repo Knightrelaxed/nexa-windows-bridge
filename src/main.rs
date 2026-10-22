@@ -977,12 +977,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if !fs {
                 win.window().set_maximized(false);
-                unsafe {
-                    let hwnd = get_main_window_hwnd();
-                    if !hwnd.is_null() {
-                        position_floating_pill_window(hwnd);
+                let timer_win = window_weak.clone();
+                slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+                    if let Some(_w) = timer_win.upgrade() {
+                        unsafe {
+                            let hwnd = get_main_window_hwnd();
+                            if !hwnd.is_null() {
+                                position_floating_pill_window(hwnd);
+                            }
+                        }
                     }
-                }
+                });
             }
         }
     });
@@ -1010,19 +1015,67 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         toggle_share_ui(None);
     });
 
-    // Hook Native Window Drag (ReleaseCapture + WM_SYSCOMMAND SC_MOVE | HTCAPTION)
+    // Hook Native Window Drag (Direct Realtime Threaded Tracking Loop)
     main_window.on_start_window_drag(move || {
-        unsafe {
-            use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
-            use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_SYSCOMMAND};
-            const SC_DRAG_MOVE: usize = 0xF012; // SC_MOVE (0xF010) | HTCAPTION (0x0002)
+        std::thread::spawn(move || {
+            unsafe {
+                use windows_sys::Win32::Foundation::{POINT, RECT};
+                use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+                    GetAsyncKeyState, ReleaseCapture, VK_LBUTTON,
+                };
+                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                    GetCursorPos, GetWindowRect, SetWindowPos, SWP_NOSIZE, SWP_NOZORDER,
+                };
 
-            let hwnd = get_main_window_hwnd();
-            if !hwnd.is_null() {
+                let hwnd = get_main_window_hwnd();
+                if hwnd.is_null() {
+                    return;
+                }
+
+                // Check that left mouse button is currently down
+                if (GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000) == 0 {
+                    return;
+                }
+
+                let mut start_cursor = POINT { x: 0, y: 0 };
+                GetCursorPos(&mut start_cursor);
+
+                let mut start_rect = RECT {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                };
+                GetWindowRect(hwnd, &mut start_rect);
+
                 ReleaseCapture();
-                SendMessageW(hwnd, WM_SYSCOMMAND, SC_DRAG_MOVE, 0);
+
+                // Smoothly update window position while left mouse button is held down
+                while (GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000) != 0 {
+                    let mut cur_cursor = POINT { x: 0, y: 0 };
+                    GetCursorPos(&mut cur_cursor);
+
+                    let dx = cur_cursor.x - start_cursor.x;
+                    let dy = cur_cursor.y - start_cursor.y;
+
+                    if dx != 0 || dy != 0 {
+                        let new_x = start_rect.left + dx;
+                        let new_y = start_rect.top + dy;
+                        SetWindowPos(
+                            hwnd,
+                            std::ptr::null_mut(),
+                            new_x,
+                            new_y,
+                            0,
+                            0,
+                            SWP_NOSIZE | SWP_NOZORDER,
+                        );
+                    }
+
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
             }
-        }
+        });
     });
 
     // Hook Settings Modal Open (Option A: Smooth Dynamic Expansion)
@@ -1047,12 +1100,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(win) = window_weak.upgrade() {
             win.set_show_settings(false);
             if !win.get_is_fullscreen() {
-                unsafe {
-                    let hwnd = get_main_window_hwnd();
-                    if !hwnd.is_null() {
-                        position_floating_pill_window(hwnd);
+                let timer_win = window_weak.clone();
+                slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+                    if let Some(_w) = timer_win.upgrade() {
+                        unsafe {
+                            let hwnd = get_main_window_hwnd();
+                            if !hwnd.is_null() {
+                                position_floating_pill_window(hwnd);
+                            }
+                        }
                     }
-                }
+                });
             }
         }
     });
@@ -1101,12 +1159,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Run the Slint GUI Event Loop until explicit quit (Claude Bug #2 & #3)
     if !start_minimized {
         main_window.show()?;
-        unsafe {
-            let hwnd = get_main_window_hwnd();
-            if !hwnd.is_null() {
-                position_floating_pill_window(hwnd);
+        let timer_win = main_window.as_weak();
+        slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+            if let Some(win) = timer_win.upgrade() {
+                if !win.get_is_fullscreen() {
+                    unsafe {
+                        let hwnd = get_main_window_hwnd();
+                        if !hwnd.is_null() {
+                            position_floating_pill_window(hwnd);
+                            info!("[MAIN] 📍 Positioned floating pill window at Top-Center (Tengah Atas)");
+                        }
+                    }
+                }
             }
-        }
+        });
     } else {
         info!("[MAIN] 🔕 Started in Auto-Start Standby mode (minimized to system tray)");
     }
@@ -1160,7 +1226,7 @@ unsafe fn get_main_window_hwnd() -> windows_sys::Win32::Foundation::HWND {
     use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
     use windows_sys::Win32::System::Threading::GetCurrentProcessId;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, FindWindowW, GetWindowThreadProcessId, IsWindowVisible,
+        EnumWindows, FindWindowW, GetClassNameW, GetWindowThreadProcessId, IsWindowVisible,
     };
 
     let title1: Vec<u16> = "Nexa Bridge\0".encode_utf16().collect();
@@ -1185,8 +1251,13 @@ unsafe fn get_main_window_hwnd() -> windows_sys::Win32::Foundation::HWND {
         let mut window_pid = 0u32;
         GetWindowThreadProcessId(hwnd, &mut window_pid);
         if window_pid == ctx.pid && IsWindowVisible(hwnd) != 0 {
-            ctx.found = hwnd;
-            return 0; // stop enumeration
+            let mut class_buf = [0u16; 64];
+            let class_len = GetClassNameW(hwnd, class_buf.as_mut_ptr(), 64);
+            let class_name = String::from_utf16_lossy(&class_buf[..class_len as usize]);
+            if !class_name.contains("Event Target") && !class_name.contains("IME") {
+                ctx.found = hwnd;
+                return 0; // stop enumeration
+            }
         }
         1 // continue
     }
