@@ -48,13 +48,13 @@ export component OverlayWindow inherits Window {
             height: 100%;
             background: transparent;
 
-            // Top Dimmer Panel
+            // Top Dimmer Panel (uses #060810 so LWA_COLORKEY doesn't key it out)
             Rectangle {
                 x: 0px;
                 y: 0px;
                 width: 100%;
                 height: Math.max(0px, root.target_y);
-                background: #00000077;
+                background: #060810CC;
                 opacity: root.highlight_opacity;
                 animate opacity { duration: 200ms; easing: ease-out; }
             }
@@ -65,7 +65,7 @@ export component OverlayWindow inherits Window {
                 y: root.target_y + root.target_h;
                 width: 100%;
                 height: Math.max(0px, root.window_height - (root.target_y + root.target_h));
-                background: #00000077;
+                background: #060810CC;
                 opacity: root.highlight_opacity;
                 animate opacity { duration: 200ms; easing: ease-out; }
             }
@@ -76,7 +76,7 @@ export component OverlayWindow inherits Window {
                 y: root.target_y;
                 width: Math.max(0px, root.target_x);
                 height: root.target_h;
-                background: #00000077;
+                background: #060810CC;
                 opacity: root.highlight_opacity;
                 animate opacity { duration: 200ms; easing: ease-out; }
             }
@@ -87,7 +87,7 @@ export component OverlayWindow inherits Window {
                 y: root.target_y;
                 width: Math.max(0px, root.window_width - (root.target_x + root.target_w));
                 height: root.target_h;
-                background: #00000077;
+                background: #060810CC;
                 opacity: root.highlight_opacity;
                 animate opacity { duration: 200ms; easing: ease-out; }
             }

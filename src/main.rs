@@ -138,6 +138,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(win) = window_weak.upgrade() {
                 win.window().set_minimized(false);
                 let _ = win.window().show();
+                if !win.get_is_fullscreen() {
+                    unsafe {
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{
+                            FindWindowW, GetSystemMetrics, SetForegroundWindow, SetWindowPos,
+                            HWND_TOPMOST, SM_CXSCREEN, SWP_SHOWWINDOW,
+                        };
+                        let title: Vec<u16> = "N.E.X.A Windows Bridge\0".encode_utf16().collect();
+                        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+                        if !hwnd.is_null() {
+                            let screen_w = GetSystemMetrics(SM_CXSCREEN);
+                            let pill_w = 400;
+                            let pill_h = 64;
+                            let pos_x = (screen_w - pill_w) / 2;
+                            let pos_y = 16;
+                            SetWindowPos(hwnd, HWND_TOPMOST, pos_x, pos_y, pill_w, pill_h, SWP_SHOWWINDOW);
+                            SetForegroundWindow(hwnd);
+                        }
+                    }
+                }
             }
         });
     });
@@ -166,26 +185,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 3.1 Initialize Slint OverlayWindow and Stealth Highlighter Controller
+    // NOTE: Do NOT show the overlay window here. It must remain hidden until
+    // a highlight/ripple is actually requested. Slint windows are rendered via
+    // their own GPU swapchain — DWM frame extension and SetLayeredWindowAttributes
+    // do NOT make a Slint window transparent. The overlay window must only be
+    // shown momentarily when overlay graphics are active, then hidden again.
     let overlay_window = ui::OverlayWindow::new().ok();
-    if let Some(ref ow) = overlay_window {
-        let ow_weak = ow.as_weak();
-        let screen = automation::get_primary_screen_dimensions();
-        let _ = slint::invoke_from_event_loop(move || {
-            if let Some(w) = ow_weak.upgrade() {
-                w.set_window_width(screen.width as f32);
-                w.set_window_height(screen.height as f32);
-                w.set_highlight_visible(false);
-                w.set_ripple_visible(false);
-                let _ = w.show();
-            }
-        });
-
-        // Apply Win32 stealth styles & DWM alpha frame extension immediately at startup
-        tokio::spawn(async move {
-            tokio::time::sleep(tokio::time::Duration::from_millis(60)).await;
-            automation::apply_stealth_window_styles();
-        });
-    }
 
     let highlighter_controller = Arc::new(automation::HighlighterController::new(
         overlay_window.as_ref().map(|w| w.as_weak()),
@@ -1064,9 +1069,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Intercept Window Close Button [X]: Hide window to system tray instead of abrupt termination (Claude Bug #2)
+    // Window Close Button [X]: Terminate application cleanly, stopping all audio and network sessions
     main_window.window().on_close_requested(|| {
-        info!("[MAIN] Window close [X] requested. Hiding window to system tray.");
+        info!("[MAIN] Window close [X] requested. Terminating application gracefully.");
+        let _ = slint::quit_event_loop();
         slint::CloseRequestResponse::HideWindow
     });
 
