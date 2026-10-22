@@ -3,7 +3,10 @@
 // WebRTC AEC3, Noise Suppression & Dynamic Ducking Engine
 // ============================================================
 
-use sonora::config::{EchoCanceller, GainController2, NoiseSuppression};
+use sonora::config::{
+    EchoCanceller, GainController2, HighPassFilter, NoiseSuppression, NoiseSuppressionLevel,
+    PreAmplifier,
+};
 use sonora::{AudioProcessing, Config, StreamConfig};
 use std::collections::VecDeque;
 
@@ -18,7 +21,6 @@ pub struct EchoCancellerEngine {
     is_speaking: bool,
     #[allow(dead_code)]
     ducking_factor: f32,       // e.g. 0.125 = -18dB
-    #[allow(dead_code)]
     barge_in_threshold: f32,   // RMS threshold for user interrupting AI
     barge_in_detected: bool,
 }
@@ -27,8 +29,17 @@ impl EchoCancellerEngine {
     pub fn new() -> Result<Self, sonora::Error> {
         let config = Config {
             echo_canceller: Some(EchoCanceller::default()),
-            noise_suppression: Some(NoiseSuppression::default()),
+            noise_suppression: Some(NoiseSuppression {
+                level: NoiseSuppressionLevel::High,
+                analyze_linear_aec_output_when_available: true,
+            }),
             gain_controller2: Some(GainController2::default()),
+            high_pass_filter: Some(HighPassFilter {
+                apply_in_full_band: true,
+            }),
+            pre_amplifier: Some(PreAmplifier {
+                fixed_gain_factor: 2.5, // +8dB clean analog-style pre-amp for ThinkPad mic array
+            }),
             ..Default::default()
         };
 
@@ -45,7 +56,7 @@ impl EchoCancellerEngine {
             processed_queue: VecDeque::with_capacity(3200),
             is_speaking: false,
             ducking_factor: 0.125, // -18dB attenuation
-            barge_in_threshold: 0.35, // Deliberate loud speech (prevents self-acoustic feedback)
+            barge_in_threshold: 0.15, // Voice barge-in RMS threshold after AEC (distinguishes intentional speech from speaker bleed)
             barge_in_detected: false,
         })
     }
@@ -90,13 +101,22 @@ impl EchoCancellerEngine {
         while self.capture_accumulator.len() >= CHUNK_SIZE_10MS {
             let chunk: Vec<f32> = self.capture_accumulator.drain(..CHUNK_SIZE_10MS).collect();
 
-            // Process capture frame through WebRTC AEC3 + NS + AGC
+            // Process capture frame through WebRTC AEC3 + NS + AGC + HPF
             let mut capture_out = vec![0.0f32; CHUNK_SIZE_10MS];
             if self.apm.process_capture_f32(&[&chunk], &mut [&mut capture_out]).is_ok() {
-                // Absolute acoustic isolation if speaker is actively playing:
-                // Prevents laptop speaker acoustic bleed from triggering false self-interruption or echo
+                // If speaker is actively playing, check if user is intentionally speaking (barge-in)
                 if self.is_speaking {
-                    capture_out.fill(0.0);
+                    let mut sum_sq = 0.0f32;
+                    for &s in &capture_out {
+                        sum_sq += s * s;
+                    }
+                    let rms = (sum_sq / capture_out.len() as f32).sqrt();
+                    if rms > self.barge_in_threshold {
+                        self.barge_in_detected = true;
+                        self.is_speaking = false;
+                    } else {
+                        capture_out.fill(0.0);
+                    }
                 }
                 self.processed_queue.extend(capture_out);
             } else {

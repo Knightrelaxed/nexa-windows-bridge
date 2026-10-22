@@ -176,7 +176,8 @@ async fn run_mic_processing_worker(
         if speaker_active_now {
             last_speaker_active = std::time::Instant::now();
         }
-        let is_in_speaker_or_reverb = speaker_active_now || last_speaker_active.elapsed() < Duration::from_millis(350);
+        // Minimal 80ms reverb hold prevents clipping the first words of the user's response
+        let is_in_speaker_or_reverb = speaker_active_now || last_speaker_active.elapsed() < Duration::from_millis(80);
 
         // 1. Drain incoming render reference samples from real-time speaker callback (Claude Bug C1)
         let mut ref_scratch = [0.0f32; 1024];
@@ -197,9 +198,12 @@ async fn run_mic_processing_worker(
             aec.set_speaking(is_in_speaker_or_reverb);
         }
 
-        // 2. Read captured mic samples from lock-free ring buffer
-        let read = consumer.pop_slice(&mut raw_chunk);
-        if read > 0 {
+        // 2. Read captured mic samples strictly aligned to hardware channels to prevent channel phase shift
+        let available = consumer.len();
+        let ch = (hardware_channels.max(1)) as usize;
+        let to_read = (available.min(raw_chunk.len()) / ch) * ch;
+        if to_read > 0 {
+            let read = consumer.pop_slice(&mut raw_chunk[..to_read]);
             let captured_slice = &raw_chunk[..read];
 
             // Downmix to mono if multi-channel (stereo, quad, etc.)

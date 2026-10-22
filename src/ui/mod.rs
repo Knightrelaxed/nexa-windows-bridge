@@ -140,6 +140,17 @@ mod tests {
         assert_eq!(primary_title.encode_utf16().count(), 11);
         assert_eq!(fallback_title.encode_utf16().count(), 22);
 
+        // Verify Win32 cursor APIs are available
+        #[cfg(target_os = "windows")]
+        unsafe {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                LoadCursorW, IDC_ARROW, GCLP_HCURSOR,
+            };
+            let arrow = LoadCursorW(std::ptr::null_mut(), IDC_ARROW);
+            assert!(!arrow.is_null());
+            assert_eq!(GCLP_HCURSOR, -12i32);
+        }
+
         // 4. Toggle Mic Mute
         main_window.set_is_mic_muted(true);
         assert!(main_window.get_is_mic_muted());

@@ -171,24 +171,21 @@ export component MainWindow inherits Window {
         // ==============================================================
         // MODE 2: FULL SCREEN (MODERN 3-COLUMN COMMAND CENTER)
         // ==============================================================
-        if root.is_expanded_view : Rectangle {
+        if root.is_expanded_view : TouchArea {
             width: 100%;
             height: 100%;
-            background: #080B10;
+            mouse-cursor: default;
 
-            // Base cursor area ensures default arrow cursor across the full canvas
-            TouchArea {
+            Rectangle {
                 width: 100%;
                 height: 100%;
-                mouse-cursor: default;
-                z: -1;
-            }
+                background: #080B10;
 
-            VerticalLayout {
-                width: 100%;
-                height: 100%;
-                padding: 12px;
-                spacing: 8px;
+                VerticalLayout {
+                    width: 100%;
+                    height: 100%;
+                    padding: 12px;
+                    spacing: 8px;
 
             // 1. Top Window Title & App Identity Bar
             HorizontalLayout {
@@ -672,53 +669,60 @@ export component MainWindow inherits Window {
             }
         }
         }
+        }
     }
 
     // Modal Settings Overlay
-    if root.show_settings : Rectangle {
+    if root.show_settings : TouchArea {
         width: 100%;
         height: 100%;
-        background: #000000CC;
+        mouse-cursor: default;
 
-        SettingsDialog {
-            width: min(560px, parent.width - 32px);
-            height: min(520px, parent.height - 32px);
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            server_url: root.cfg_server_url;
-            auth_token: root.cfg_auth_token;
-            capture_fps: root.cfg_fps;
-            low_ram_mode: root.cfg_low_ram_mode;
-            autostart: root.cfg_autostart;
-            show_card_vision: root.show_card_vision;
-            show_card_automation: root.show_card_automation;
-            show_card_transcript: root.show_card_transcript;
-            show_card_telemetry: root.show_card_telemetry;
-            show_card_hotkeys: root.show_card_hotkeys;
-            test_status_text: root.test_status_text;
-            is_testing: root.is_testing;
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: #000000CC;
 
-            save_clicked(url, token, fps, low_ram, autostart, vision, auto, trans, telem, hotkeys) => {
-                root.cfg_server_url = url;
-                root.cfg_auth_token = token;
-                root.cfg_fps = fps;
-                root.cfg_low_ram_mode = low_ram;
-                root.cfg_autostart = autostart;
-                root.show_card_vision = vision;
-                root.show_card_automation = auto;
-                root.show_card_transcript = trans;
-                root.show_card_telemetry = telem;
-                root.show_card_hotkeys = hotkeys;
-                root.save_settings(url, token, fps, low_ram, autostart, vision, auto, trans, telem, hotkeys);
-                root.show_settings = false;
-                root.close_settings();
-            }
-            test_connection_clicked(url, token) => {
-                root.test_connection(url, token);
-            }
-            close_clicked => {
-                root.show_settings = false;
-                root.close_settings();
+            SettingsDialog {
+                width: min(560px, parent.width - 32px);
+                height: min(520px, parent.height - 32px);
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                server_url: root.cfg_server_url;
+                auth_token: root.cfg_auth_token;
+                capture_fps: root.cfg_fps;
+                low_ram_mode: root.cfg_low_ram_mode;
+                autostart: root.cfg_autostart;
+                show_card_vision: root.show_card_vision;
+                show_card_automation: root.show_card_automation;
+                show_card_transcript: root.show_card_transcript;
+                show_card_telemetry: root.show_card_telemetry;
+                show_card_hotkeys: root.show_card_hotkeys;
+                test_status_text: root.test_status_text;
+                is_testing: root.is_testing;
+
+                save_clicked(url, token, fps, low_ram, autostart, vision, auto, trans, telem, hotkeys) => {
+                    root.cfg_server_url = url;
+                    root.cfg_auth_token = token;
+                    root.cfg_fps = fps;
+                    root.cfg_low_ram_mode = low_ram;
+                    root.cfg_autostart = autostart;
+                    root.show_card_vision = vision;
+                    root.show_card_automation = auto;
+                    root.show_card_transcript = trans;
+                    root.show_card_telemetry = telem;
+                    root.show_card_hotkeys = hotkeys;
+                    root.save_settings(url, token, fps, low_ram, autostart, vision, auto, trans, telem, hotkeys);
+                    root.show_settings = false;
+                    root.close_settings();
+                }
+                test_connection_clicked(url, token) => {
+                    root.test_connection(url, token);
+                }
+                close_clicked => {
+                    root.show_settings = false;
+                    root.close_settings();
+                }
             }
         }
     }

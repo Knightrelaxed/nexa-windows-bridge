@@ -801,8 +801,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         info!("[HOTKEY] ⛶ Fullscreen Toggle (F11 / Win+Alt+F) triggered: fs={}", fs);
                         win.set_is_fullscreen(fs);
                         win.window().set_fullscreen(fs);
-                        if !fs {
+                        unsafe {
+                            let hwnd = get_main_window_hwnd();
+                            enforce_system_cursor_visible(hwnd);
+                        }
+                        if fs {
+                            let timer_win = window_weak.clone();
+                            slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+                                if let Some(w) = timer_win.upgrade() {
+                                    if w.get_is_fullscreen() {
+                                        unsafe {
+                                            let hwnd = get_main_window_hwnd();
+                                            enforce_system_cursor_visible(hwnd);
+                                        }
+                                    }
+                                }
+                            });
+                        } else {
                             win.window().set_maximized(false);
+                            let timer_win = window_weak.clone();
+                            slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+                                if let Some(_w) = timer_win.upgrade() {
+                                    unsafe {
+                                        let hwnd = get_main_window_hwnd();
+                                        if !hwnd.is_null() {
+                                            position_floating_pill_window(hwnd);
+                                        }
+                                    }
+                                }
+                            });
                         }
                     }
                     HotkeyAction::ToggleScreenShare => {
@@ -969,13 +996,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!("[MAIN] ⛶ Fullscreen toggled: {}", fs);
             win.window().set_fullscreen(fs);
 
-            // Ensure OS cursor display counter is >= 0 (cursor visible)
             unsafe {
-                use windows_sys::Win32::UI::WindowsAndMessaging::ShowCursor;
-                while ShowCursor(1) < 0 {}
+                let hwnd = get_main_window_hwnd();
+                enforce_system_cursor_visible(hwnd);
             }
 
-            if !fs {
+            if fs {
+                let timer_win = window_weak.clone();
+                slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+                    if let Some(w) = timer_win.upgrade() {
+                        if w.get_is_fullscreen() {
+                            unsafe {
+                                let hwnd = get_main_window_hwnd();
+                                enforce_system_cursor_visible(hwnd);
+                            }
+                        }
+                    }
+                });
+            } else {
                 win.window().set_maximized(false);
                 let timer_win = window_weak.clone();
                 slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
@@ -1162,10 +1200,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let timer_win = main_window.as_weak();
         slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
             if let Some(win) = timer_win.upgrade() {
-                if !win.get_is_fullscreen() {
-                    unsafe {
-                        let hwnd = get_main_window_hwnd();
-                        if !hwnd.is_null() {
+                unsafe {
+                    let hwnd = get_main_window_hwnd();
+                    if !hwnd.is_null() {
+                        enforce_system_cursor_visible(hwnd);
+                        if !win.get_is_fullscreen() {
                             position_floating_pill_window(hwnd);
                             info!("[MAIN] 📍 Positioned floating pill window at Top-Center (Tengah Atas)");
                         }
@@ -1216,6 +1255,26 @@ async fn test_ws_handshake(url: &str, token: &str) -> Result<(), String> {
         }
         Ok(Err(e)) => Err(format!("Connection error: {}", e)),
         Err(_) => Err("Connection timed out after 4s".to_string()),
+    }
+}
+
+/// Enforces visible mouse cursor across Windows OS, DWM, and HWND class level.
+/// 1. Increments ShowCursor display counter until it is >= 0.
+/// 2. Explicitly loads and sets the IDC_ARROW system cursor immediately.
+/// 3. Updates GCLP_HCURSOR on the window class so DefWindowProcW defaults to IDC_ARROW.
+unsafe fn enforce_system_cursor_visible(hwnd: windows_sys::Win32::Foundation::HWND) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        LoadCursorW, SetClassLongPtrW, SetCursor, ShowCursor, GCLP_HCURSOR, IDC_ARROW,
+    };
+
+    while ShowCursor(1) < 0 {}
+
+    let arrow = LoadCursorW(std::ptr::null_mut(), IDC_ARROW);
+    if !arrow.is_null() {
+        SetCursor(arrow);
+        if !hwnd.is_null() {
+            SetClassLongPtrW(hwnd, GCLP_HCURSOR, arrow as isize);
+        }
     }
 }
 
