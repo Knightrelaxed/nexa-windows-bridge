@@ -1,6 +1,6 @@
-# Katalog Berkas & Komponen — N.E.X.A Windows Bridge
+# Katalog Berkas & Komponen — Nexa Bridge
 
-Dokumen ini menyediakan referensi teknis mendetail dari setiap berkas kode yang ada di dalam repositori `nexa-windows-bridge`.
+Dokumen ini menyediakan referensi teknis mendetail dari setiap berkas kode yang ada di dalam repositori `nexa-windows-bridge` (nama biner resmi: **Nexa Bridge** / `nexa-bridge`).
 
 ---
 
@@ -8,6 +8,7 @@ Dokumen ini menyediakan referensi teknis mendetail dari setiap berkas kode yang 
 
 ### 📄 `Cargo.toml`
 * **Fungsi:** Manifest paket Rust dan deklarasi dependensi pihak ketiga.
+* **Nama Paket & Biner:** `package.name = "nexa-bridge"`, `[[bin]] name = "nexa-bridge"`.
 * **Dependensi Utama:**
   * `slint`: Framework GUI desktop native ultra-cepat dan irit RAM.
   * `tokio` (fitur `full`): Asynchronous runtime untuk konkurensi dan I/O jaringan.
@@ -22,7 +23,9 @@ Dokumen ini menyediakan referensi teknis mendetail dari setiap berkas kode yang 
 
 ### 📄 `build.rs`
 * **Fungsi:** Skrip pra-kompilasi (*custom build script*).
-* **Operasi:** Menjalankan `slint_build::compile("ui/main_window.slint")` sebelum kompilasi Rust dimulai untuk menerjemahkan file markup `.slint` menjadi kode Rust native di dalam folder `target/`.
+* **Operasi:** 
+  1. Menjalankan `slint_build::compile("ui/main_window.slint")` sebelum kompilasi Rust dimulai untuk menerjemahkan file markup `.slint` menjadi kode Rust native di dalam folder `target/`.
+  2. Mengompilasi resource Windows (`winres`) untuk menyematkan ikon multi-resolusi resmi (`assets/icon.ico`) dan metadata aplikasi: `ProductName = "Nexa Bridge"`, `FileDescription = "Nexa Bridge"`.
 
 ### 📄 `Cargo.lock`
 * **Fungsi:** Mengunci versi eksak (*exact version lockfile*) seluruh *dependency tree* demi *deterministic & reproducible builds*.
@@ -42,6 +45,7 @@ Dokumen ini menyediakan referensi teknis mendetail dari setiap berkas kode yang 
   6. Mengelola event interupsi suara pengguna (*barge-in notification*).
   7. Mendaftarkan pendengar daya Win32 (`PowerListener`), System Tray (`SystemTray`), dan Hotkeys global (`HotkeyListener`).
   8. Menjalankan sampler telemetri sistem berkala (CPU & RAM) untuk HUD Command Center.
+  9. **Manajemen Penutupan Bersih:** Menghubungkan event `window().on_close_requested()` ke `slint::quit_event_loop()` guna menghentikan seluruh background worker tanpa proses zombi.
 
 ### 📄 `src/config.rs`
 * **Fungsi:** Model data konfigurasi dan utilitas persistensi.
@@ -55,13 +59,13 @@ Dokumen ini menyediakan referensi teknis mendetail dari setiap berkas kode yang 
 ## 3. Submodul Audio & WASAPI (`src/audio/`)
 
 * **`src/audio/mod.rs` (`AudioEngine`):**
-  Orkestrator subsistem audio duplex. Menginisialisasi speaker, mikrofon, loop referensi AEC, dan menyalurkan notifikasi interupsi suara (*barge-in*).
+  Orkestrator subsistem audio duplex. Menginisialisasi speaker, mikrofon, SPSC lock-free ring buffer untuk sinyal referensi DAC real-time, dan menyalurkan notifikasi interupsi suara (*barge-in*).
 * **`src/audio/speaker.rs` (`SpeakerPlayer`):**
-  Memutar audio respons server (24 kHz PCM) ke speaker fisik laptop via WASAPI dan mengirimkan salinan render frame ke AEC.
+  Memutar audio respons server (24 kHz PCM) ke speaker fisik laptop via WASAPI output stream. Menyadap frame referensi langsung di dalam real-time callback DAC dengan alokasi memori nol (`[f32; 2048]`), dan buffer kapasitas 30 detik hemat RAM.
 * **`src/audio/microphone.rs` (`MicrophoneCapture`):**
-  Merekam suara dari mic fisik laptop, memprosesnya melalui filter WebRTC AEC3, dan mengirimkan chunk PCM 16 kHz bersih ke jaringan.
+  Merekam suara dari mic fisik laptop, memprosesnya melalui filter WebRTC AEC3 dengan referensi tersinkronisasi milidetik demi milidetik, dan mengirimkan chunk PCM 16 kHz bersih ke jaringan.
 * **`src/audio/echo_canceller.rs` (`EchoCancellerEngine`):**
-  Mesin peredam gema WebRTC AEC3, peredam bising (*noise suppression*), dan *dynamic ducking* (-18 dB) saat AI berbicara.
+  Mesin peredam gema WebRTC AEC3, peredam bising (*noise suppression*), *reverberation tail guard* 350 ms, dan *dynamic ducking* (-18 dB) saat AI berbicara.
 * **`src/audio/resampler.rs`:**
   Konverter sample rate audio berlatensi rendah (konversi antara 16 kHz, 24 kHz, dan 48 kHz).
 * **`src/audio/audio_buffer.rs`:**
@@ -89,20 +93,22 @@ Dokumen ini menyediakan referensi teknis mendetail dari setiap berkas kode yang 
   * `ClientMessage`: `Ping`, `CommandResult`, `Telemetry`, `PowerEvent`, `VideoFrame`, `AudioStream`, `AudioInterrupted`.
   * `ServerMessage`: `Pong`, `ExecuteCommand`, `AudioPlay`, `AudioInterrupted`, `StatusUpdate`, `ReplyComplete`, `Unknown`.
 * **`src/network/client.rs` (`NetworkClient`):**
-  Klien WebSocket asinkron dengan *exponential backoff reconnection* otomatis (500 ms – 10 detik), *heartbeat keepalive* (20 detik), serta antrean pesan keluar berbasis channel MPSC.
+  Klien WebSocket asinkron tangguh dengan *exponential backoff reconnection* otomatis, watchdog aktivitas keepalive 15 detik (deteksi soket setengah terbuka tanpa TCP FIN), handshake timeout 10 detik dan pembatalan instan via `session_interrupt`, penanganan penolakan token HTTP 401/403, permit drain via `now_or_never()`, serta broadcast command bus kapasitas 256.
 
 ---
 
 ## 6. Submodul Integrasi Platform Windows (`src/platform/`)
 
 * **`src/platform/mod.rs`:**
-  Mengekspor komponen platform: `PowerListener`, `HotkeyListener`, `SystemTray`, dan `SystemTelemetry`.
+  Mengekspor komponen platform: `PowerListener`, `HotkeyListener`, `SystemTray`, `SystemTelemetry`, `SingleInstanceGuard`, dan `Autostart`.
 * **`src/platform/power.rs` (`PowerListener`):**
   Mendengarkan event daya kernel Windows `WM_POWERBROADCAST` pada `HWND_MESSAGE` (`PBT_APMSUSPEND` saat layar ditutup & `PBT_APMRESUMEAUTOMATIC` saat dibuka kembali).
 * **`src/platform/system_tray.rs` (`SystemTray`):**
-  Mengelola ikon di area notifikasi Windows via `Shell_NotifyIconW`, klik kiri untuk toggle jendela, dan menu klik kanan (Buka, Mute, Layar Penuh, Berbagi Layar, Pengaturan, Keluar).
+  Mengelola ikon di area notifikasi Windows via `Shell_NotifyIconW` dengan tooltip "Nexa Bridge", klik kiri untuk toggle jendela, dan menu klik kanan (Buka Nexa Bridge, Mute, Layar Penuh, Berbagi Layar, Pengaturan, Keluar).
 * **`src/platform/hotkeys.rs` (`HotkeyListener`):**
   Mendaftarkan pintasan keyboard global via `RegisterHotKey`: Boss Key (`Win+Alt+N`), Mic Mute (`Win+Alt+M`), Fullscreen (`F11` / `Win+Alt+F`), dan Berbagi Layar (`Win+Alt+S`).
+* **`src/platform/single_instance.rs` (`SingleInstanceGuard`):**
+  Menjamin hanya ada satu proses Nexa Bridge yang berjalan di sistem dan memulihkan jendela aktif jika shortcut diluncurkan kembali.
 * **`src/platform/telemetry.rs` (`SystemTelemetry`):**
   Mengukur persentase beban CPU (`GetSystemTimes`) dan memori RAM fisik (`GlobalMemoryStatusEx`) dengan alokasi memori nol.
 
@@ -119,8 +125,8 @@ Dokumen ini menyediakan referensi teknis mendetail dari setiap berkas kode yang 
 * **`ui/settings_dialog.slint`:**
   Modal dialog pengaturan endpoint server, token otentikasi, profil low RAM, toggle autostart Windows, serta uji coba handshake WebSocket secara live. Dibatasi pada ukuran maksimal 500x460px agar rapi.
 * **`ui/overlay_window.slint`:**
-  Jendela transparan *click-through* tingkat atas DirectComposition Win32 untuk visualisasi otomasi AI: Bounding Box (`BOX`), Target Ring (`RING`), Pointer Reticle (`POINTER`), Spotlight Dimmer (`SPOTLIGHT`), dan konfirmasi klik 300ms (`RIPPLE`).
+  Jendela transparan *click-through* tingkat atas DirectComposition Win32 dengan `WS_EX_TOOLWINDOW` (tersembunyi dari Alt-Tab) dan normalisasi DPI 150% untuk visualisasi otomasi AI: Bounding Box (`BOX`), Target Ring (`RING`), Pointer Reticle (`POINTER`), Spotlight Dimmer (`SPOTLIGHT`), dan konfirmasi klik 300ms (`RIPPLE`).
 * **`ui/components/avatar.slint`:**
-  Avatar cybernetic responsif dengan visualisasi dual-ocular ring dan rotasi giroskopik yang mendukung 9 status kognitif AI (`idle`, `listening`, `thinking`, `speaking`, `barge_in`, `screen_sharing`, `tool_executing`, `connecting`, `offline`).
+  Avatar cybernetic responsif dengan visualisasi dual-ocular ring dan rotasi giroskopik yang mendukung 10 status kognitif AI (`idle`, `listening`, `thinking`, `speaking`, `barge_in`, `screen_sharing`, `tool_executing`, `connecting`, `offline`, `dual_active`).
 * **`ui/components/audio_meter.slint`:**
   Visualisator spektrum audio real-time dengan batang frekuensi parametrik teranimasi dinamis yang bereaksi terhadap suara pengguna dan suara AI (18 bilah di Mode 1, 48 bilah di Mode 2).

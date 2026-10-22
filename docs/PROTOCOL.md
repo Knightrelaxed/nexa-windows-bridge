@@ -1,6 +1,6 @@
-# Protokol Komunikasi WebSocket — N.E.X.A Windows Bridge
+# Protokol Komunikasi WebSocket — Nexa Bridge
 
-Dokumen ini mendokumentasikan spesifikasi protokol pertukaran pesan antara **N.E.X.A Windows Bridge** dan **N.E.X.A Server**.
+Dokumen ini mendokumentasikan spesifikasi protokol pertukaran pesan antara **Nexa Bridge** dan **N.E.X.A Server**.
 
 ---
 
@@ -24,6 +24,8 @@ X-Device-Type: windows
 
 * `Authorization`: Menyertakan bearer token perangkat jika diisi pada konfigurasi.
 * `X-Device-Type`: Selalu bernilai `windows` untuk mengidentifikasi jenis klien ke router server.
+* **Handshake Timeout (Audit H3):** Proses handshake dibatasi waktu maksimal **10 detik** dan dapat dibatalkan seketika jika pengguna menekan "Disconnect" atau saat laptop memasuki mode sleep (*PBT_APMSUSPEND*).
+* **Penanganan Penolakan Token (Audit M2):** Jika server merespons dengan status HTTP `401 Unauthorized` atau `403 Forbidden`, klien menghentikan siklus reconnect otomatis untuk mencegah pemborosan bandwidth/log.
 
 ---
 
@@ -33,8 +35,8 @@ Pesan dikirim dalam format JSON berstruktur dengan tag pembeda tipe `"type"`.
 
 ### A. Pesan dari Klien ke Server (`ClientMessage`)
 
-#### 1. `PING` (Heartbeat)
-Dikirim secara berkala setiap **20 detik** untuk menjaga soket tetap aktif dan mendeteksi koneksi terputus (*zombie connection*).
+#### 1. `PING` (Heartbeat & Keepalive Watchdog)
+Dikirim secara berkala setiap **5 detik** (Audit H2). Klien memonitor waktu kedatangan paket balasan server; jika tidak ada data atau pong yang diterima selama **>15 detik**, koneksi dianggap setengah terbuka (*half-open connection*) dan bridge segera melakukan pemutusan soket serta inisiasi rekoneksi otomatis.
 ```json
 {
   "type": "PING",

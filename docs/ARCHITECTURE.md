@@ -1,6 +1,6 @@
-# Arsitektur Sistem — N.E.X.A Windows Bridge
+# Arsitektur Sistem — Nexa Bridge
 
-Dokumen ini menjelaskan rancangan arsitektur, model konkurensi, aliran data (*data flow*), serta integrasi hardware pada aplikasi `nexa-windows-bridge`.
+Dokumen ini menjelaskan rancangan arsitektur, model konkurensi, aliran data (*data flow*), ketahanan jaringan, serta integrasi hardware pada aplikasi `nexa-bridge` (**Nexa Bridge**).
 
 ---
 
@@ -10,20 +10,20 @@ Dokumen ini menjelaskan rancangan arsitektur, model konkurensi, aliran data (*da
 graph TD
     subgraph UI_Thread ["Thread Utama (Slint UI Loop)"]
         UI["MainWindow (Slint GUI: Dual-Mode Windowed / Fullscreen HUD)"]
-        Avatar["Cybernetic Avatar (9 Cognitive States)"]
+        Avatar["Cybernetic Avatar (10 Cognitive States)"]
         AudioMeter["Real-time Audio Spectrum Equalizer"]
         SettingsModal["Settings Dialog"]
     end
 
     subgraph Tokio_Runtime ["Tokio Async Multi-threaded Runtime"]
         StateWatcher["State Watcher Task"]
-        CmdDispatcher["Command & Audio Dispatcher Task"]
-        Worker["WebSocket Lifecycle Worker (run_client_worker)"]
-        AudioEng["AudioEngine (WASAPI Duplex + WebRTC AEC3)"]
+        CmdDispatcher["Command & Audio Dispatcher Task (Resilient Loop)"]
+        Worker["WebSocket Lifecycle Worker (Watchdog + Timeout + Interrupt)"]
+        AudioEng["AudioEngine (WASAPI Duplex + WebRTC AEC3 DAC Tap)"]
         CaptureCtrl["ScreenCaptureController (Direct3D 11 WGC)"]
         TelemTask["System Telemetry Sampler (CPU/RAM Win32)"]
         OutQueue["Outbound MPSC Queue"]
-        CmdBus["Broadcast Command Bus"]
+        CmdBus["Broadcast Command Bus (Kapasitas 256)"]
     end
 
     subgraph OS_Threads ["Dedicated Win32 Threads"]
@@ -71,15 +71,22 @@ graph TD
 Aplikasi ini menggunakan pemisahan tanggung jawab yang ketat antar thread untuk memastikan antarmuka tetap responsif (60 FPS tanpa jeda/stutter) dan tidak terblokir oleh I/O jaringan, pemrosesan audio, atau sinyal OS:
 
 ### A. Main Thread (Slint GUI Event Loop)
-* Menjalankan fungsi `main_window.run()?` yang menangani render UI dual-mode (Mode Companion 380x520 atau Mode Command Center Fullscreen F11), visualisasi avatar cybernetic, dan equalizer audio.
+* Menjalankan fungsi `main_window.run()?` yang menangani render UI dual-mode (Mode Companion ringkas atau Mode Command Center Fullscreen F11), visualisasi avatar cybernetic, dan equalizer audio.
 * Komunikasi dari background task ke Slint UI **harus** melalui `slint::invoke_from_event_loop(...)` menggunakan pointer lemah (`Weak<MainWindow>`) untuk mencegah *data race* atau *memory leak*.
+* **Penutupan Bersih (Clean Termination):** Tombol close `[X]` pada jendela memicu `slint::quit_event_loop()`, memastikan seluruh background worker, audio duplex, dan runtime Tokio mati total tanpa meninggalkan proses zombi di Task Manager.
 
 ### B. Tokio Multi-Threaded Asynchronous Runtime
 * Diinisialisasi melalui macro `#[tokio::main]`.
-* Mengelola tugas-tugas non-blocking:
-  1. **WebSocket Lifecycle Worker (`run_client_worker`)**: Loop koneksi persisten yang menangani *handshake*, antrean pengiriman pesan keluar, pembacaan paket server, dan *exponential backoff*.
-  2. **State Watcher**: Memantau perubahan `ConnectionState` dan menyinkronkan status visual ke jendela utama.
-  3. **Command & Audio Dispatcher**: Mendistribusikan instruksi dari server ke modul handler lokal, memicu respons suara audio ke speaker, dan mengirimkan *ACK (CommandResult)* kembali ke server.
+* Mengelola tugas-tugas non-blocking dengan ketahanan tinggi:
+  1. **WebSocket Lifecycle Worker (`run_client_worker`)**:
+     * **Drain Permit Basi (Audit H1):** Menguras permit tersimpan pada `session_interrupt` dengan `.now_or_never()` sebelum setiap inisiasi koneksi agar koneksi tidak langsung tertutup (*flap*) setelah sleep/resume.
+     * **Timeout Handshake (Audit H3):** Membungkus `connect_async` dengan batas waktu 10 detik dan pembatalan instan via `session_interrupt`.
+     * **Pencegahan Infinite Retry Auth (Audit M2):** Menangkap status HTTP 401/403 untuk menghentikan reconnect otomatis saat token ditolak server.
+     * **Watchdog Aktivitas Keepalive 15s (Audit H2):** Memutus koneksi soket setengah terbuka (*half-open socket*) jika tidak ada lalu lintas atau pong masuk selama >15 detik saat Wi-Fi terputus tanpa FIN TCP.
+  2. **State Watcher**: Memantau perubahan `ConnectionState` berbasis `AtomicBool` yang bebas poisoning.
+  3. **Command & Audio Dispatcher (Audit H4)**:
+     * Menggunakan kapasitas broadcast bus 256.
+     * Menangani kondisi `RecvError::Lagged` secara mulus tanpa menghentikan loop penerimaan perintah secara permanen.
   4. **Duplex Audio Forwarder**: Meneruskan frame PCM 16kHz dari mikrofon laptop ke antrean WebSocket dan menghitung energi RMS untuk menganimasikan avatar saat mode listening.
   5. **Barge-In Monitor**: Mendengarkan sinyal interupsi saat pengguna berbicara ketika AI sedang memutar suara, lalu memutus output speaker seketika.
   6. **Telemetry Sampler Task**: Membaca beban CPU & RAM setiap 2 detik dan memperbarui bar HUD antarmuka.
@@ -88,6 +95,7 @@ Aplikasi ini menggunakan pemisahan tanggung jawab yang ketat antar thread untuk 
 1. **`PowerListener`**: Thread Win32 mandiri dengan *message loop* tersembunyi (`HWND_MESSAGE`) untuk mendengarkan pesan `WM_POWERBROADCAST`.
 2. **`SystemTray`**: Thread terisolasi untuk menangani ikon notifikasi taskbar (`Shell_NotifyIconW`) dan menu klik kanan.
 3. **`HotkeyListener`**: Thread terisolasi untuk mendengarkan pintasan global (`RegisterHotKey` dan loop `WM_HOTKEY`).
+4. **`SingleInstanceGuard`**: Memastikan hanya ada satu proses Nexa Bridge yang berjalan di sistem dan memulihkan jendela aktif jika pengguna meluncurkan shortcut kedua kali.
 
 ---
 
@@ -97,7 +105,7 @@ Aplikasi ini menggunakan pemisahan tanggung jawab yang ketat antar thread untuk 
 | :--- | :--- | :--- | :--- |
 | `state_tx` | `tokio::sync::watch` | Worker $\to$ UI Watcher | Mengabarkan status koneksi terbaru (`Connected`, `Connecting`, `Reconnecting`, `Disconnected`, `Suspended`). |
 | `outbound_tx` | `tokio::sync::mpsc (128)` | UI/Audio/Capture $\to$ Worker | Antrean pesan keluar (JSON string atau paket biner audio). |
-| `command_tx` | `tokio::sync::broadcast (64)` | Worker $\to$ Handlers | Bus multi-subscriber untuk pesan `EXECUTE_COMMAND`, `AudioPlay`, dan `StatusUpdate`. |
+| `command_tx` | `tokio::sync::broadcast (256)` | Worker $\to$ Handlers | Bus multi-subscriber kapasitas tinggi untuk pesan `EXECUTE_COMMAND`, `AudioPlay`, dan `StatusUpdate`. |
 | `reconnect_notify` | `tokio::sync::Notify` | UI/Power $\to$ Worker | Memicu percobaan koneksi instan (mengabaikan timer backoff). |
 | `session_interrupt` | `tokio::sync::Notify` | UI/Power $\to$ Worker | Memutus loop sesi aktif secara instan saat user memilih disconnect atau laptop sleep. |
 | `barge_in_notify` | `tokio::sync::Notify` | Audio Engine $\to$ Main Runtime | Memberi sinyal bahwa pengguna menyela ucapan AI untuk mematikan audio seketika. |
@@ -123,8 +131,8 @@ Dirancang khusus untuk laptop **Lenovo ThinkPad X380 Yoga** yang sering dibuka-t
 
 ## 5. Efisiensi Memori (Ultra-Low RAM Mode)
 
-* **Target Memori:** Alokasi RAM dijaga di bawah **25 MB**.
+* **Target Memori:** Alokasi RAM dijaga di bawah **25 MB** (aktual ~15 MB pada mode standby).
 * **Strategi Efisiensi:**
   * Slint tidak menggunakan browser engine (seperti Electron/Tauri Webview), melainkan renderer native direct software / Skia / Qt yang sangat irit RAM.
-  * Buffer channel dibatasi ketat: MPSC 128 items, broadcast 64 items.
+  * Buffer pemutaran audio diatur pada 30 detik (menghemat 35 MB dibanding buffer 120 detik).
   * Pembatasan laju tangkapan layar (1 FPS) dan ring buffer audio *lock-free* mencegah memory leak atau lonjakan alokasi heap.

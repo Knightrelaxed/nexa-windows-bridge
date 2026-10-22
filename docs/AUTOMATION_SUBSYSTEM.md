@@ -66,9 +66,10 @@ graph TD
 * **Pengetikan Teks Unicode:** Menggunakan bendera `KEYEVENTF_UNICODE` dengan nilai `wScan` berisi kode unit UTF-16. Hal ini menjamin pengetikan teks bahasa Indonesia, simbol khusus, maupun aksara non-Latin dapat dilakukan dengan presisi 100% tanpa bergantung pada layout keyboard aktif di Windows.
 * **Penekanan Tombol Virtual:** Mendukung tombol-tombol fungsional seperti `"ENTER"`, `"SPACE"`, `"ESCAPE"`, `"TAB"`, `"BACKSPACE"`, `"UP"`, `"DOWN"`, `"LEFT"`, `"RIGHT"`, tombol fungsi `"F1"` - `"F12"`, serta karakter alfanumerik tunggal.
 
-### D. Magnetic Smart-Snap via Windows UI Automation (Milestone 6.2)
+### D. Magnetic Smart-Snap via Windows UI Automation & Timeout Guard (Audit H8)
 * Modul [`src/automation/element_finder.rs`](../src/automation/element_finder.rs) mengintegrasikan COM API resmi Microsoft Windows (`IUIAutomation::ElementFromPoint`).
 * **Koreksi Presisi Sub-Piksel:** Koordinat target yang dikirim Gemini Live (yang rentan meleset beberapa piksel akibat kompresi visual JPEG) otomatis ditarik secara magnetis (*magnetic snap*) ke batas fisik kontrol OS (`CurrentBoundingRectangle`).
+* **Timeout Guard 150ms (`smart_snap_bounding_box_timeout`):** Query COM UI Automation bersifat lintas-proses (*inter-process communication*). Jika aplikasi pihak ketiga target sedang hang (*not responding*), query COM standar dapat memblokir thread hingga timeout RPC OS beberapa detik. Dengan `smart_snap_bounding_box_timeout`, thread pemanggil dibatasi maksimal 150 ms; jika terlampaui, sistem otomatis *fallback* instan ke koordinat AI tanpa mem-freeze dispatcher maupun UI.
 * **Filtering & Rasionalitas:** Mengeliminasi elemen yang terlalu kecil (<4px) atau terlalu besar (>95% layar seperti desktop root).
 * **AI Vision Fallback:** Jika elemen berada pada kanvas tak berstruktur (diagram/game), sistem otomatis *fallback* memakai *Vision Bounding Box* dari Gemini Live tanpa error (`is_snapped: false`).
 
@@ -78,7 +79,15 @@ graph TD
   - `WS_EX_TRANSPARENT`: 100% tembus klik mouse (*click-through*), pengguna dapat mengeklik tombol target tanpa terhalang overlay.
   - `WS_EX_TOPMOST`: Selalu di lapisan visual teratas di atas jendela aplikasi mana pun.
   - `WS_EX_NOACTIVATE`: Tidak pernah mencuri fokus keyboard atau kursor aktif pengguna.
-  - `WS_EX_LAYERED`: Rendering transparansi GPU yang bersih.
+  - `WS_EX_TOOLWINDOW` (Audit M5): Mencegah overlay muncul di daftar *Alt-Tab application switcher* atau taskbar Windows.
+  - `DwmExtendFrameIntoClientArea` dengan margin `(-1, -1, -1, -1)`: Menjamin transparansi GPU hardware glass murni tanpa glitch kanvas hitam.
+* **Normalisasi Skala DPI ThinkPad X380 Yoga (Audit M6):**
+  - Layar ThinkPad X380 Yoga memiliki resolusi 1080p dengan skala default Windows 150% (`scale_factor = 1.5`).
+  - Slint menggunakan koordinat logis, sedangkan input Win32 menggunakan piksel fisik monitor. Modul `highlighter` secara otomatis membagi dimensi fisik dengan `w.window().scale_factor()` (`target_x / scale`, `target_w / scale`, dll.) sehingga bounding box dan ripple indicator jatuh tepat di atas tombol target tanpa pergeseran 1.5x.
+* **Proteksi Runtime Tokio Asinkron (Audit M7):**
+  - Pemanggilan fungsi asinkron (seperti timer pembubaran otomatis dan animasi riak) diproteksi menggunakan `Handle::try_current()` agar aman dipanggil baik dari thread UI, event loop Slint, maupun worker Tokio tanpa risiko panic "no reactor running".
+* **Pembersihan Layar Hitam Startup:**
+  - Jendela overlay diinisialisasi dalam keadaan tersembunyi (`w.hide()`) saat aplikasi dibuka, dan hanya dipanggil `w.show()` saat ada aksi sorotan aktif. Setelah timer auto-dissolve selesai, jendela kembali disembunyikan (`w.hide()`) agar tidak pernah memblokir layar pengguna.
 * **4 Variasi Gaya Sorotan Visual:**
   - `BOX`: Bounding box bercahaya cyan dengan label mengambang dan corner ticks futuristik.
   - `RING`: Cincin konsentris berdenyut melingkari target.
@@ -101,18 +110,18 @@ graph TD
   6. `POINT_CURSOR`: Penunjukan titik kursor pada koordinat tertentu.
   7. `CLEAR_HIGHLIGHTS`: Pembersihan seketika seluruh overlay dan sorotan aktif.
 * **Integrasi Non-Blocking Async (`src/main.rs`):**
-  - Menerima `ServerMessage::ExecuteCommand` melalui channel tokio mpsc.
+  - Menerima `ServerMessage::ExecuteCommand` melalui broadcast bus kapasitas 256.
   - Mengeksekusi penanganan otomasi di background task (`tokio::spawn`) agar tidak memblokir alur data audio dupleks WASAPI maupun loop jaringan utama.
   - Mengirimkan balik hasil tipe-kuat `ClientMessage::CommandResult` ke peladen Azure.
 
 ---
 
-## 3. Rencana Milestone Subsistem Otomasi (Fase 6)
+## 3. Status Rencana Milestone Subsistem Otomasi (Fase 6)
 
 | Milestone | Deskripsi | Status |
 | :--- | :--- | :--- |
 | **Milestone 6.1** | Desktop Input Automation (`src/automation/input.rs`) — SendInput mouse & keyboard | **SELESAI ✅** |
-| **Milestone 6.2** | Magnetic Smart-Snap via Windows UI Automation (`src/automation/element_finder.rs`) | **SELESAI ✅** |
-| **Milestone 6.3** | Stealth Overlay & Click Ripple (`src/automation/highlighter.rs`) | **SELESAI ✅** |
+| **Milestone 6.2** | Magnetic Smart-Snap via Windows UI Automation & Timeout Guard | **SELESAI ✅** |
+| **Milestone 6.3** | Stealth Overlay, Click Ripple, & High-DPI Scaling 150% | **SELESAI ✅** |
 | **Milestone 6.4** | Router EXECUTE_COMMAND & WebSocket Binding di `src/main.rs` | **SELESAI ✅** |
-| **Milestone 6.5** | Verifikasi Komprehensif, Audit Zero-Warning Clippy, & Git Push | *Berikutnya* |
+| **Milestone 6.5** | Verifikasi Komprehensif, Audit Claude Review (C1, H1-H8, M1-M8), & Release Build | **SELESAI ✅** |
