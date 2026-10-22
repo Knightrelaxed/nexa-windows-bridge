@@ -54,19 +54,21 @@ impl AudioEngine {
 
         info!("[AUDIO] Starting WASAPI Duplex Audio Engine...");
 
-        // Reference channel from Speaker -> Microphone AEC3
-        let (echo_ref_tx, echo_ref_rx) = mpsc::channel::<Vec<f32>>(64);
+        // Lock-free ring buffer for AEC reference signal (Claude Bug C1)
+        // 4 seconds of hardware-rate mono audio absorbs async scheduling jitter with zero heap allocation
+        let ref_buffer_capacity = 48000 * 4;
+        let (echo_ref_prod, echo_ref_cons) = audio_buffer::create_audio_ring_buffer::<f32>(ref_buffer_capacity);
 
-        // 1. Initialize Speaker (Playback)
-        let speaker = SpeakerPlayer::new(Some(echo_ref_tx))
+        // 1. Initialize Speaker (Playback with real-time DAC reference capture)
+        let speaker = SpeakerPlayer::new(Some(echo_ref_prod))
             .map_err(|e| format!("Failed to initialize speaker: {}", e))?;
 
         let is_speaker_playing = speaker.is_playing_handle();
 
-        // 2. Initialize Microphone (Capture with AEC3)
+        // 2. Initialize Microphone (Capture with real-time synchronized AEC3)
         let microphone = MicrophoneCapture::new(
             outbound_pcm_tx,
-            echo_ref_rx,
+            echo_ref_cons,
             Arc::clone(&self.aec_engine),
             Arc::clone(&self.barge_in_notify),
             is_speaker_playing,

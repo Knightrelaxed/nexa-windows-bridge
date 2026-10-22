@@ -27,7 +27,7 @@ pub struct MicrophoneCapture {
 impl MicrophoneCapture {
     pub fn new(
         outbound_pcm_tx: mpsc::Sender<Vec<u8>>,
-        echo_ref_rx: mpsc::Receiver<Vec<f32>>,
+        echo_ref_consumer: AudioConsumer<f32>,
         aec_engine: Arc<Mutex<EchoCancellerEngine>>,
         barge_in_notify: Arc<tokio::sync::Notify>,
         is_speaker_playing: Arc<AtomicBool>,
@@ -122,7 +122,7 @@ impl MicrophoneCapture {
             hardware_sample_rate,
             hardware_channels,
             outbound_pcm_tx,
-            echo_ref_rx,
+            echo_ref_consumer,
             aec_engine,
             barge_in_notify,
             is_running,
@@ -157,7 +157,7 @@ async fn run_mic_processing_worker(
     hardware_sample_rate: u32,
     hardware_channels: u16,
     outbound_pcm_tx: mpsc::Sender<Vec<u8>>,
-    mut echo_ref_rx: mpsc::Receiver<Vec<f32>>,
+    mut echo_ref_consumer: AudioConsumer<f32>,
     aec_engine: Arc<Mutex<EchoCancellerEngine>>,
     barge_in_notify: Arc<tokio::sync::Notify>,
     is_running: Arc<AtomicBool>,
@@ -178,10 +178,17 @@ async fn run_mic_processing_worker(
         }
         let is_in_speaker_or_reverb = speaker_active_now || last_speaker_active.elapsed() < Duration::from_millis(350);
 
-        // 1. Drain incoming render reference samples into AEC
-        while let Ok(ref_chunk) = echo_ref_rx.try_recv() {
+        // 1. Drain incoming render reference samples from real-time speaker callback (Claude Bug C1)
+        let mut ref_scratch = [0.0f32; 1024];
+        let ref_read = echo_ref_consumer.pop_slice(&mut ref_scratch);
+        if ref_read > 0 {
+            let ref_16k = if hardware_sample_rate != 16000 {
+                resample_linear(&ref_scratch[..ref_read], hardware_sample_rate, 16000)
+            } else {
+                ref_scratch[..ref_read].to_vec()
+            };
             if let Ok(mut aec) = aec_engine.lock() {
-                aec.feed_render_samples(&ref_chunk);
+                aec.feed_render_samples(&ref_16k);
             }
         }
 

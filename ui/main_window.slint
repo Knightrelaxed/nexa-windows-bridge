@@ -25,9 +25,9 @@ export component MainWindow inherits Window {
     full-screen: root.is_fullscreen;
     no-frame: !root.is_fullscreen;
     always-on-top: !root.is_fullscreen;
-    min-width: root.is_fullscreen ? 1024px : (root.show_settings ? 500px : 400px);
+    min-width: root.is_fullscreen ? 1024px : (root.show_settings ? 500px : 460px);
     min-height: root.is_fullscreen ? 720px : (root.show_settings ? 460px : 56px);
-    preferred-width: root.is_fullscreen ? 1920px : (root.show_settings ? 540px : 410px);
+    preferred-width: root.is_fullscreen ? 1920px : (root.show_settings ? 540px : 460px);
     preferred-height: root.is_fullscreen ? 1080px : (root.show_settings ? 500px : 64px);
     background: root.is_fullscreen ? #080B10 : transparent;
     default-font-family: "Segoe UI";
@@ -94,6 +94,8 @@ export component MainWindow inherits Window {
     callback toggle_screen_share();
     callback open_settings();
     callback close_settings();
+    callback minimize_window();
+    callback close_app();
     callback start_window_drag();
     callback save_settings(string, string, int, bool, bool, bool, bool, bool, bool, bool);
     callback test_connection(string, string);
@@ -161,6 +163,7 @@ export component MainWindow inherits Window {
                     root.show_settings = true;
                     root.open_settings();
                 }
+                close_app => { root.close_app(); }
                 start_drag => { root.start_window_drag(); }
             }
         }
@@ -237,9 +240,11 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                // Right: Controls
+                // Right: Controls & Window Actions
                 HorizontalLayout {
                     spacing: 8px;
+                    alignment: end;
+
                     Button {
                         text: "⟲ Reset Grid";
                         clicked => {
@@ -251,15 +256,93 @@ export component MainWindow inherits Window {
                         }
                     }
                     Button {
-                        text: "⤡ Windowed Mode [F11]";
-                        clicked => {
-                            root.is_fullscreen = false;
-                            root.toggle_fullscreen();
-                        }
-                    }
-                    Button {
                         text: "⚙ Settings";
                         clicked => { root.show_settings = !root.show_settings; }
+                    }
+
+                    // Window Controls Cluster: Minimize [-], Restore [🗗], Close [✕]
+                    HorizontalLayout {
+                        spacing: 3px;
+                        padding-left: 4px;
+
+                        // Minimize Button [-]
+                        Rectangle {
+                            width: 32px;
+                            height: 28px;
+                            border-radius: 4px;
+                            background: min_touch.has-hover ? #FFFFFF1A : transparent;
+                            animate background { duration: 100ms; }
+                            y: (parent.height - self.height) / 2;
+
+                            Rectangle {
+                                width: 12px;
+                                height: 1.5px;
+                                background: #C9D1D9;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
+
+                            min_touch := TouchArea {
+                                width: 100%;
+                                height: 100%;
+                                mouse-cursor: pointer;
+                                clicked => { root.minimize_window(); }
+                            }
+                        }
+
+                        // Restore / Pill Mode Button [🗗]
+                        Rectangle {
+                            width: 32px;
+                            height: 28px;
+                            border-radius: 4px;
+                            background: rest_touch.has-hover ? #FFFFFF1A : transparent;
+                            animate background { duration: 100ms; }
+                            y: (parent.height - self.height) / 2;
+
+                            Text {
+                                text: "🗗";
+                                font-size: 13px;
+                                color: #C9D1D9;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            rest_touch := TouchArea {
+                                width: 100%;
+                                height: 100%;
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.is_fullscreen = false;
+                                    root.toggle_fullscreen();
+                                }
+                            }
+                        }
+
+                        // Close Button [✕]
+                        Rectangle {
+                            width: 36px;
+                            height: 28px;
+                            border-radius: 4px;
+                            background: close_touch.has-hover ? #E81123 : transparent;
+                            animate background { duration: 100ms; }
+                            y: (parent.height - self.height) / 2;
+
+                            Text {
+                                text: "✕";
+                                font-size: 13px;
+                                font-weight: 700;
+                                color: close_touch.has-hover ? #FFFFFF : #C9D1D9;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            close_touch := TouchArea {
+                                width: 100%;
+                                height: 100%;
+                                mouse-cursor: pointer;
+                                clicked => { root.close_app(); }
+                            }
+                        }
                     }
                 }
             }

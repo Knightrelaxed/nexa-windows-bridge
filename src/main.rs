@@ -1046,6 +1046,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         slint::CloseRequestResponse::HideWindow
     });
 
+    // Hook Mode 2 Window Minimize [-] Button
+    let window_weak = main_window.as_weak();
+    main_window.on_minimize_window(move || {
+        info!("[MAIN] 🗕 Minimize requested. Minimizing window.");
+        if let Some(win) = window_weak.upgrade() {
+            win.window().set_minimized(true);
+        }
+    });
+
+    // Hook Application Close [✕] Button (From Pill Mode or Fullscreen HUD)
+    let net_client_close = network_client.clone();
+    main_window.on_close_app(move || {
+        info!("[MAIN] ✕ Application Close requested by user. Disconnecting and quitting.");
+        net_client_close.disconnect();
+        let _ = slint::quit_event_loop();
+    });
+
     // Keep overlay window alive across application runtime
     let _overlay_guard = overlay_window;
 
@@ -1108,8 +1125,8 @@ unsafe fn position_floating_pill_window(hwnd: windows_sys::Win32::Foundation::HW
     let dpi = GetDpiForWindow(hwnd);
     let scale = if dpi > 0 { dpi as f64 / 96.0 } else { 1.0 };
 
-    // Logical dimensions for the floating pill window: 420px x 64px
-    let logical_w = 420.0;
+    // Logical dimensions for the floating pill window: 460px x 64px
+    let logical_w = 460.0;
     let logical_h = 64.0;
     let pill_w = (logical_w * scale).round() as i32;
     let pill_h = (logical_h * scale).round() as i32;

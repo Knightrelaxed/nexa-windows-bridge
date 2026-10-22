@@ -93,45 +93,47 @@ Semua berkas markup antarmuka berada di folder `ui/`:
 
 ## 3. Mode 1: Floating Dynamic Capsule Pill (Widget Kapsul Melayang)
 
-Mode ini aktif saat `!root.is_expanded_view` (ukuran jendela melayang ramping ~420x64px dengan pill kapsul terpusat 384x48px radius 24px, frameless transparan `no-frame: true; background: transparent; always-on-top: true;`, mendukung penuh Windows High-DPI scaling 125%/150%).
+Mode ini aktif saat `!root.is_expanded_view` (ukuran jendela melayang ramping ~460x64px dengan pill kapsul terpusat 440x48px radius 24px, frameless transparan `no-frame: true; background: transparent; always-on-top: true;`, mendukung penuh Windows High-DPI scaling 125%/150%).
 
 ```
-+---------------------------------------------------------------------------------------------------+
-|  (O) [o]   Listening... ||||||||||||||             [ 🎙️ ]   [ 👁️ ]   [ ⤢ ]   [ ⚙ ]               |
-|  Core Dot  Status Text  Equalizer (14 bars)         Mic     Screen    HUD     Settings            |
-|  32px 7px  (Dynamic Center Drag Area)               Mute    Share     Mode 2  (Dynamic Exp)       |
-|  [<-- 54px -->] [<------- 184px ------->]          [<------------- 130px ------------->]          |
-+---------------------------------------------------------------------------------------------------+
++---------------------------------------------------------------------------------------------------------------+
+|  (O) [o]   Listening... ||||||||||||||             [ 🎙️ ]   [ 👁️ ]   [ ⤢ ]   [ ⚙ ]   [ ✕ ]                  |
+|  Core Dot  Status Text  Equalizer (14 bars)         Mic     Screen    HUD     Settings Close                  |
+|  32px 7px  (Strict Center Drag Area)                Mute    Share     Mode 2  (Dyn Exp) Graceful Quit        |
+|  [x:12-60] [x: 64 ---------> 256]                  [x: 260 --------------------> 428] [Pad 12px]              |
++---------------------------------------------------------------------------------------------------------------+
 ```
 
 ### Rincian Elemen Floating Capsule Pill:
 
-#### A. Avatar & Indikator Koneksi Interaktif (Sisi Kiri: Fixed 54px)
+#### A. Avatar & Indikator Koneksi Interaktif (Sisi Kiri: x: 12px, width: 48px)
 1. **3D Quantum Neural Core Mini (`32x32px`)**
    * Avatar miniatur Fibonacci 3D yang berputar konstan dan berdenyut mengikuti amplitudo suara.
+   * Terpusat vertikal secara presisi (`y: (parent.height - self.height) / 2 = 8px`).
    * Menekan area avatar/dot memicu callback `toggle_connect` (Hubungkan / Putuskan koneksi).
 2. **Interactive Status Dot (`7x7px`, radius `3.5px`)**
    * **Warna Dinamis:** `#3FB950` (Hijau Emerald: Connected), `#FF9100` (Amber: Connecting), `#EF4444` (Merah Ruby: Disconnected/Offline).
-   * Dilengkapi animasi hover skala 1.25x dan glow pendar neon.
+   * Kursor: **Selalu `pointer` (hand)**, terisolasi penuh dari area drag.
 
-#### B. Draggable Center & Audio Visualizer (Area Tengah: Fluid 184px)
-1. **Native Win32 Fluid Dragging Area (`TouchArea`)**
-   * Area tengah diapit antara Avatar dan Action Dock dapat diklik dan ditahan untuk menggeser jendela secara bebas dan halus ke seluruh layar desktop tanpa lag, memanfaatkan Win32 native messages `ReleaseCapture()` + `SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0)`.
+#### B. Draggable Center & Audio Visualizer (Area Tengah: x: 64px s/d 256px, width: 192px)
+1. **Strictly Bounded Win32 Drag Area (`TouchArea`)**
+   * Area drag dikurung ketat hanya antara x: 64px dan x: 256px dengan safe buffer 4px dari dock tombol. Kursor `move` **tidak akan pernah bocor atau menimpa tombol aksi di sisi kanan maupun avatar di sisi kiri**.
+   * Menyeret area ini memicu Win32 native messages `ReleaseCapture()` + `SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0)`.
 2. **Status Text Display**
    * Menampilkan status AI teknis profesional dalam bahasa Inggris: `Listening...`, `Processing...`, `Speaking...`, `Offline`, dll.
 3. **Parametric Audio Equalizer (14 Bars)**
    * Bar frekuensi audio vertikal yang bergerak dinamis mengikuti level desibel RMS input mikrofon dan vokal AI.
 
-#### C. Minimalist Action Dock (Sisi Kanan: Fixed 130px, Selalu Stabil)
-Terdiri dari 4 tombol mikro berukuran `28x28px` (dengan spacing `6px`) berlatar frosted glassmorphism dan ikon vektor SVG presisi tinggi (`ui/components/pill_icons.slint`). Sisi kanan ini di-lock pada lebar tetap 130px sehingga posisi tombol **100% stabil dan tidak akan bergeser/terpotong** oleh perubahan panjang teks status:
-1. **🎙️ Mic Mute/Unmute (`PillMicIcon`)**: Menekan tombol ini membalikkan status `root.is_mic_muted` secara instan, menyalakan pendar amber `#FF9100`, dan mematikan tangkapan mikrofon WASAPI.
-2. **👁️ Screen Share Toggle (`PillEyeIcon`)**: Menekan tombol ini mengaktifkan/menonaktifkan streaming Direct3D 11 DXGI 1920x1080@1fps dengan pupil bercahaya cyan `#00E5FF`.
-3. **⤢ Expand to HUD Mode 2 (`PillExpandIcon`)**: Menekan tombol ini (atau tombol `F11`) langsung memperluas jendela ke Mode 2 Command Center Layar Penuh.
-4. **⚙ Settings (`PillGearIcon`)**: Ikon roda gigi SVG teknis. Membuka modal pengaturan konfigurasi dengan ekspansi vertikal dinamis (Option A: jendela membesar halus ke ~560x540px saat pengaturan terbuka, dan mengecil kembali ke kapsul saat disimpan/ditutup).
+#### C. Minimalist Action Dock (Sisi Kanan: x: 260px s/d 428px, width: 168px, 5 Tombol)
+Terdiri dari 5 tombol mikro berukuran `28x28px` (dengan spacing `7px`, terpusat vertikal pada `y = (48 - 28) / 2 = 10px`) berlatar frosted glassmorphism dan ikon vektor SVG presisi tinggi (`ui/components/pill_icons.slint`). Sisi kanan ini di-lock pada safe zone sehingga posisi tombol **100% stabil, tidak menabrak lengkungan kapsul kanan, dan kursor dijamin langsung berubah menjadi `pointer` (hand)**:
+1. **🎙️ Mic Mute/Unmute (`PillMicIcon`)**: Membalikkan status `root.is_mic_muted`, menyalakan pendar amber `#FF9100`, dan mematikan mikrofon WASAPI.
+2. **👁️ Screen Share Toggle (`PillEyeIcon`)**: Mengaktifkan/menonaktifkan streaming Direct3D 11 DXGI 1920x1080@1fps dengan pupil bercahaya cyan `#00E5FF`.
+3. **⤢ Expand to HUD Mode 2 (`PillExpandIcon`)**: Beralih seketika ke Mode 2 Command Center Layar Penuh (`F11`).
+4. **⚙ Settings (`PillGearIcon`)**: Membuka modal pengaturan konfigurasi dengan ekspansi vertikal dinamis (~560x540px).
+5. **✕ Close / Exit Application (`PillCloseIcon`)**: Tombol keluar aplikasi instan berlatar pendar merah halus saat hover (`#E811234D`). Mengklik tombol ini otomatis memutus koneksi server secara aman dan menutup aplikasi secara graceful.
 
 #### D. Penanganan Windows High-DPI Scaling (125% / 150%)
-Untuk mencegah masalah window clipping pada laptop modern (seperti ThinkPad dengan skala 125%), antarmuka mengimplementasikan penyesuaian DPI otomatis (`GetDpiForWindow`):
-* Ukuran logis jendela 420x64px dikalikan dengan faktor skala display (e.g. 1.25x = 525x80 physical pixels), memastikan seluruh bodi kapsul 384x48px, keempat tombol dock, dan drop shadow tampil utuh tanpa terpotong batas jendela Windows.
+Ukuran logis jendela 460x64px dikalikan dengan faktor skala display (`GetDpiForWindow`, e.g. 1.25x = 575x80 physical pixels), memastikan seluruh bodi kapsul 440x48px, kelima tombol dock, dan drop shadow tampil utuh tanpa terpotong batas jendela Windows.
 
 ---
 
@@ -141,13 +143,35 @@ Mode ini aktif saat `root.is_expanded_view == true`. Seluruh tata letak mengguna
 
 ```
 +---------------------------------------------------------------------------------------------------------------------+
-| [NX] N.E.X.A WINDOWS BRIDGE v0.1.0 [DIRECTX 11 NATIVE] [LIVE WASAPI 48kHz]    [⟲ Reset Grid] [⤡ Windowed] [⚙ Settings]|
+| [NX] N.E.X.A WINDOWS BRIDGE v0.1.0 [DIRECTX 11 NATIVE] [LIVE WASAPI 48kHz]    [⟲ Reset Grid] [⚙ Settings] [🗕] [🗗] [✕]|
 +------------------------------------+-----------------------------------------------+--------------------------------+
 | KOLOM KIRI (split_left_width)      | KOLOM TENGAH (Fluid Flex-Stretch)             | KOLOM KANAN (split_right_width)|
 |                                    |                                               |                                |
 | +--------------------------------+ | +-------------------------------------------+ | +----------------------------+ |
 | | 👁️ VISION STREAM (D3D11)       | | |               (( ( O ) ))                 | | | ⚡ SYSTEM TELEMETRY         | |
 | | [D3D11 LIVE STREAM ACTIVE]     | | |          Quantum Neural Core 3D           | | | CPU: [||||||....] 12%      | |
+| | 1920x1080@1fps DXGI Engine     | | |          (3D Holographic Core)            | | | RAM: [||||||||..] 34%      | |
+| | [ ⏹️ Stop Screen Share ]       | | |                                           | | | Ping: 24ms | WASAPI 48kHz  | |
+| +--------------------------------+ | |                 Listening...                | | +----------------------------+ |
+| ====== RowSplitter (Drag Y) ====== | |             Ready to connect.               | | ====== RowSplitter (Drag Y) =| |
+| +--------------------------------+ | |       |||||||||||||||||||||||||||||         | | +----------------------------+ |
+| | ⚙️ AUTOMATION LOG (Win32 Hook) | | +-------------------------------------------+ | | ⌨️ GLOBAL HOTKEYS          | |
+| | +----------------------------+ | | ========= Center RowSplitter (Drag Y) ======= | | | [Win+Alt+N] Boss Key       | |
+| | | [CLICK] (450, 320)         | | | +-------------------------------------------+ | | | [Win+Alt+M] Mute Mic       | |
+| | | [TYPE] 'open browser'      | | | | 💬 LIVE TRANSCRIPT (Real-time Sync)        | | | | [Win+Alt+S] Screen Share   | |
+| | | [EXECUTE] cmd.exe          | | | | You: "Open browser..."                    | | | | [F11] Fullscreen Toggle    | |
+| | +----------------------------+ | | | N.E.X.A: "Opening browser..."             | | | +----------------------------+ |
+| +--------------------------------+ | | +-------------------------------------------+ | +----------------------------+ |
+|                                    |                                               | | [ 🎙️ Mute ] [ 👁️ Screen ]   | |
+|                                    |                                               | | [ Connect / Disconnect ]     | |
+|                                    |                                               | +----------------------------+ |
++------------------------------------+-----------------------------------------------+--------------------------------+
+```
+
+### Window Controls Cluster (Pojok Kanan Atas HUD):
+1. **[ 🗕 ] Minimize**: Meminimalkan jendela ke System Tray / Taskbar.
+2. **[ 🗗 ] Restore / Pill Mode**: Mengembalikan antarmuka ke Mode 1 Floating Dynamic Capsule Pill.
+3. **[ ✕ ] Close**: Tombol merah standar Windows untuk memutus sesi dan mematikan aplikasi secara bersih.
 | | 1920x1080@1fps DXGI Engine     | | |          (3D Holographic Core)            | | | RAM: [||||||||..] 34%      | |
 | | [ ⏹️ Stop Screen Share ]       | | |                                           | | | Ping: 24ms | WASAPI 48kHz  | |
 | +--------------------------------+ | |                 Listening...                | | +----------------------------+ |
