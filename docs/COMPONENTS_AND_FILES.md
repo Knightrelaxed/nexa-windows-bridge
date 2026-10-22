@@ -108,15 +108,19 @@ Dokumen ini menyediakan referensi teknis mendetail dari setiap berkas kode yang 
 
 ---
 
-## 7. Direktori Antarmuka Slint (`ui/`)
+## 7. Direktori Antarmuka Slint (`ui/`) & Dokumentasi Spesifikasi UI
+
+> 📘 **Dokumentasi Lengkap Elemen UI:** Rincian mendalam setiap elemen visual, label teks, fungsi kode Rust, dan properti antarmuka tersedia di [UI_COMPONENTS_AND_SPECIFICATION.md](file:///c:/workspace/nexa-windows-bridge/docs/UI_COMPONENTS_AND_SPECIFICATION.md).
 
 * **`ui/main_window.slint`:**
   Jendela antarmuka utama yang mendukung **Dual-Mode**:
-  1. *Compact Companion Mode* (380x520): Jendela ringkas di sudut layar dengan visualisasi avatar dan status.
-  2. *Fullscreen Cybernetic Command Center* (Resolusi Penuh / F11): HUD bergaya J.A.R.V.I.S dengan visualisator frekuensi audio, telemetri CPU/RAM, dan indikator perangkat keras aktif.
+  1. *Compact Companion Mode* (~380x250px): Jendela ringkas di sudut layar dengan visualisasi avatar mini 52px, status kognitif, audio meter 18-bar, pil indikator periferal, dan baris tombol aksi 36px yang terkunci rapi.
+  2. *Fullscreen Cybernetic Command Center* (Resolusi Penuh / F11): HUD bergaya J.A.R.V.I.S dengan avatar 120px berputar, visualisator spektrum audio 48-bar, telemetri CPU/RAM, dan floating action dock.
 * **`ui/settings_dialog.slint`:**
-  Modal dialog pengaturan endpoint server, token otentikasi, profil low RAM, serta uji coba handshake WebSocket secara live.
+  Modal dialog pengaturan endpoint server, token otentikasi, profil low RAM, toggle autostart Windows, serta uji coba handshake WebSocket secara live. Dibatasi pada ukuran maksimal 500x460px agar rapi.
+* **`ui/overlay_window.slint`:**
+  Jendela transparan *click-through* tingkat atas DirectComposition Win32 untuk visualisasi otomasi AI: Bounding Box (`BOX`), Target Ring (`RING`), Pointer Reticle (`POINTER`), Spotlight Dimmer (`SPOTLIGHT`), dan konfirmasi klik 300ms (`RIPPLE`).
 * **`ui/components/avatar.slint`:**
-  Avatar cybernetic responsif dengan visualisasi dual-ocular ring dan rotasi giroskopik yang mendukung 9 status kognitif AI (`idle`, `listening`, `thinking`, `speaking`, `screen_sharing`, `barge_in`, `offline`, `connecting`, `error`).
+  Avatar cybernetic responsif dengan visualisasi dual-ocular ring dan rotasi giroskopik yang mendukung 9 status kognitif AI (`idle`, `listening`, `thinking`, `speaking`, `barge_in`, `screen_sharing`, `tool_executing`, `connecting`, `offline`).
 * **`ui/components/audio_meter.slint`:**
-  Visualisator spektrum audio real-time dengan 12 batang frekuensi teranimasi dinamis yang bereaksi terhadap suara pengguna dan suara AI.
+  Visualisator spektrum audio real-time dengan batang frekuensi parametrik teranimasi dinamis yang bereaksi terhadap suara pengguna dan suara AI (18 bilah di Mode 1, 48 bilah di Mode 2).

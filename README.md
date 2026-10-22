@@ -14,6 +14,7 @@ Dokumentasi lengkap dan arsitektur sistem telah disusun di dalam folder [`docs/`
 * [**Manajemen Daya OS & Win32 Hook**](./docs/POWER_MANAGEMENT.md)
 * [**Spesifikasi Protokol WebSocket & Skema JSON**](./docs/PROTOCOL.md)
 * [**Spesifikasi Konfigurasi Sistem**](./docs/CONFIGURATION.md)
+* [**Spesifikasi Komponen & Antarmuka UI (Dual-Mode & HUD)**](./docs/UI_COMPONENTS_AND_SPECIFICATION.md)
 * [**Katalog Komponen & Referensi Berkas Lengkap**](./docs/COMPONENTS_AND_FILES.md)
 
 ---
