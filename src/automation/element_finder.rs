@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use crate::automation::input::{denormalize_to_pixels, get_primary_screen_dimensions};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use windows::Win32::Foundation::POINT;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
@@ -181,37 +181,67 @@ pub fn find_element_bounds_at_point(px: i32, py: i32, screen_w: i32, screen_h: i
     }
 }
 
+/// Smart-snap a bounding box with an explicit timeout guard (Claude Bug H8).
+/// If UIA or cross-process COM hangs or exceeds `timeout`, immediately falls back
+/// to the AI vision bounding box to prevent UI freezing.
+pub fn smart_snap_bounding_box_timeout(
+    ymin: f64,
+    xmin: f64,
+    ymax: f64,
+    xmax: f64,
+    timeout: std::time::Duration,
+) -> SnappedRect {
+    let screen = get_primary_screen_dimensions();
+    let center_x = (xmin + xmax) / 2.0;
+    let center_y = (ymin + ymax) / 2.0;
+    let (px, py) = denormalize_to_pixels(center_x, center_y, screen.width, screen.height);
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let sw = screen.width;
+    let sh = screen.height;
+    std::thread::spawn(move || {
+        let res = find_element_bounds_at_point(px, py, sw, sh);
+        let _ = tx.send(res);
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(Some(snapped_px_rect)) => {
+            let snapped = pixel_rect_to_normalized(&snapped_px_rect, screen.width, screen.height);
+            info!(
+                "[UIA] 🧲 Magnetic Snap SUCCESS: target=({:.1}, {:.1}) -> snapped box=[ymin={:.1}, xmin={:.1}, ymax={:.1}, xmax={:.1}] (px: {}x{} at {},{})",
+                center_x, center_y, snapped.ymin, snapped.xmin, snapped.ymax, snapped.xmax,
+                snapped_px_rect.width(), snapped_px_rect.height(), snapped_px_rect.left, snapped_px_rect.top
+            );
+            snapped
+        }
+        Ok(None) => {
+            debug!(
+                "[UIA] 📐 Using Vision Fallback: box=[ymin={:.1}, xmin={:.1}, ymax={:.1}, xmax={:.1}]",
+                ymin, xmin, ymax, xmax
+            );
+            SnappedRect::new(ymin, xmin, ymax, xmax, false)
+        }
+        Err(_) => {
+            warn!(
+                "[UIA] ⚠️ Smart snap timed out after {:?}. Falling back to Vision box.",
+                timeout
+            );
+            SnappedRect::new(ymin, xmin, ymax, xmax, false)
+        }
+    }
+}
+
 /// Smart-snap a bounding box:
 /// Calculates the center of the AI bounding box, queries UIA, and if a valid control is found,
 /// snaps to its exact physical sub-pixel boundary.
-/// If UIA fails or finds no control, smoothly falls back to the original AI bounding box.
+/// If UIA fails, times out (150ms), or finds no control, smoothly falls back to the original AI bounding box.
 pub fn smart_snap_bounding_box(
     ymin: f64,
     xmin: f64,
     ymax: f64,
     xmax: f64,
 ) -> SnappedRect {
-    let screen = get_primary_screen_dimensions();
-    let center_x = (xmin + xmax) / 2.0;
-    let center_y = (ymin + ymax) / 2.0;
-
-    let (px, py) = denormalize_to_pixels(center_x, center_y, screen.width, screen.height);
-
-    if let Some(snapped_px_rect) = find_element_bounds_at_point(px, py, screen.width, screen.height) {
-        let snapped = pixel_rect_to_normalized(&snapped_px_rect, screen.width, screen.height);
-        info!(
-            "[UIA] 🧲 Magnetic Snap SUCCESS: target=({:.1}, {:.1}) -> snapped box=[ymin={:.1}, xmin={:.1}, ymax={:.1}, xmax={:.1}] (px: {}x{} at {},{})",
-            center_x, center_y, snapped.ymin, snapped.xmin, snapped.ymax, snapped.xmax,
-            snapped_px_rect.width(), snapped_px_rect.height(), snapped_px_rect.left, snapped_px_rect.top
-        );
-        snapped
-    } else {
-        debug!(
-            "[UIA] 📐 Using Vision Fallback: box=[ymin={:.1}, xmin={:.1}, ymax={:.1}, xmax={:.1}]",
-            ymin, xmin, ymax, xmax
-        );
-        SnappedRect::new(ymin, xmin, ymax, xmax, false)
-    }
+    smart_snap_bounding_box_timeout(ymin, xmin, ymax, xmax, std::time::Duration::from_millis(150))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -308,5 +338,22 @@ mod tests {
         assert!(res.xmin >= 0.0 && res.xmin <= 1000.0);
         assert!(res.ymax >= 0.0 && res.ymax <= 1000.0);
         assert!(res.xmax >= 0.0 && res.xmax <= 1000.0);
+    }
+
+    #[test]
+    fn test_smart_snap_bounding_box_timeout_fallback() {
+        // With an ultra-short timeout (0ms), it should immediately fall back to the vision box without hanging
+        let res = smart_snap_bounding_box_timeout(
+            150.0,
+            250.0,
+            350.0,
+            450.0,
+            std::time::Duration::from_millis(0),
+        );
+        assert_eq!(res.ymin, 150.0);
+        assert_eq!(res.xmin, 250.0);
+        assert_eq!(res.ymax, 350.0);
+        assert_eq!(res.xmax, 450.0);
+        assert!(!res.is_snapped);
     }
 }

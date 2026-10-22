@@ -427,6 +427,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 toggle_share_conn(Some(false));
                             }
                         }
+                        ConnectionState::AuthRejected => {
+                            win.set_connection_status("offline".into());
+                            win.set_avatar_state(ui::CognitiveState::Offline.as_str().into());
+                            win.set_status_message("Token Ditolak (HTTP 401/403). Periksa Auth Token di Pengaturan.".into());
+                            win.set_volume_level(0.0);
+                            win.set_pulse_scale(1.0);
+                            if win.get_is_screen_sharing() {
+                                toggle_share_conn(Some(false));
+                            }
+                        }
                     }
                 }
             });
@@ -1048,8 +1058,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Window Close Button [X]: Terminate application cleanly, stopping all audio and network sessions
-    main_window.window().on_close_requested(|| {
+    let net_client_close_req = network_client.clone();
+    let capture_ctrl_close_req = Arc::clone(&capture_controller);
+    main_window.window().on_close_requested(move || {
         info!("[MAIN] Window close [X] requested. Terminating application gracefully.");
+        net_client_close_req.disconnect();
+        if let Ok(mut ctrl) = capture_ctrl_close_req.lock() {
+            if let Some(mut c) = ctrl.take() {
+                c.stop();
+            }
+        }
         let _ = slint::quit_event_loop();
         slint::CloseRequestResponse::HideWindow
     });
@@ -1065,9 +1083,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Hook Application Close [✕] Button (From Pill Mode or Fullscreen HUD)
     let net_client_close = network_client.clone();
+    let capture_ctrl_close_app = Arc::clone(&capture_controller);
     main_window.on_close_app(move || {
         info!("[MAIN] ✕ Application Close requested by user. Disconnecting and quitting.");
         net_client_close.disconnect();
+        if let Ok(mut ctrl) = capture_ctrl_close_app.lock() {
+            if let Some(mut c) = ctrl.take() {
+                c.stop();
+            }
+        }
         let _ = slint::quit_event_loop();
     });
 
@@ -1087,7 +1111,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("[MAIN] 🔕 Started in Auto-Start Standby mode (minimized to system tray)");
     }
     slint::run_event_loop_until_quit()?;
-    Ok(())
+
+    info!("[MAIN] Application event loop ended. Cleaning up resources...");
+    network_client.disconnect();
+    if let Ok(mut ctrl) = capture_controller.lock() {
+        if let Some(mut c) = ctrl.take() {
+            c.stop();
+        }
+    }
+    std::process::exit(0);
 }
 
 /// Helper function to perform a test WebSocket connection with Bearer auth

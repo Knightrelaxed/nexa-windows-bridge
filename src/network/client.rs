@@ -5,7 +5,7 @@
 
 use super::protocol::{ClientMessage, ServerMessage};
 use crate::config::BridgeConfig;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -22,6 +22,7 @@ pub enum ConnectionState {
     Connected,
     Reconnecting { attempt: u32, next_retry_ms: u64 },
     Suspended,
+    AuthRejected,
 }
 
 #[derive(Debug, Clone)]
@@ -211,9 +212,39 @@ async fn run_client_worker(
             }
         };
 
-        // 2. Perform WebSocket handshake
-        match tokio_tungstenite::connect_async(handshake_req).await {
-            Ok((ws_stream, response)) => {
+        // Drain any stale session interrupt permits before each connection attempt (Claude Bug H1)
+        while session_interrupt.notified().now_or_never().is_some() {}
+
+        // 2. Perform WebSocket handshake with 10s timeout & instant cancellation (Claude Bug H3)
+        let connect_future = tokio_tungstenite::connect_async(handshake_req);
+        let connect_res = tokio::select! {
+            res = tokio::time::timeout(Duration::from_secs(10), connect_future) => Some(res),
+            _ = session_interrupt.notified() => None,
+        };
+
+        match connect_res {
+            None => {
+                info!("[NETWORK] Handshake cancelled by user disconnect or OS suspend.");
+                continue;
+            }
+            Some(Err(_)) => {
+                warn!("[NETWORK] Handshake timed out after 10s.");
+            }
+            Some(Ok(Err(tokio_tungstenite::tungstenite::Error::Http(resp))))
+                if matches!(resp.status().as_u16(), 401 | 403) =>
+            {
+                error!(
+                    "[NETWORK] ⛔ Token authentication rejected (HTTP {}). Stopping retries.",
+                    resp.status()
+                );
+                *enabled.lock().unwrap() = false;
+                let _ = state_tx.send(ConnectionState::AuthRejected);
+                continue;
+            }
+            Some(Ok(Err(e))) => {
+                warn!("[NETWORK] Connection attempt failed: {}", e);
+            }
+            Some(Ok(Ok((ws_stream, response)))) => {
                 info!(
                     "[NETWORK] ✅ Connected successfully! HTTP Status: {:?}",
                     response.status()
@@ -242,6 +273,7 @@ async fn run_client_worker(
 
                 // 3. Active Session Loop
                 let mut session_active = true;
+                let mut last_rx = tokio::time::Instant::now();
                 while session_active {
                     if !*enabled.lock().unwrap() || *is_suspended.lock().unwrap() {
                         info!("[NETWORK] Session interrupted by user disconnect or OS suspend.");
@@ -257,8 +289,14 @@ async fn run_client_worker(
                             break;
                         }
 
-                        // Keepalive Watchdog (Sends PING every 5s)
+                        // Keepalive Watchdog (Sends PING every 5s and checks 15s half-open timeout, Claude Bug H2)
                         _ = ping_interval.tick() => {
+                            if last_rx.elapsed() > Duration::from_secs(15) {
+                                warn!("[NETWORK] Keepalive timeout: no server packet received for >15s. Session half-open, reconnecting.");
+                                session_active = false;
+                                continue;
+                            }
+
                             let now = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap_or_default()
@@ -286,6 +324,9 @@ async fn run_client_worker(
 
                         // Read incoming packets from server
                         msg_opt = ws_read.next() => {
+                            if let Some(Ok(_)) = &msg_opt {
+                                last_rx = tokio::time::Instant::now();
+                            }
                             match msg_opt {
                                 Some(Ok(Message::Text(text))) => {
                                     match ServerMessage::from_json(&text) {
@@ -335,10 +376,6 @@ async fn run_client_worker(
                         }
                     }
                 }
-            }
-
-            Err(e) => {
-                warn!("[NETWORK] Connection attempt failed: {}", e);
             }
         }
 

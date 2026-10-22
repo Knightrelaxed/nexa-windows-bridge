@@ -140,6 +140,36 @@ mod tests {
         assert_eq!(primary_title.encode_utf16().count(), 11);
         assert_eq!(fallback_title.encode_utf16().count(), 22);
 
+        // Diagnostic inspection of windows in process
+        main_window.show().unwrap();
+        unsafe {
+            use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
+            use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                EnumWindows, GetWindowTextW, GetClassNameW, GetWindowThreadProcessId, IsWindowVisible,
+            };
+
+            struct DiagCtx { pid: u32 }
+            unsafe extern "system" fn diag_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+                let ctx = &*(lparam as *const DiagCtx);
+                let mut pid = 0u32;
+                GetWindowThreadProcessId(hwnd, &mut pid);
+                if pid == ctx.pid {
+                    let mut text_buf = [0u16; 256];
+                    let mut class_buf = [0u16; 256];
+                    let text_len = GetWindowTextW(hwnd, text_buf.as_mut_ptr(), 256);
+                    let class_len = GetClassNameW(hwnd, class_buf.as_mut_ptr(), 256);
+                    let title = String::from_utf16_lossy(&text_buf[..text_len as usize]);
+                    let class = String::from_utf16_lossy(&class_buf[..class_len as usize]);
+                    let visible = IsWindowVisible(hwnd);
+                    println!("[DIAG-WINDOW] hwnd: {:?}, visible: {}, class: {:?}, title: {:?}", hwnd, visible, class, title);
+                }
+                1
+            }
+            let ctx = DiagCtx { pid: GetCurrentProcessId() };
+            EnumWindows(Some(diag_cb), &ctx as *const _ as LPARAM);
+        }
+
         // 4. Toggle Mic Mute
         main_window.set_is_mic_muted(true);
         assert!(main_window.get_is_mic_muted());

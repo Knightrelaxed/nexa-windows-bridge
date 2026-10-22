@@ -112,6 +112,8 @@ fn apply_stealth_window_styles_with_retry(max_retries: u32, retry_delay_ms: u64)
     false
 }
 
+static STEALTH_STYLES_APPLIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn try_apply_stealth_styles() -> bool {
     unsafe {
         let title: Vec<u16> = "N.E.X.A Overlay\0".encode_utf16().collect();
@@ -121,12 +123,27 @@ fn try_apply_stealth_styles() -> bool {
             return false;
         }
 
+        // If styles were already applied, skip heavy DWM recomputation to avoid black flashes
+        if STEALTH_STYLES_APPLIED.load(Ordering::Relaxed) {
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+            );
+            return true;
+        }
+
         // 1. Configure stealth extended window styles:
         // - WS_EX_TOPMOST: Stays above all regular windows
         // - WS_EX_TRANSPARENT: Mouse clicks pass straight through without intercepting
         // - WS_EX_NOACTIVATE: Does not steal focus or keyboard input
+        // - WS_EX_TOOLWINDOW: Prevents overlay from appearing in Alt-Tab task switcher (Claude Bug M5)
         let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
-        let required_flags = (WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOPMOST) as i32;
+        let required_flags = (WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW) as i32;
         if (ex_style & required_flags) != required_flags {
             SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style | required_flags);
         }
@@ -152,8 +169,9 @@ fn try_apply_stealth_styles() -> bool {
             SWP_NOACTIVATE | SWP_FRAMECHANGED,
         );
 
+        STEALTH_STYLES_APPLIED.store(true, Ordering::SeqCst);
         debug!(
-            "[HIGHLIGHTER] Applied stealth styles (WS_EX_TRANSPARENT + DWM Glass) to HWND 0x{:X}",
+            "[HIGHLIGHTER] Applied stealth styles (WS_EX_TRANSPARENT + WS_EX_TOOLWINDOW + DWM Glass) to HWND 0x{:X}",
             hwnd as usize
         );
         true
@@ -207,13 +225,17 @@ impl HighlighterController {
             let win_handle = win_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(w) = win_handle.upgrade() {
+                    // Divide physical pixels by Slint window scale factor for High-DPI parity (Claude Bug M6)
+                    let scale = w.window().scale_factor();
+                    let scale = if scale > 0.0 { scale } else { 1.0 };
+
                     // Set all properties BEFORE showing the window
-                    w.set_window_width(screen.width as f32);
-                    w.set_window_height(screen.height as f32);
-                    w.set_target_x(target_x);
-                    w.set_target_y(target_y);
-                    w.set_target_w(target_w);
-                    w.set_target_h(target_h);
+                    w.set_window_width(screen.width as f32 / scale);
+                    w.set_window_height(screen.height as f32 / scale);
+                    w.set_target_x(target_x / scale);
+                    w.set_target_y(target_y / scale);
+                    w.set_target_w(target_w / scale);
+                    w.set_target_h(target_h / scale);
                     w.set_highlight_style(style_str.into());
                     w.set_highlight_label(label.into());
                     w.set_highlight_opacity(1.0);
@@ -222,32 +244,33 @@ impl HighlighterController {
                 }
             });
 
-            // Apply stealth styles (with retry) on a blocking thread so it doesn't
-            // race with the Slint event loop creating the HWND
-            tokio::spawn(async move {
-                // Small delay to let Slint process the show() and create the HWND
-                tokio::time::sleep(Duration::from_millis(30)).await;
-                apply_stealth_window_styles();
-            });
+            // Apply stealth styles (with retry) safely guarded by Tokio handle (Claude Bug M7)
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    // Small delay to let Slint process the show() and create the HWND
+                    tokio::time::sleep(Duration::from_millis(30)).await;
+                    apply_stealth_window_styles();
+                });
 
-            // Spawn auto-dissolve timer for the current epoch
-            let active_epoch = Arc::clone(&self.active_epoch);
-            let win_handle_timer = win_weak.clone();
+                // Spawn auto-dissolve timer for the current epoch
+                let active_epoch = Arc::clone(&self.active_epoch);
+                let win_handle_timer = win_weak.clone();
 
-            tokio::spawn(async move {
-                tokio::time::sleep(duration).await;
-                if active_epoch.load(Ordering::SeqCst) == epoch {
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(w) = win_handle_timer.upgrade() {
-                            w.set_highlight_visible(false);
-                            if !w.get_ripple_visible() {
-                                let _ = w.hide();
+                handle.spawn(async move {
+                    tokio::time::sleep(duration).await;
+                    if active_epoch.load(Ordering::SeqCst) == epoch {
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(w) = win_handle_timer.upgrade() {
+                                w.set_highlight_visible(false);
+                                if !w.get_ripple_visible() {
+                                    let _ = w.hide();
+                                }
                             }
-                        }
-                    });
-                    debug!("[HIGHLIGHTER] Auto-dissolved highlight epoch {}", epoch);
-                }
-            });
+                        });
+                        debug!("[HIGHLIGHTER] Auto-dissolved highlight epoch {}", epoch);
+                    }
+                });
+            }
         }
     }
 
@@ -295,8 +318,10 @@ impl HighlighterController {
             let win_handle = win_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(w) = win_handle.upgrade() {
-                    w.set_ripple_x(rx);
-                    w.set_ripple_y(ry);
+                    let scale = w.window().scale_factor();
+                    let scale = if scale > 0.0 { scale } else { 1.0 };
+                    w.set_ripple_x(rx / scale);
+                    w.set_ripple_y(ry / scale);
                     w.set_ripple_radius(12.0);
                     w.set_ripple_opacity(0.85);
                     w.set_ripple_visible(true);
@@ -305,53 +330,55 @@ impl HighlighterController {
             });
 
             // Ensure window is transparent, topmost, and click-through
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(25)).await;
-                apply_stealth_window_styles();
-            });
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                    apply_stealth_window_styles();
+                });
 
-            // Run 300ms ripple expansion animation with atomic epoch cancellation
-            let win_anim = win_weak.clone();
-            let active_ripple_epoch = Arc::clone(&self.active_ripple_epoch);
+                // Run 300ms ripple expansion animation with atomic epoch cancellation
+                let win_anim = win_weak.clone();
+                let active_ripple_epoch = Arc::clone(&self.active_ripple_epoch);
 
-            tokio::spawn(async move {
-                let steps = 10;
-                let step_delay = Duration::from_millis(30);
+                handle.spawn(async move {
+                    let steps = 10;
+                    let step_delay = Duration::from_millis(30);
 
-                for i in 1..=steps {
-                    tokio::time::sleep(step_delay).await;
+                    for i in 1..=steps {
+                        tokio::time::sleep(step_delay).await;
 
-                    // Bail out immediately if a newer ripple has superseded this one
-                    if active_ripple_epoch.load(Ordering::SeqCst) != ripple_epoch {
-                        return;
+                        // Bail out immediately if a newer ripple has superseded this one
+                        if active_ripple_epoch.load(Ordering::SeqCst) != ripple_epoch {
+                            return;
+                        }
+
+                        let progress = (i as f32) / (steps as f32);
+                        let radius = 12.0 + (33.0 * progress); // 12px -> 45px
+                        let opacity = 0.85 * (1.0 - progress);
+
+                        let win_step = win_anim.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(w) = win_step.upgrade() {
+                                w.set_ripple_radius(radius);
+                                w.set_ripple_opacity(opacity);
+                            }
+                        });
                     }
 
-                    let progress = (i as f32) / (steps as f32);
-                    let radius = 12.0 + (33.0 * progress); // 12px -> 45px
-                    let opacity = 0.85 * (1.0 - progress);
-
-                    let win_step = win_anim.clone();
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(w) = win_step.upgrade() {
-                            w.set_ripple_radius(radius);
-                            w.set_ripple_opacity(opacity);
-                        }
-                    });
-                }
-
-                // Finish ripple only if this is still the active epoch
-                if active_ripple_epoch.load(Ordering::SeqCst) == ripple_epoch {
-                    let win_final = win_anim.clone();
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(w) = win_final.upgrade() {
-                            w.set_ripple_visible(false);
-                            if !w.get_highlight_visible() {
-                                let _ = w.hide();
+                    // Finish ripple only if this is still the active epoch
+                    if active_ripple_epoch.load(Ordering::SeqCst) == ripple_epoch {
+                        let win_final = win_anim.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(w) = win_final.upgrade() {
+                                w.set_ripple_visible(false);
+                                if !w.get_highlight_visible() {
+                                    let _ = w.hide();
+                                }
                             }
-                        }
-                    });
-                }
-            });
+                        });
+                    }
+                });
+            }
         }
     }
 
