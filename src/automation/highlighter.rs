@@ -14,6 +14,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info};
+use windows_sys::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
+use windows_sys::Win32::UI::Controls::MARGINS;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 /// Visual styling options for screen highlights
@@ -88,7 +90,7 @@ impl HighlightRequest {
     }
 }
 
-/// Apply Win32 Stealth windowing flags (click-through, topmost, noactivate)
+/// Apply Win32 Stealth windowing flags (click-through, topmost, noactivate, DWM alpha glass)
 pub fn apply_stealth_window_styles() -> bool {
     unsafe {
         let title: Vec<u16> = "N.E.X.A Overlay\0".encode_utf16().collect();
@@ -98,12 +100,30 @@ pub fn apply_stealth_window_styles() -> bool {
             return false;
         }
 
+        // 1. Configure stealth extended window styles:
+        // - WS_EX_TOPMOST: Stays above all regular windows
+        // - WS_EX_TRANSPARENT: Mouse clicks pass straight through without intercepting
+        // - WS_EX_NOACTIVATE: Does not steal focus or keyboard input
+        // - WS_EX_LAYERED: Enables per-pixel DWM alpha blending
         let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
         let required_flags = (WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_LAYERED) as i32;
         if (ex_style & required_flags) != required_flags {
             SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style | required_flags);
         }
 
+        // 2. Extend DWM frame into client area (-1 margins) to guarantee hardware alpha transparency without black boxes
+        let margins = MARGINS {
+            cxLeftWidth: -1,
+            cxRightWidth: -1,
+            cyTopHeight: -1,
+            cyBottomHeight: -1,
+        };
+        let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
+
+        // 3. Initialize layered window attributes (per-pixel alpha 255)
+        let _ = SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+
+        // 4. Ensure window covers full primary screen and stays topmost without taking activation
         let screen = get_primary_screen_dimensions();
         SetWindowPos(
             hwnd,
@@ -112,10 +132,13 @@ pub fn apply_stealth_window_styles() -> bool {
             0,
             screen.width,
             screen.height,
-            SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
         );
 
-        debug!("[HIGHLIGHTER] Applied WS_EX_TRANSPARENT & HWND_TOPMOST to HWND 0x{:X}", hwnd as usize);
+        debug!(
+            "[HIGHLIGHTER] Applied WS_EX_TRANSPARENT, DWM alpha margins & HWND_TOPMOST to HWND 0x{:X}",
+            hwnd as usize
+        );
         true
     }
 }
@@ -167,6 +190,8 @@ impl HighlighterController {
             let win_handle = win_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(w) = win_handle.upgrade() {
+                    w.set_window_width(screen.width as f32);
+                    w.set_window_height(screen.height as f32);
                     w.set_target_x(target_x);
                     w.set_target_y(target_y);
                     w.set_target_w(target_w);
@@ -179,28 +204,65 @@ impl HighlighterController {
                 }
             });
 
-            // Ensure Win32 styles are applied after window is shown
+            // Ensure Win32 styles and DWM alpha margins are applied
             tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(30)).await;
                 apply_stealth_window_styles();
             });
 
-            // Spawn auto-dissolve timer for the current epoch
+            // Spawn auto-dissolve timer for the current epoch (200ms smooth fade-out: Pilar 4.5)
             let active_epoch = Arc::clone(&self.active_epoch);
             let win_handle_timer = win_weak.clone();
 
             tokio::spawn(async move {
                 tokio::time::sleep(duration).await;
                 if active_epoch.load(Ordering::SeqCst) == epoch {
+                    // Step 1: Smooth 200ms fade-out
+                    let win_fade = win_handle_timer.clone();
                     let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(w) = win_handle_timer.upgrade() {
-                            w.set_highlight_visible(false);
-                            if !w.get_ripple_visible() {
-                                let _ = w.hide();
-                            }
+                        if let Some(w) = win_fade.upgrade() {
+                            w.set_highlight_opacity(0.0);
                         }
                     });
-                    debug!("[HIGHLIGHTER] Auto-dissolved highlight epoch {}", epoch);
+
+                    // Step 2: After fade-out finishes, turn off visibility and reset opacity
+                    tokio::time::sleep(Duration::from_millis(220)).await;
+                    if active_epoch.load(Ordering::SeqCst) == epoch {
+                        let win_hide = win_handle_timer.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(w) = win_hide.upgrade() {
+                                w.set_highlight_visible(false);
+                                w.set_highlight_opacity(1.0);
+                            }
+                        });
+                        debug!("[HIGHLIGHTER] Auto-dissolved highlight epoch {}", epoch);
+                    }
+                }
+            });
+        }
+    }
+
+    /// Smoothly dissolve the currently active highlight (e.g. on user click or action)
+    pub fn dissolve_active_highlight(&self) {
+        let epoch = self.active_epoch.load(Ordering::SeqCst);
+        if let Some(ref win_weak) = self.overlay_window {
+            let win_fade = win_weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(w) = win_fade.upgrade() {
+                    w.set_highlight_opacity(0.0);
+                }
+            });
+
+            let win_hide = win_weak.clone();
+            let active_epoch = Arc::clone(&self.active_epoch);
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(220)).await;
+                if active_epoch.load(Ordering::SeqCst) == epoch {
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(w) = win_hide.upgrade() {
+                            w.set_highlight_visible(false);
+                            w.set_highlight_opacity(1.0);
+                        }
+                    });
                 }
             });
         }
@@ -246,7 +308,6 @@ impl HighlighterController {
 
             // Ensure window is transparent, topmost, and click-through
             tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(25)).await;
                 apply_stealth_window_styles();
             });
 
@@ -285,9 +346,6 @@ impl HighlighterController {
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(w) = win_final.upgrade() {
                             w.set_ripple_visible(false);
-                            if !w.get_highlight_visible() {
-                                let _ = w.hide();
-                            }
                         }
                     });
                 }
@@ -307,7 +365,7 @@ impl HighlighterController {
                 if let Some(w) = win_handle.upgrade() {
                     w.set_highlight_visible(false);
                     w.set_ripple_visible(false);
-                    let _ = w.hide();
+                    w.set_highlight_opacity(1.0);
                 }
             });
         }

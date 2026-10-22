@@ -1,0 +1,144 @@
+// ============================================================
+// PILL SVG VECTOR ICONS & MICRO-BUTTONS
+// High-Precision Clean Vector Glyphs for Floating Dynamic Pill
+// ============================================================
+
+export component PillMicIcon inherits Rectangle {
+    in property <color> icon_color: #8B949E;
+    in property <bool> is_muted: false;
+
+    width: 16px;
+    height: 16px;
+
+    // Mic Capsule
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        stroke: root.is_muted ? #FF9100 : root.icon_color;
+        stroke-width: 1.5px;
+        fill: root.is_muted ? #FF9100.with-alpha(0.2) : transparent;
+        commands: "M 10 3 C 8.6 3 7.5 4.1 7.5 5.5 L 7.5 9.5 C 7.5 10.9 8.6 12 10 12 C 11.4 12 12.5 10.9 12.5 9.5 L 12.5 5.5 C 12.5 4.1 11.4 3 10 3 Z";
+    }
+
+    // Mic Cradle Arc & Stand
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        stroke: root.is_muted ? #FF9100 : root.icon_color;
+        stroke-width: 1.5px;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+        fill: transparent;
+        commands: "M 4.5 9 C 4.5 12 7 14.5 10 14.5 C 13 14.5 15.5 12 15.5 9 M 10 14.5 L 10 17.5 M 7 17.5 L 13 17.5";
+    }
+
+    // Optional Mute Diagonal Strike
+    if root.is_muted : Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        stroke: #FF5252;
+        stroke-width: 1.8px;
+        stroke-line-cap: round;
+        fill: transparent;
+        commands: "M 3 3 L 17 17";
+    }
+}
+
+export component PillEyeIcon inherits Rectangle {
+    in property <color> icon_color: #8B949E;
+    in property <bool> is_streaming: false;
+
+    width: 16px;
+    height: 16px;
+
+    // Eye Outline Contour
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        stroke: root.is_streaming ? #00E5FF : root.icon_color;
+        stroke-width: 1.5px;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+        fill: root.is_streaming ? #00E5FF.with-alpha(0.15) : transparent;
+        commands: "M 2 10 C 4.5 5.5 15.5 5.5 18 10 C 15.5 14.5 4.5 14.5 2 10 Z";
+    }
+
+    // Pupil Iris Circle
+    Rectangle {
+        width: 6px;
+        height: 6px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: 3px;
+        background: root.is_streaming ? #00E5FF : root.icon_color;
+        drop-shadow-blur: root.is_streaming ? 6px : 0px;
+        drop-shadow-color: #00E5FF;
+    }
+}
+
+export component PillExpandIcon inherits Rectangle {
+    in property <color> icon_color: #8B949E;
+
+    width: 16px;
+    height: 16px;
+
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        stroke: root.icon_color;
+        stroke-width: 1.5px;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+        fill: transparent;
+        commands: "M 4 7.5 L 4 4 L 7.5 4 M 12.5 4 L 16 4 L 16 7.5 M 4 12.5 L 4 16 L 7.5 16 M 12.5 16 L 16 16 L 16 12.5";
+    }
+}
+
+export component PillGearIcon inherits Rectangle {
+    in property <color> icon_color: #8B949E;
+
+    width: 16px;
+    height: 16px;
+
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        stroke: root.icon_color;
+        stroke-width: 1.3px;
+        stroke-line-join: round;
+        fill: root.icon_color.with-alpha(0.2);
+        commands: "M 8.8 2 L 11.2 2 L 11.6 4.3 C 12.2 4.6 12.8 5 13.3 5.5 L 15.4 4.6 L 16.9 6.1 L 16 8.2 C 16.5 8.7 16.9 9.3 17.2 9.9 L 19.5 10.3 L 19.5 11.7 L 17.2 12.1 C 16.9 12.7 16.5 13.3 16 13.8 L 16.9 15.9 L 15.4 17.4 L 13.3 16.5 C 12.8 17 12.2 17.4 11.6 17.7 L 11.2 20 L 8.8 20 L 8.4 17.7 C 7.8 17.4 7.2 17 6.7 16.5 L 4.6 17.4 L 3.1 15.9 L 4 13.8 C 3.5 13.3 3.1 12.7 2.8 12.1 L 0.5 11.7 L 0.5 10.3 L 2.8 9.9 C 3.1 9.3 3.5 8.7 4 8.2 L 3.1 6.1 L 4.6 4.6 L 6.7 5.5 C 7.2 5 7.8 4.6 8.4 4.3 Z M 10 8 A 2 2 0 1 0 10.01 8 Z";
+    }
+}
+
+export component PillButton inherits Rectangle {
+    in property <bool> is_active: false;
+    in property <color> active_glow: #00E5FF;
+    callback clicked();
+
+    width: 28px;
+    height: 28px;
+    border-radius: 14px;
+    background: touch.has-hover ? #FFFFFF1A : (root.is_active ? root.active_glow.with-alpha(0.12) : transparent);
+    animate background { duration: 150ms; }
+
+    border-width: root.is_active ? 1px : 0px;
+    border-color: root.is_active ? root.active_glow.with-alpha(0.4) : transparent;
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+        mouse-cursor: pointer;
+    }
+}

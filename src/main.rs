@@ -167,6 +167,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 3.1 Initialize Slint OverlayWindow and Stealth Highlighter Controller
     let overlay_window = ui::OverlayWindow::new().ok();
+    if let Some(ref ow) = overlay_window {
+        let ow_weak = ow.as_weak();
+        let screen = automation::get_primary_screen_dimensions();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(w) = ow_weak.upgrade() {
+                w.set_window_width(screen.width as f32);
+                w.set_window_height(screen.height as f32);
+                w.set_highlight_visible(false);
+                w.set_ripple_visible(false);
+                let _ = w.show();
+            }
+        });
+
+        // Apply Win32 stealth styles & DWM alpha frame extension immediately at startup
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(60)).await;
+            automation::apply_stealth_window_styles();
+        });
+    }
+
     let highlighter_controller = Arc::new(automation::HighlighterController::new(
         overlay_window.as_ref().map(|w| w.as_weak()),
     ));
@@ -933,6 +953,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             win.window().set_fullscreen(fs);
             if !fs {
                 win.window().set_maximized(false);
+                unsafe {
+                    use windows_sys::Win32::UI::WindowsAndMessaging::{
+                        FindWindowW, GetSystemMetrics, SetWindowPos, HWND_TOPMOST, SM_CXSCREEN,
+                        SWP_SHOWWINDOW,
+                    };
+                    let title: Vec<u16> = "N.E.X.A Windows Bridge\0".encode_utf16().collect();
+                    let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+                    if !hwnd.is_null() {
+                        let screen_w = GetSystemMetrics(SM_CXSCREEN);
+                        let pill_w = 400;
+                        let pill_h = 64;
+                        let pos_x = (screen_w - pill_w) / 2;
+                        let pos_y = 16;
+                        SetWindowPos(hwnd, HWND_TOPMOST, pos_x, pos_y, pill_w, pill_h, SWP_SHOWWINDOW);
+                    }
+                }
             }
         }
     });
@@ -960,11 +996,71 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         toggle_share_ui(None);
     });
 
-    // Hook Settings Modal Open
+    // Hook Native Window Drag (WM_NCLBUTTONDOWN + HTCAPTION)
+    main_window.on_start_window_drag(move || {
+        unsafe {
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                FindWindowW, SendMessageW, HTCAPTION, WM_NCLBUTTONDOWN,
+            };
+            let title: Vec<u16> = "N.E.X.A Windows Bridge\0".encode_utf16().collect();
+            let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+            if !hwnd.is_null() {
+                ReleaseCapture();
+                SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
+            }
+        }
+    });
+
+    // Hook Settings Modal Open (Option A: Smooth Dynamic Expansion)
     let window_weak = main_window.as_weak();
     main_window.on_open_settings(move || {
         if let Some(win) = window_weak.upgrade() {
             win.set_show_settings(true);
+            if !win.get_is_fullscreen() {
+                unsafe {
+                    use windows_sys::Win32::UI::WindowsAndMessaging::{
+                        FindWindowW, GetSystemMetrics, SetWindowPos, HWND_TOPMOST, SM_CXSCREEN,
+                        SWP_SHOWWINDOW,
+                    };
+                    let title: Vec<u16> = "N.E.X.A Windows Bridge\0".encode_utf16().collect();
+                    let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+                    if !hwnd.is_null() {
+                        let screen_w = GetSystemMetrics(SM_CXSCREEN);
+                        let w = 560;
+                        let h = 540;
+                        let pos_x = (screen_w - w) / 2;
+                        let pos_y = 60;
+                        SetWindowPos(hwnd, HWND_TOPMOST, pos_x, pos_y, w, h, SWP_SHOWWINDOW);
+                    }
+                }
+            }
+        }
+    });
+
+    // Hook Settings Modal Close (Restores to 400x64 Floating Capsule Pill)
+    let window_weak = main_window.as_weak();
+    main_window.on_close_settings(move || {
+        if let Some(win) = window_weak.upgrade() {
+            win.set_show_settings(false);
+            if !win.get_is_fullscreen() {
+                unsafe {
+                    use windows_sys::Win32::UI::WindowsAndMessaging::{
+                        FindWindowW, GetSystemMetrics, SetWindowPos, HWND_TOPMOST, SM_CXSCREEN,
+                        SWP_SHOWWINDOW,
+                    };
+                    let title: Vec<u16> = "N.E.X.A Windows Bridge\0".encode_utf16().collect();
+                    let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+                    if !hwnd.is_null() {
+                        let screen_w = GetSystemMetrics(SM_CXSCREEN);
+                        let pill_w = 400;
+                        let pill_h = 64;
+                        let pos_x = (screen_w - pill_w) / 2;
+                        let pos_y = 16;
+                        SetWindowPos(hwnd, HWND_TOPMOST, pos_x, pos_y, pill_w, pill_h, SWP_SHOWWINDOW);
+                    }
+                }
+            }
         }
     });
 
@@ -980,6 +1076,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Run the Slint GUI Event Loop until explicit quit (Claude Bug #2 & #3)
     if !start_minimized {
         main_window.show()?;
+        unsafe {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                FindWindowW, GetSystemMetrics, SetWindowPos, HWND_TOPMOST, SM_CXSCREEN,
+                SWP_SHOWWINDOW,
+            };
+            let title: Vec<u16> = "N.E.X.A Windows Bridge\0".encode_utf16().collect();
+            let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+            if !hwnd.is_null() {
+                let screen_w = GetSystemMetrics(SM_CXSCREEN);
+                let pill_w = 400;
+                let pill_h = 64;
+                let pos_x = (screen_w - pill_w) / 2;
+                let pos_y = 16;
+                SetWindowPos(hwnd, HWND_TOPMOST, pos_x, pos_y, pill_w, pill_h, SWP_SHOWWINDOW);
+            }
+        }
     } else {
         info!("[MAIN] 🔕 Started in Auto-Start Standby mode (minimized to system tray)");
     }

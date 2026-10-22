@@ -40,14 +40,57 @@ export component OverlayWindow inherits Window {
         background: transparent;
 
         // ─────────────────────────────────────────────────────────
-        // 1. SPOTLIGHT DIMMER (Only active when style == "SPOTLIGHT")
+        // 1. SPOTLIGHT SURROUND DIMMER (style == "SPOTLIGHT")
+        // Softly dims surroundings while preserving 100% clarity on target element
         // ─────────────────────────────────────────────────────────
         if root.highlight_visible && root.highlight_style == "SPOTLIGHT" : Rectangle {
             width: 100%;
             height: 100%;
-            background: #00000066;
-            opacity: root.highlight_opacity;
-            animate opacity { duration: 250ms; easing: ease-out; }
+            background: transparent;
+
+            // Top Dimmer Panel
+            Rectangle {
+                x: 0px;
+                y: 0px;
+                width: 100%;
+                height: Math.max(0px, root.target_y);
+                background: #00000077;
+                opacity: root.highlight_opacity;
+                animate opacity { duration: 200ms; easing: ease-out; }
+            }
+
+            // Bottom Dimmer Panel
+            Rectangle {
+                x: 0px;
+                y: root.target_y + root.target_h;
+                width: 100%;
+                height: Math.max(0px, root.window_height - (root.target_y + root.target_h));
+                background: #00000077;
+                opacity: root.highlight_opacity;
+                animate opacity { duration: 200ms; easing: ease-out; }
+            }
+
+            // Left Dimmer Panel
+            Rectangle {
+                x: 0px;
+                y: root.target_y;
+                width: Math.max(0px, root.target_x);
+                height: root.target_h;
+                background: #00000077;
+                opacity: root.highlight_opacity;
+                animate opacity { duration: 200ms; easing: ease-out; }
+            }
+
+            // Right Dimmer Panel
+            Rectangle {
+                x: root.target_x + root.target_w;
+                y: root.target_y;
+                width: Math.max(0px, root.window_width - (root.target_x + root.target_w));
+                height: root.target_h;
+                background: #00000077;
+                opacity: root.highlight_opacity;
+                animate opacity { duration: 200ms; easing: ease-out; }
+            }
         }
 
         // ─────────────────────────────────────────────────────────

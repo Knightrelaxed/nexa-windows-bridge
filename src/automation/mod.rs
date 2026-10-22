@@ -83,11 +83,12 @@ pub async fn handle_execute_command(
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            // Trigger visual click ripple indicator if highlighter is active
+            // Trigger visual click ripple indicator and auto-dissolve active highlight (Pilar 4.5)
             let screen = get_primary_screen_dimensions();
             let (px, py) = denormalize_to_pixels(x, y, screen.width, screen.height);
             if let Some(hl) = highlighter {
                 hl.show_click_ripple(px, py);
+                hl.dissolve_active_highlight();
             }
 
             match desktop_click(x, y, button, double_click) {

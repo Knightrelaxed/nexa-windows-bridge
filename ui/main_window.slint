@@ -15,6 +15,7 @@ import { TranscriptCard } from "components/transcript_card.slint";
 import { TelemetryCard } from "components/telemetry_card.slint";
 import { HotkeysCard } from "components/hotkeys_card.slint";
 import { ColSplitter, RowSplitter } from "components/splitter.slint";
+import { FloatingPill } from "components/floating_pill.slint";
 
 export { OverlayWindow }
 
@@ -22,11 +23,13 @@ export component MainWindow inherits Window {
     title: "N.E.X.A Windows Bridge";
     icon: @image-url("../assets/icon.png");
     full-screen: root.is_fullscreen;
-    min-width: 360px;
-    min-height: 220px;
-    preferred-width: root.is_fullscreen ? 1920px : 380px;
-    preferred-height: root.is_fullscreen ? 1080px : 250px;
-    background: #080B10;
+    no-frame: !root.is_fullscreen;
+    always-on-top: !root.is_fullscreen;
+    min-width: root.is_fullscreen ? 1024px : (root.show_settings ? 500px : 380px);
+    min-height: root.is_fullscreen ? 720px : (root.show_settings ? 460px : 48px);
+    preferred-width: root.is_fullscreen ? 1920px : (root.show_settings ? 540px : 396px);
+    preferred-height: root.is_fullscreen ? 1080px : (root.show_settings ? 500px : 64px);
+    background: root.is_fullscreen ? #080B10 : transparent;
     default-font-family: "Segoe UI";
 
     // Dual-Mode State properties
@@ -40,8 +43,8 @@ export component MainWindow inherits Window {
     in-out property <string> status_message: "Ready to connect to N.E.X.A Server";
     in-out property <bool> show_settings: false;
 
-    // Computed property: true if explicitly fullscreen or window is maximized/large
-    property <bool> is_expanded_view: root.is_fullscreen || root.width > 600px || root.height > 420px;
+    // Computed property: true if explicitly fullscreen
+    property <bool> is_expanded_view: root.is_fullscreen;
 
     // Modular HUD Card Visibility Controls (Customizable via Settings)
     in-out property <bool> show_card_vision: true;
@@ -90,6 +93,8 @@ export component MainWindow inherits Window {
     callback toggle_mic_mute();
     callback toggle_screen_share();
     callback open_settings();
+    callback close_settings();
+    callback start_window_drag();
     callback save_settings(string, string, int, bool, bool, bool, bool, bool, bool, bool);
     callback test_connection(string, string);
 
@@ -125,204 +130,34 @@ export component MainWindow inherits Window {
         }
 
         // ==============================================================
-        // MODE 1: COMPACT FLOATING COMPANION (NON-INTRUSIVE MINI WIDGET)
+        // MODE 1: COMPACT FLOATING DYNAMIC CAPSULE PILL
         // ==============================================================
-        if !root.is_expanded_view : VerticalLayout {
-            padding: 12px;
-            spacing: 8px;
-            alignment: space-between;
+        if !root.is_expanded_view && !root.show_settings : VerticalLayout {
+            alignment: center;
+            padding: 8px;
 
-            // 1. Top Header Bar (Integrated Single Bar)
             HorizontalLayout {
-                height: 28px;
-                alignment: space-between;
-
-                HorizontalLayout {
-                    spacing: 7px;
-                    Rectangle {
-                        width: 8px;
-                        height: 8px;
-                        border-radius: 4px;
-                        y: (parent.height - self.height) / 2;
-                        background: root.connection_status == "connected" ? #00E5FF :
-                                    root.connection_status == "connecting" ? #FF9100 : #546E7A;
-                    }
-                    Text {
-                        text: "N.E.X.A Bridge";
-                        font-size: 13px;
-                        font-weight: 700;
-                        color: #58A6FF;
-                        vertical-alignment: center;
-                    }
-                }
-
-                HorizontalLayout {
-                    spacing: 6px;
-                    Button {
-                        text: "⤢ HUD [F11]";
-                        clicked => {
-                            root.is_fullscreen = true;
-                            root.toggle_fullscreen();
-                        }
-                    }
-                    Button {
-                        text: "⚙ Settings";
-                        clicked => { root.show_settings = !root.show_settings; }
-                    }
-                }
-            }
-
-            // 2. Central Companion Card: Arc Reactor Orb + Speech + Audio Meter
-            Rectangle {
-                background: #161B22CC;
-                border-radius: 8px;
-                border-width: 1px;
-                border-color: #30363D;
-                height: 86px;
-
-                HorizontalLayout {
-                    padding-left: 10px;
-                    padding-right: 10px;
-                    padding-top: 6px;
-                    padding-bottom: 6px;
-                    spacing: 12px;
-                    alignment: center;
-
-                    // Left: Compact 3D Holographic Quantum Neural Core
-                    QuantumCore {
-                        state: root.avatar_state;
-                        level: root.volume_level;
-                        pulse_scale: root.pulse_scale;
-                        is_screen_sharing: root.is_screen_sharing;
-                        orb_size: 58px;
-                    }
-
-                    // Right: Status Narrative & Real-time Equalizer
-                    VerticalLayout {
-                        spacing: 3px;
-                        alignment: center;
-
-                        Text {
-                            text: root.status_text_display;
-                            font-size: 13px;
-                            font-weight: 700;
-                            color: root.avatar_state == "listening"          ? #00B4D8 :
-                                   root.avatar_state == "transmitting_audio" ? #00E5FF :
-                                   root.avatar_state == "thinking"           ? #FFB300 :
-                                   root.avatar_state == "speaking"           ? #00FF88 :
-                                   (root.avatar_state == "screen_sharing" || root.avatar_state == "transmitting_screen") ? #00B0FF :
-                                   root.avatar_state == "tool_executing"     ? #7C4DFF :
-                                   root.avatar_state == "idle"               ? #00E5FF : #C9D1D9;
-                            overflow: elide;
-                        }
-
-                        Text {
-                            visible: root.status_message != "" && root.status_message != root.status_text_display;
-                            text: root.status_message;
-                            font-size: 11px;
-                            color: #8B949E;
-                            overflow: elide;
-                        }
-
-                        // Compact 18-bar Fluid Equalizer
-                        AudioMeter {
-                            volume_level: root.volume_level;
-                            is_active: root.avatar_state == "speaking" || root.avatar_state == "listening" || root.avatar_state == "transmitting_audio";
-                            theme_color: root.avatar_state == "listening"          ? #00B4D8 :
-                                         root.avatar_state == "transmitting_audio" ? #00E5FF :
-                                         root.avatar_state == "speaking"           ? #00FF88 :
-                                         root.avatar_state == "thinking"           ? #FFB300 :
-                                         root.avatar_state == "idle"               ? #00E5FF : #546E7A;
-                            bar_count: 18;
-                            bar_width: 3px;
-                            bar_spacing: 2px;
-                            max_bar_height: 16px;
-                        }
-                    }
-                }
-            }
-
-            // 3. Hardware Indicators Pill Row
-            HorizontalLayout {
-                height: 18px;
-                spacing: 12px;
                 alignment: center;
-
-                // Audio Pill
-                HorizontalLayout {
-                    spacing: 4px;
-                    Rectangle {
-                        width: 6px;
-                        height: 6px;
-                        border-radius: 3px;
-                        y: (parent.height - self.height) / 2;
-                        background: root.connection_status == "connected" ? (root.is_mic_muted ? #FF9100 : #3FB950) : #8B949E;
+                FloatingPill {
+                    avatar_state: root.avatar_state;
+                    connection_status: root.connection_status;
+                    status_text: root.status_text_display;
+                    volume_level: root.volume_level;
+                    pulse_scale: root.pulse_scale;
+                    is_mic_muted: root.is_mic_muted;
+                    is_screen_sharing: root.is_screen_sharing;
+                    toggle_connect => { root.toggle_connect(); }
+                    toggle_mic_mute => { root.toggle_mic_mute(); }
+                    toggle_screen_share => { root.toggle_screen_share(); }
+                    expand_hud => {
+                        root.is_fullscreen = true;
+                        root.toggle_fullscreen();
                     }
-                    Text {
-                        text: root.connection_status == "connected" ? (root.is_mic_muted ? "Muted" : "WASAPI 48k") : "Offline";
-                        font-size: 10px;
-                        color: #8B949E;
-                        vertical-alignment: center;
+                    open_settings => {
+                        root.show_settings = true;
+                        root.open_settings();
                     }
-                }
-
-                // Echo Canceller Pill
-                HorizontalLayout {
-                    spacing: 4px;
-                    Rectangle {
-                        width: 6px;
-                        height: 6px;
-                        border-radius: 3px;
-                        y: (parent.height - self.height) / 2;
-                        background: root.connection_status == "connected" ? #3FB950 : #8B949E;
-                    }
-                    Text {
-                        text: root.connection_status == "connected" ? "AEC3 Aktif" : "Standby";
-                        font-size: 10px;
-                        color: #8B949E;
-                        vertical-alignment: center;
-                    }
-                }
-
-                // Vision Pill
-                HorizontalLayout {
-                    spacing: 4px;
-                    Rectangle {
-                        width: 6px;
-                        height: 6px;
-                        border-radius: 3px;
-                        y: (parent.height - self.height) / 2;
-                        background: root.is_screen_sharing ? #00E5FF : (root.connection_status == "connected" ? #3FB950 : #8B949E);
-                    }
-                    Text {
-                        text: root.is_screen_sharing ? "1 FPS Live" : "D3D11 Ready";
-                        font-size: 10px;
-                        color: #8B949E;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-
-            // 4. Quick Control Action Bar (Touch-friendly 38px height)
-            HorizontalLayout {
-                height: 38px;
-                spacing: 8px;
-                Button {
-                    text: root.is_mic_muted ? "Unmute" : "Mute";
-                    clicked => {
-                        root.is_mic_muted = !root.is_mic_muted;
-                        root.toggle_mic_mute();
-                    }
-                }
-                Button {
-                    text: root.is_screen_sharing ? "Stop Screen" : "Share Screen";
-                    clicked => { root.toggle_screen_share(); }
-                }
-                Button {
-                    text: root.connection_status == "connected" ? "Disconnect" :
-                          root.connection_status == "connecting" ? "Cancel" : "Connect";
-                    primary: root.connection_status != "connected";
-                    clicked => { root.toggle_connect(); }
+                    start_drag => { root.start_window_drag(); }
                 }
             }
         }
@@ -774,12 +609,14 @@ export component MainWindow inherits Window {
                 root.show_card_hotkeys = hotkeys;
                 root.save_settings(url, token, fps, low_ram, autostart, vision, auto, trans, telem, hotkeys);
                 root.show_settings = false;
+                root.close_settings();
             }
             test_connection_clicked(url, token) => {
                 root.test_connection(url, token);
             }
             close_clicked => {
                 root.show_settings = false;
+                root.close_settings();
             }
         }
     }

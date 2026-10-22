@@ -1,0 +1,185 @@
+// ============================================================
+// FLOATING DYNAMIC CAPSULE PILL COMPONENT (MODE 1)
+// Ultra-Sleek Executive AI Companion Pill (~380x48px)
+// ============================================================
+
+import { QuantumCore } from "quantum_core.slint";
+import { AudioMeter } from "audio_meter.slint";
+import { PillMicIcon, PillEyeIcon, PillExpandIcon, PillGearIcon, PillButton } from "pill_icons.slint";
+
+export component FloatingPill inherits Rectangle {
+    in property <string> avatar_state: "offline";
+    in property <string> connection_status: "offline";
+    in property <string> status_text: "Listening...";
+    in property <float> volume_level: 0.0;
+    in property <float> pulse_scale: 1.0;
+    in property <bool> is_mic_muted: false;
+    in property <bool> is_screen_sharing: false;
+
+    callback toggle_connect();
+    callback toggle_mic_mute();
+    callback toggle_screen_share();
+    callback expand_hud();
+    callback open_settings();
+    callback start_drag();
+
+    // Visual geometry: 380px x 48px stadium capsule
+    width: 380px;
+    height: 48px;
+    border-radius: 24px;
+    background: #0E141DF2;
+    border-width: 1px;
+    border-color: #30363D;
+    drop-shadow-blur: 16px;
+    drop-shadow-color: #00000080;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 12px;
+        spacing: 8px;
+        alignment: space-between;
+
+        // ── 1. LEFT: Avatar + Status Dot ─────────────────────────
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: center;
+
+            // TouchArea for Avatar/Dot click to toggle connection
+            TouchArea {
+                width: 48px;
+                height: 40px;
+                mouse-cursor: pointer;
+                clicked => { root.toggle_connect(); }
+
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: center;
+
+                    QuantumCore {
+                        state: root.avatar_state;
+                        level: root.volume_level;
+                        pulse_scale: root.pulse_scale;
+                        is_screen_sharing: root.is_screen_sharing;
+                        orb_size: 34px;
+                    }
+
+                    // Status Dot Indicator
+                    Rectangle {
+                        width: 7px;
+                        height: 7px;
+                        border-radius: 3.5px;
+                        y: (parent.height - self.height) / 2;
+                        background: root.connection_status == "connected" ? #3FB950 :
+                                    (root.connection_status == "connecting" ? #FF9100 : #484F58);
+                        drop-shadow-blur: root.connection_status == "connected" ? 6px : 0px;
+                        drop-shadow-color: root.connection_status == "connected" ? #3FB950 : transparent;
+                    }
+                }
+            }
+        }
+
+        // ── 2. CENTER: Status Text + Fluid Equalizer (Draggable) ──
+        center_box := Rectangle {
+            horizontal-stretch: 1;
+            clip: true;
+
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+                padding-left: 4px;
+                padding-right: 4px;
+
+                Text {
+                    text: root.status_text;
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: root.avatar_state == "listening"          ? #00B4D8 :
+                           root.avatar_state == "transmitting_audio" ? #00E5FF :
+                           root.avatar_state == "thinking"           ? #FFB300 :
+                           root.avatar_state == "speaking"           ? #00FF88 :
+                           (root.avatar_state == "screen_sharing" || root.avatar_state == "transmitting_screen") ? #00B0FF :
+                           root.avatar_state == "tool_executing"     ? #7C4DFF :
+                           root.avatar_state == "idle"               ? #00E5FF : #C9D1D9;
+                    overflow: elide;
+                }
+
+                AudioMeter {
+                    volume_level: root.volume_level;
+                    is_active: root.avatar_state == "speaking" || root.avatar_state == "listening" || root.avatar_state == "transmitting_audio";
+                    theme_color: root.avatar_state == "listening"          ? #00B4D8 :
+                                 root.avatar_state == "transmitting_audio" ? #00E5FF :
+                                 root.avatar_state == "speaking"           ? #00FF88 :
+                                 root.avatar_state == "thinking"           ? #FFB300 :
+                                 root.avatar_state == "idle"               ? #00E5FF : #546E7A;
+                    bar_count: 16;
+                    bar_width: 2.5px;
+                    bar_spacing: 2px;
+                    max_bar_height: 12px;
+                    min_bar_height: 2px;
+                }
+            }
+
+            // Window Drag Surface via pointer-event down
+            TouchArea {
+                mouse-cursor: move;
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                        root.start_drag();
+                    }
+                }
+            }
+        }
+
+        // ── 3. RIGHT: Action Dock (4 Minimalist Vector Buttons) ────
+        HorizontalLayout {
+            spacing: 4px;
+            alignment: center;
+
+            // Mic Mute Button
+            PillButton {
+                is_active: root.is_mic_muted;
+                active_glow: #FF9100;
+                clicked => { root.toggle_mic_mute(); }
+                PillMicIcon {
+                    is_muted: root.is_mic_muted;
+                    icon_color: #C9D1D9;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+
+            // Screen Share Button
+            PillButton {
+                is_active: root.is_screen_sharing;
+                active_glow: #00E5FF;
+                clicked => { root.toggle_screen_share(); }
+                PillEyeIcon {
+                    is_streaming: root.is_screen_sharing;
+                    icon_color: #C9D1D9;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+
+            // Expand to Command Center HUD
+            PillButton {
+                clicked => { root.expand_hud(); }
+                PillExpandIcon {
+                    icon_color: #C9D1D9;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+
+            // Settings Button
+            PillButton {
+                clicked => { root.open_settings(); }
+                PillGearIcon {
+                    icon_color: #C9D1D9;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+        }
+    }
+}

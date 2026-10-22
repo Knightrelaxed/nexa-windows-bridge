@@ -77,6 +77,8 @@ Semua berkas markup antarmuka berada di folder `ui/`:
 | `ui/settings_dialog.slint` | `SettingsDialog` | Modal dialog pengaturan konfigurasi: WebSocket endpoint, Auth token, opsi low-RAM, autostart Windows, dan 5 checkbox modularitas HUD. |
 | `ui/components/splitter.slint` | `ColSplitter`, `RowSplitter` | Komponen garis pembatas interaktif untuk drag-to-resize kolom dan kartu secara halus dengan kursor resize, grip notch, dan hover/active neon glow. |
 | `ui/components/quantum_core.slint` | `QuantumCore` | **Avatar Sentient Quantum Neural Core 3D**: Bola partikel Fibonacci 3D dengan sinapsis neural, petir plasma dinamis, sinar energi radial, ring HUD tick, cincin orbital kontra-rotasi, dan 6 tag telemetri melayang. |
+| `ui/components/floating_pill.slint` | `FloatingPill` | **Floating Dynamic Capsule Pill Mode 1**: Kapsul melayang (~380x48px, radius 24px) dengan Core mini 34px, titik status interaktif, audio equalizer dinamis, area drag Win32 native, dan dock aksi 4 tombol SVG. |
+| `ui/components/pill_icons.slint` | `PillButton`, `PillMicIcon`, `PillEyeIcon`, `PillExpandIcon`, `PillGearIcon` | Komponen tombol kapsul mikro (28x28px) dengan ikon vektor SVG presisi tinggi dan efek pendar hover neon cyan/amber/emerald. |
 | `ui/components/arc_reactor.slint` | `ArcReactorOrb`, `ArcReactor` | Komponen visual reaktor fusi cybernetic konsentris 2D (arsitektur transisi / perbandingan). |
 | `ui/components/audio_meter.slint` | `AudioMeter` | Visualizer spektrum gelombang suara parametrik multi-bar yang bergerak dinamis mengikuti level RMS audio mikrofon & respon suara AI. |
 | `ui/components/vision_card.slint` | `VisionCard` | Kartu monitor D3D11 capture resolusi 1920x1080@1fps, format DXGI duplication, frame reticle viewport, dan tombol pintas kontrol streaming layar. |
@@ -89,44 +91,42 @@ Semua berkas markup antarmuka berada di folder `ui/`:
 
 ---
 
-## 3. Mode 1: Compact Floating Companion (Widget Mini)
+## 3. Mode 1: Floating Dynamic Capsule Pill (Widget Kapsul Melayang)
 
-Mode ini aktif saat `!root.is_expanded_view` (ukuran jendela ringkas ~380x250px).
+Mode ini aktif saat `!root.is_expanded_view` (ukuran jendela melayang ramping ~380x48px dengan radius 24px, frameless transparan `no-frame: true; background: transparent;`).
 
 ```
-+-------------------------------------------------------+
-| [O] N.E.X.A Bridge            [⤢ HUD [F11]] [⚙]      | <- Top Header Bar (28px)
-+-------------------------------------------------------+
-| +---------------------------------------------------+ |
-| | (O) QuantumCore |  Listening...                    | | <- Companion Card (86px)
-| | (Mini 58px)    |  Ready to connect.               | |
-| |                |  |||||||||||||||||| Audio Meter  | |
-| +---------------------------------------------------+ |
-+-------------------------------------------------------+
-|    (o) WASAPI 48kHz    (o) AEC3 Active    (o) D3D11   | <- Hardware Pills (18px)
-+-------------------------------------------------------+
-| [ 🎙️ Mute ]        [ 👁️ Screen Share ]    [ Connect ]  | <- Quick Action Bar (36px)
-+-------------------------------------------------------+
++---------------------------------------------------------------------------------------------+
+| (O) [o]  Listening... ||||||||||||||||           [ 🎙️ ]   [ 👁️ ]   [ ⤢ ]   [ ⚙ ]           |
+| Core Dot Status Text  Audio Equalizer (16 bars)   Mic     Screen    HUD     Settings        |
+| 34px 8px                                          Mute    Share     Mode 2  (Dynamic Exp)   |
++---------------------------------------------------------------------------------------------+
 ```
 
-### Rincian Elemen Mode 1:
+### Rincian Elemen Floating Capsule Pill:
 
-#### A. Top Header Bar (`height: 28px`)
-1. **Lampu Indikator Status Titik (Status Dot)**
-   * **Bentuk:** Bulatan 8x8px (`border-radius: 4px`).
-   * **Warna Dinamis:** `#00E5FF` (Cyan: Connected), `#FF9100` (Amber: Connecting), `#546E7A` (Slate Gray: Offline).
-2. **Teks Judul Antarmuka:** `"N.E.X.A Bridge"` (Segoe UI 13px bold, `#58A6FF`).
-3. **Tombol "⤢ HUD [F11]":** Beralih ke Mode 2 Layar Penuh.
-4. **Tombol "⚙ Settings":** Membuka dialog pengaturan modal overlay di atas jendela.
+#### A. Avatar & Indikator Koneksi Interaktif (Sisi Kiri)
+1. **3D Quantum Neural Core Mini (`34x34px`)**
+   * Avatar miniatur Fibonacci 3D yang berputar konstan dan berdenyut mengikuti amplitudo suara.
+   * Menekan area avatar/dot memicu callback `toggle_connect` (Hubungkan / Putuskan koneksi).
+2. **Interactive Status Dot (`8x8px`, radius `4px`)**
+   * **Warna Dinamis:** `#3FB950` (Hijau Emerald: Connected), `#FFB300` (Amber: Connecting), `#EF4444` (Merah Ruby: Disconnected/Offline).
+   * Dilengkapi animasi hover skala 1.25x dan glow pendar neon.
 
-#### B. Central Companion Card (`height: 86px`)
-* `ArcReactorOrb` mini 58px dengan rotasi giroskopik dan denyut suara.
-* `status_text_display` (13px bold) dan `status_message` (11px).
-* `AudioMeter` mini (18 bar frekuensi suara).
+#### B. Draggable Center & Audio Visualizer (Area Tengah)
+1. **Native Win32 Fluid Dragging Area (`TouchArea`)**
+   * Area tengah diapit antara Avatar dan Action Dock dapat diklik dan ditahan untuk menggeser jendela secara bebas dan halus ke seluruh layar desktop tanpa lag, memanfaatkan Win32 native messages `ReleaseCapture()` + `SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0)`.
+2. **Status Text Display**
+   * Menampilkan status AI teknis profesional dalam bahasa Inggris: `Listening...`, `Processing...`, `Speaking...`, `Offline`, dll.
+3. **Parametric Audio Equalizer (16 Bars)**
+   * Bar frekuensi audio vertikal yang bergerak dinamis mengikuti level desibel RMS input mikrofon dan vokal AI.
 
-#### C. Hardware Indicators & Quick Control Bar
-* Tiga pil periferal: WASAPI 48kHz, AEC3 Active, D3D11 Ready.
-* Tiga tombol aksi sentuh 38px: Mute/Unmute, Bagi Layar, Hubungkan/Putuskan.
+#### C. Minimalist Action Dock (Sisi Kanan)
+Terdiri dari 4 tombol mikro berukuran `28x28px` dengan ikon vektor SVG presisi tinggi (`ui/components/pill_icons.slint`) berlatar frosted glassmorphism:
+1. **🎙️ Mic Mute/Unmute (`PillMicIcon`)**: Ikon mikrofon SVG dengan status aktif/mute garis miring diagonal.
+2. **👁️ Screen Share Toggle (`PillEyeIcon`)**: Ikon mata siber SVG dengan pupil bercahaya saat aktif streaming Direct3D 11.
+3. **⤢ Expand to HUD Mode 2 (`PillExpandIcon`)**: Ikon 4 panah diagonal untuk beralih seketika ke layar penuh Mode 2 Command Center (`F11`).
+4. **⚙ Settings (`PillGearIcon`)**: Ikon roda gigi SVG teknis. Membuka modal pengaturan konfigurasi dengan animasi ekspansi vertikal dinamis (Option A: jendela membesar halus ke ~560x540px saat pengaturan terbuka, dan mengecil kembali ke kapsul 48px saat disimpan/ditutup).
 
 ---
 
