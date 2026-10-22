@@ -126,7 +126,7 @@ impl SystemTray {
                 nid.uCallbackMessage = WM_TRAYICON;
                 nid.hIcon = icon;
 
-                let tip_str = "N.E.X.A Windows Bridge\0";
+                let tip_str = "Nexa Bridge\0";
                 let tip_encoded: Vec<u16> = tip_str.encode_utf16().collect();
                 let tip_len = tip_encoded.len().min(nid.szTip.len());
                 nid.szTip[..tip_len].copy_from_slice(&tip_encoded[..tip_len]);
@@ -194,7 +194,7 @@ unsafe extern "system" fn tray_wnd_proc(
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         nid.uCallbackMessage = WM_TRAYICON;
         nid.hIcon = LoadIconW(0 as _, IDI_APPLICATION);
-        let tip_str = "N.E.X.A Windows Bridge\0";
+        let tip_str = "Nexa Bridge\0";
         let tip_encoded: Vec<u16> = tip_str.encode_utf16().collect();
         let tip_len = tip_encoded.len().min(nid.szTip.len());
         nid.szTip[..tip_len].copy_from_slice(&tip_encoded[..tip_len]);
@@ -263,7 +263,7 @@ unsafe fn show_context_menu(hwnd: HWND) {
         return;
     }
 
-    let item_open: Vec<u16> = "👁️ Open N.E.X.A\0".encode_utf16().collect();
+    let item_open: Vec<u16> = "👁️ Open Nexa Bridge\0".encode_utf16().collect();
     let item_mute: Vec<u16> = "🎙️ Mute / Unmute Microphone\0".encode_utf16().collect();
     let item_screen: Vec<u16> = "🖥️ Toggle Screen Share (Win+Alt+S)\0".encode_utf16().collect();
     let item_fs: Vec<u16> = "⛶ Fullscreen / Windowed (F11)\0".encode_utf16().collect();

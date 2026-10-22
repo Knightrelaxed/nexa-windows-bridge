@@ -1,9 +1,13 @@
 [package]
-name = "nexa-windows-bridge"
+name = "nexa-bridge"
 version = "0.1.0"
 edition = "2021"
-description = "N.E.X.A Native Windows Desktop Companion for Lenovo ThinkPad X380 Yoga"
-authors = ["Faqih", "N.E.X.A Team"]
+description = "Nexa Bridge Native Windows Desktop Companion for Lenovo ThinkPad X380 Yoga"
+authors = ["Faqih", "Nexa Team"]
+
+[[bin]]
+name = "nexa-bridge"
+path = "src/main.rs"
 
 [dependencies]
 slint = "1.18.1"

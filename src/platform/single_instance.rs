@@ -68,8 +68,8 @@ impl SingleInstanceGuard {
                     CloseHandle(wake_handle);
                 }
 
-                // Attempt to bring existing N.E.X.A Windows Bridge window to the foreground
-                let title: Vec<u16> = OsStr::new("N.E.X.A Windows Bridge")
+                // Attempt to bring existing Nexa Bridge window to the foreground
+                let title: Vec<u16> = OsStr::new("Nexa Bridge")
                     .encode_wide()
                     .chain(std::iter::once(0))
                     .collect();

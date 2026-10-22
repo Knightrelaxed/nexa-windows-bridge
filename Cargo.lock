@@ -3033,7 +3033,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nexa-windows-bridge"
+name = "nexa-bridge"
 version = "0.1.0"
 dependencies = [
  "base64",
