@@ -140,11 +140,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = win.window().show();
                 if !win.get_is_fullscreen() {
                     unsafe {
-                        use windows_sys::Win32::UI::WindowsAndMessaging::{
-                            FindWindowW, SetForegroundWindow,
-                        };
-                        let title: Vec<u16> = "N.E.X.A Windows Bridge\0".encode_utf16().collect();
-                        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+                        use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
+                        let hwnd = get_main_window_hwnd();
                         if !hwnd.is_null() {
                             position_floating_pill_window(hwnd);
                             SetForegroundWindow(hwnd);
@@ -961,12 +958,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let fs = win.get_is_fullscreen();
             info!("[MAIN] ⛶ Fullscreen toggled: {}", fs);
             win.window().set_fullscreen(fs);
+
+            // Ensure OS cursor display counter is >= 0 (cursor visible)
+            unsafe {
+                use windows_sys::Win32::UI::WindowsAndMessaging::ShowCursor;
+                while ShowCursor(1) < 0 {}
+            }
+
             if !fs {
                 win.window().set_maximized(false);
                 unsafe {
-                    use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW;
-                    let title: Vec<u16> = "N.E.X.A Windows Bridge\0".encode_utf16().collect();
-                    let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+                    let hwnd = get_main_window_hwnd();
                     if !hwnd.is_null() {
                         position_floating_pill_window(hwnd);
                     }
@@ -998,18 +1000,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         toggle_share_ui(None);
     });
 
-    // Hook Native Window Drag (WM_NCLBUTTONDOWN + HTCAPTION)
+    // Hook Native Window Drag (ReleaseCapture + WM_SYSCOMMAND SC_MOVE | HTCAPTION)
     main_window.on_start_window_drag(move || {
         unsafe {
             use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
-            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                FindWindowW, SendMessageW, HTCAPTION, WM_NCLBUTTONDOWN,
-            };
-            let title: Vec<u16> = "N.E.X.A Windows Bridge\0".encode_utf16().collect();
-            let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+            use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_SYSCOMMAND};
+            const SC_DRAG_MOVE: usize = 0xF012; // SC_MOVE (0xF010) | HTCAPTION (0x0002)
+
+            let hwnd = get_main_window_hwnd();
             if !hwnd.is_null() {
                 ReleaseCapture();
-                SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
+                SendMessageW(hwnd, WM_SYSCOMMAND, SC_DRAG_MOVE, 0);
             }
         }
     });
@@ -1021,9 +1022,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             win.set_show_settings(true);
             if !win.get_is_fullscreen() {
                 unsafe {
-                    use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW;
-                    let title: Vec<u16> = "N.E.X.A Windows Bridge\0".encode_utf16().collect();
-                    let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+                    let hwnd = get_main_window_hwnd();
                     if !hwnd.is_null() {
                         position_settings_window(hwnd);
                     }
@@ -1039,9 +1038,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             win.set_show_settings(false);
             if !win.get_is_fullscreen() {
                 unsafe {
-                    use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW;
-                    let title: Vec<u16> = "N.E.X.A Windows Bridge\0".encode_utf16().collect();
-                    let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+                    let hwnd = get_main_window_hwnd();
                     if !hwnd.is_null() {
                         position_floating_pill_window(hwnd);
                     }
@@ -1081,9 +1078,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !start_minimized {
         main_window.show()?;
         unsafe {
-            use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW;
-            let title: Vec<u16> = "N.E.X.A Windows Bridge\0".encode_utf16().collect();
-            let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+            let hwnd = get_main_window_hwnd();
             if !hwnd.is_null() {
                 position_floating_pill_window(hwnd);
             }
@@ -1124,6 +1119,53 @@ async fn test_ws_handshake(url: &str, token: &str) -> Result<(), String> {
         Ok(Err(e)) => Err(format!("Connection error: {}", e)),
         Err(_) => Err("Connection timed out after 4s".to_string()),
     }
+}
+
+/// Helper to reliably resolve the HWND of the Nexa Bridge main window.
+/// Tries the active title "Nexa Bridge", then fallback "N.E.X.A Windows Bridge",
+/// and finally enumerates visible windows owned by the current process.
+unsafe fn get_main_window_hwnd() -> windows_sys::Win32::Foundation::HWND {
+    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, FindWindowW, GetWindowThreadProcessId, IsWindowVisible,
+    };
+
+    let title1: Vec<u16> = "Nexa Bridge\0".encode_utf16().collect();
+    let hwnd = FindWindowW(std::ptr::null(), title1.as_ptr());
+    if !hwnd.is_null() {
+        return hwnd;
+    }
+
+    let title2: Vec<u16> = "N.E.X.A Windows Bridge\0".encode_utf16().collect();
+    let hwnd = FindWindowW(std::ptr::null(), title2.as_ptr());
+    if !hwnd.is_null() {
+        return hwnd;
+    }
+
+    struct EnumCtx {
+        pid: u32,
+        found: HWND,
+    }
+
+    unsafe extern "system" fn enum_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let ctx = &mut *(lparam as *mut EnumCtx);
+        let mut window_pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut window_pid);
+        if window_pid == ctx.pid && IsWindowVisible(hwnd) != 0 {
+            ctx.found = hwnd;
+            return 0; // stop enumeration
+        }
+        1 // continue
+    }
+
+    let mut ctx = EnumCtx {
+        pid: GetCurrentProcessId(),
+        found: std::ptr::null_mut(),
+    };
+
+    EnumWindows(Some(enum_cb), &mut ctx as *mut _ as LPARAM);
+    ctx.found
 }
 
 /// Helper to configure the pill window geometry and position (top-center, DPI-scaled)

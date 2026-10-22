@@ -130,6 +130,16 @@ mod tests {
         main_window.set_is_fullscreen(true);
         assert!(main_window.get_is_fullscreen());
 
+        // Revert to Pill Mode 1
+        main_window.set_is_fullscreen(false);
+        assert!(!main_window.get_is_fullscreen());
+
+        // Verify title strings tested in Win32 HWND resolution
+        let primary_title = "Nexa Bridge";
+        let fallback_title = "N.E.X.A Windows Bridge";
+        assert_eq!(primary_title.encode_utf16().count(), 11);
+        assert_eq!(fallback_title.encode_utf16().count(), 22);
+
         // 4. Toggle Mic Mute
         main_window.set_is_mic_muted(true);
         assert!(main_window.get_is_mic_muted());

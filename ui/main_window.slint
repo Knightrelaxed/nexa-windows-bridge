@@ -23,7 +23,7 @@ export component MainWindow inherits Window {
     title: "Nexa Bridge";
     icon: @image-url("../assets/icon.png");
     full-screen: root.is_fullscreen;
-    no-frame: !root.is_fullscreen;
+    no-frame: true;
     always-on-top: !root.is_fullscreen;
     min-width: root.is_fullscreen ? 1024px : (root.show_settings ? 500px : 460px);
     min-height: root.is_fullscreen ? 720px : (root.show_settings ? 460px : 56px);
@@ -171,9 +171,24 @@ export component MainWindow inherits Window {
         // ==============================================================
         // MODE 2: FULL SCREEN (MODERN 3-COLUMN COMMAND CENTER)
         // ==============================================================
-        if root.is_expanded_view : VerticalLayout {
-            padding: 12px;
-            spacing: 8px;
+        if root.is_expanded_view : Rectangle {
+            width: 100%;
+            height: 100%;
+            background: #080B10;
+
+            // Base cursor area ensures default arrow cursor across the full canvas
+            TouchArea {
+                width: 100%;
+                height: 100%;
+                mouse-cursor: default;
+                z: -1;
+            }
+
+            VerticalLayout {
+                width: 100%;
+                height: 100%;
+                padding: 12px;
+                spacing: 8px;
 
             // 1. Top Window Title & App Identity Bar
             HorizontalLayout {
@@ -655,6 +670,7 @@ export component MainWindow inherits Window {
                     vertical-alignment: center;
                 }
             }
+        }
         }
     }
 
