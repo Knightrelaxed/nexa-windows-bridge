@@ -180,7 +180,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(e) => Some(Arc::new(tokio::sync::Mutex::new(e))),
             Err(e) => {
                 error!("[MAIN] WASAPI Audio Engine initialization failed: {}", e);
-                main_window.set_status_message(format!("Audio tidak tersedia: {}", e).into());
+                main_window.set_status_message(format!("Audio unavailable: {}", e).into());
                 None
             }
         };
@@ -404,7 +404,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ConnectionState::Suspended => {
                             win.set_connection_status("offline".into());
                             win.set_avatar_state(ui::CognitiveState::Offline.as_str().into());
-                            win.set_status_message("Laptop Tertidur (Suspended).".into());
+                            win.set_status_message("System suspended (Sleep).".into());
                             win.set_volume_level(0.0);
                             win.set_pulse_scale(1.0);
                             if win.get_is_screen_sharing() {
@@ -564,7 +564,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(win) = window_weak.upgrade() {
                             win.set_avatar_state(ui::CognitiveState::Listening.as_str().into());
-                            win.set_status_message("N.E.X.A Siap & Mendengarkan...".into());
+                            win.set_status_message("Ready for voice input".into());
                         }
                     });
                 }

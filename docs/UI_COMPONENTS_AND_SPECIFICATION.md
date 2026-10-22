@@ -27,7 +27,7 @@ Aplikasi **N.E.X.A Windows Bridge** dirancang menggunakan toolkit GUI deklaratif
 
 ```mermaid
 flowchart TD
-    User([Pengguna / Tuan Faqih]) <--> UI[Slint Native GUI Window]
+    User([User]) <--> UI[Slint Native GUI Window]
     
     subgraph UI_MODES ["Dual-Mode Interface"]
         Mode1["Mode 1: Compact Floating Companion (~380x250px)"]
@@ -98,14 +98,14 @@ Mode ini aktif saat `!root.is_expanded_view` (ukuran jendela ringkas ~380x250px)
 | [O] N.E.X.A Bridge            [⤢ HUD [F11]] [⚙]      | <- Top Header Bar (28px)
 +-------------------------------------------------------+
 | +---------------------------------------------------+ |
-| | (O) ArcReactor |  Mendengarkan Tuan Faqih...      | | <- Companion Card (86px)
+| | (O) QuantumCore |  Listening...                    | | <- Companion Card (86px)
 | | (Mini 58px)    |  Ready to connect.               | |
 | |                |  |||||||||||||||||| Audio Meter  | |
 | +---------------------------------------------------+ |
 +-------------------------------------------------------+
 |    (o) WASAPI 48kHz    (o) AEC3 Active    (o) D3D11   | <- Hardware Pills (18px)
 +-------------------------------------------------------+
-| [ 🎙️ Mute ]        [ 👁️ Berbagi Layar ]   [ Hubungkan ]| <- Quick Action Bar (36px)
+| [ 🎙️ Mute ]        [ 👁️ Screen Share ]    [ Connect ]  | <- Quick Action Bar (36px)
 +-------------------------------------------------------+
 ```
 
@@ -142,21 +142,21 @@ Mode ini aktif saat `root.is_expanded_view == true`. Seluruh tata letak mengguna
 |                                    |                                               |                                |
 | +--------------------------------+ | +-------------------------------------------+ | +----------------------------+ |
 | | 👁️ VISION STREAM (D3D11)       | | |               (( ( O ) ))                 | | | ⚡ SYSTEM TELEMETRY         | |
-| | [D3D11 LIVE STREAM ACTIVE]     | | |          Arc Reactor Core Orb             | | | CPU: [||||||....] 12%      | |
-| | 1920x1080@1fps DXGI Engine     | | |           (Sentient Orb Adaptive)         | | | RAM: [||||||||..] 34%      | |
-| | [ ⏹️ Hentikan Layar ]          | | |                                           | | | Ping: 24ms | WASAPI 48kHz  | |
-| +--------------------------------+ | |         Mendengarkan Tuan Faqih...        | | +----------------------------+ |
-| ====== RowSplitter (Drag Y) ====== | |             Ready to connect.             | | ====== RowSplitter (Drag Y) =| |
-| +--------------------------------+ | |       |||||||||||||||||||||||||||||       | | +----------------------------+ |
+| | [D3D11 LIVE STREAM ACTIVE]     | | |          Quantum Neural Core 3D           | | | CPU: [||||||....] 12%      | |
+| | 1920x1080@1fps DXGI Engine     | | |          (3D Holographic Core)            | | | RAM: [||||||||..] 34%      | |
+| | [ ⏹️ Stop Screen Share ]       | | |                                           | | | Ping: 24ms | WASAPI 48kHz  | |
+| +--------------------------------+ | |                 Listening...                | | +----------------------------+ |
+| ====== RowSplitter (Drag Y) ====== | |             Ready to connect.               | | ====== RowSplitter (Drag Y) =| |
+| +--------------------------------+ | |       |||||||||||||||||||||||||||||         | | +----------------------------+ |
 | | ⚙️ AUTOMATION LOG (Win32 Hook) | | +-------------------------------------------+ | | ⌨️ GLOBAL HOTKEYS          | |
 | | +----------------------------+ | | ========= Center RowSplitter (Drag Y) ======= | | | [Win+Alt+N] Boss Key       | |
 | | | [CLICK] (450, 320)         | | | +-------------------------------------------+ | | | [Win+Alt+M] Mute Mic       | |
-| | | [TYPE] 'halo tuan'         | | | | 💬 TRANSKRIP LIVE (Real-time Sync)        | | | | [Win+Alt+S] Screen Share   | |
-| | | [EXECUTE] cmd.exe          | | | | Faqih: "Buka browser..."                  | | | | [F11] Fullscreen Toggle    | |
-| | +----------------------------+ | | | N.E.X.A: "Siap Tuan, langsung saya buka." | | | +----------------------------+ |
+| | | [TYPE] 'open browser'      | | | | 💬 LIVE TRANSCRIPT (Real-time Sync)        | | | | [Win+Alt+S] Screen Share   | |
+| | | [EXECUTE] cmd.exe          | | | | You: "Open browser..."                    | | | | [F11] Fullscreen Toggle    | |
+| | +----------------------------+ | | | N.E.X.A: "Opening browser..."             | | | +----------------------------+ |
 | +--------------------------------+ | | +-------------------------------------------+ | +----------------------------+ |
-|                                    |                                               | | [ 🎙️ Mute ] [ 👁️ Layar ]    | |
-|                                    |                                               | | [ Hubungkan / Putuskan ]     | |
+|                                    |                                               | | [ 🎙️ Mute ] [ 👁️ Screen ]   | |
+|                                    |                                               | | [ Connect / Disconnect ]     | |
 |                                    |                                               | +----------------------------+ |
 +------------------------------------+-----------------------------------------------+--------------------------------+
 | ● Backend: Rust + Slint Native | AEC3: Active | Display: DXGI D3D11         Device: Lenovo ThinkPad X380 Yoga | Command |
@@ -253,7 +253,7 @@ graph TD
 
 ### 3. Transcript Card (`ui/components/transcript_card.slint`)
 * Memiliki wadah gelembung dialog fleksibel (`vertical-stretch: 1`) yang secara otomatis membungkus teks panjang (*word-wrap*).
-* Menampilkan giliran Tuan Faqih (Cyan) dan respon N.E.X.A (Emerald).
+* Menampilkan dialog percakapan dua arah antara pengguna (`You`) dan asisten AI (`N.E.X.A`).
 
 ### 4. Telemetry Card (`ui/components/telemetry_card.slint`)
 * Memiliki panel indikator expandable (`vertical-stretch: 1`, `alignment: space-around`).

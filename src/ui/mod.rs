@@ -84,16 +84,16 @@ impl CognitiveState {
 
     pub fn status_text(&self) -> &'static str {
         match self {
-            Self::Listening => "Mendengarkan Tuan Faqih...",
-            Self::TransmittingAudio => "Mentransmisikan suara (WASAPI 16kHz)...",
-            Self::Thinking => "Sedang menalar & memproses...",
-            Self::Speaking => "N.E.X.A sedang berbicara...",
-            Self::BargeIn => "Mendengarkan interupsi Tuan...",
-            Self::ScreenSharing => "Mentransmisikan layar & audio (D3D11 1 FPS)...",
-            Self::ToolExecuting => "Mengeksekusi perintah sistem...",
-            Self::Connecting => "Menghubungkan kembali ke server...",
-            Self::Idle => "Online & Siaga",
-            Self::Offline => "Bridge Terputus (Offline)",
+            Self::Listening => "Listening...",
+            Self::TransmittingAudio => "Transmitting audio...",
+            Self::Thinking => "Processing...",
+            Self::Speaking => "Speaking...",
+            Self::BargeIn => "Barge-in...",
+            Self::ScreenSharing => "Transmitting screen...",
+            Self::ToolExecuting => "Executing command...",
+            Self::Connecting => "Connecting...",
+            Self::Idle => "Ready",
+            Self::Offline => "Offline",
         }
     }
 
@@ -261,16 +261,16 @@ mod tests {
 
     #[test]
     fn test_cognitive_state_status_text_mobile_parity() {
-        assert_eq!(CognitiveState::Listening.status_text(), "Mendengarkan Tuan Faqih...");
-        assert_eq!(CognitiveState::TransmittingAudio.status_text(), "Mentransmisikan suara (WASAPI 16kHz)...");
-        assert_eq!(CognitiveState::Thinking.status_text(), "Sedang menalar & memproses...");
-        assert_eq!(CognitiveState::Speaking.status_text(), "N.E.X.A sedang berbicara...");
-        assert_eq!(CognitiveState::BargeIn.status_text(), "Mendengarkan interupsi Tuan...");
-        assert_eq!(CognitiveState::ScreenSharing.status_text(), "Mentransmisikan layar & audio (D3D11 1 FPS)...");
-        assert_eq!(CognitiveState::ToolExecuting.status_text(), "Mengeksekusi perintah sistem...");
-        assert_eq!(CognitiveState::Connecting.status_text(), "Menghubungkan kembali ke server...");
-        assert_eq!(CognitiveState::Idle.status_text(), "Online & Siaga");
-        assert_eq!(CognitiveState::Offline.status_text(), "Bridge Terputus (Offline)");
+        assert_eq!(CognitiveState::Listening.status_text(), "Listening...");
+        assert_eq!(CognitiveState::TransmittingAudio.status_text(), "Transmitting audio...");
+        assert_eq!(CognitiveState::Thinking.status_text(), "Processing...");
+        assert_eq!(CognitiveState::Speaking.status_text(), "Speaking...");
+        assert_eq!(CognitiveState::BargeIn.status_text(), "Barge-in...");
+        assert_eq!(CognitiveState::ScreenSharing.status_text(), "Transmitting screen...");
+        assert_eq!(CognitiveState::ToolExecuting.status_text(), "Executing command...");
+        assert_eq!(CognitiveState::Connecting.status_text(), "Connecting...");
+        assert_eq!(CognitiveState::Idle.status_text(), "Ready");
+        assert_eq!(CognitiveState::Offline.status_text(), "Offline");
     }
 
     #[test]

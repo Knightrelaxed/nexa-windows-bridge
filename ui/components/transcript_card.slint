@@ -4,8 +4,8 @@
 // ============================================================
 
 export component TranscriptCard inherits Rectangle {
-    in property <string> user_text: "Bicara kepada N.E.X.A...";
-    in property <string> assistant_text: "N.E.X.A siap mendengarkan Tuan Faqih.";
+    in property <string> user_text: "Speak to N.E.X.A...";
+    in property <string> assistant_text: "N.E.X.A ready to assist.";
 
     background: #0B101AE6;
     border-radius: 8px;
@@ -31,7 +31,7 @@ export component TranscriptCard inherits Rectangle {
                     background: #3FB950;
                 }
                 Text {
-                    text: "TRANSKRIP LIVE";
+                    text: "LIVE TRANSCRIPT";
                     font-size: 11px;
                     font-weight: 700;
                     color: #C9D1D9;
@@ -85,7 +85,7 @@ export component TranscriptCard inherits Rectangle {
                         y: 0px;
 
                         Text {
-                            text: "Faqih";
+                            text: "You";
                             font-size: 10px;
                             font-weight: 700;
                             color: #C9D1D9;

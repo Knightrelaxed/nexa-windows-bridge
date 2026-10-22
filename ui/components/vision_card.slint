@@ -163,7 +163,7 @@ export component VisionCard inherits Rectangle {
 
         // Action Button
         Button {
-            text: root.is_streaming ? "⏹️ Hentikan Layar" : "👁️ Mulai Berbagi Layar";
+            text: root.is_streaming ? "⏹️ Stop Screen Share" : "👁️ Start Screen Share";
             height: 32px;
             clicked => { root.toggle_share(); }
         }
