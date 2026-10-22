@@ -18,7 +18,23 @@ pub struct BridgeConfig {
     pub show_card_transcript: bool,
     pub show_card_telemetry: bool,
     pub show_card_hotkeys: bool,
+    #[serde(default = "default_split_left_width")]
+    pub split_left_width: f32,
+    #[serde(default = "default_split_right_width")]
+    pub split_right_width: f32,
+    #[serde(default = "default_split_left_h")]
+    pub split_left_h: f32,
+    #[serde(default = "default_split_center_h")]
+    pub split_center_h: f32,
+    #[serde(default = "default_split_right_h")]
+    pub split_right_h: f32,
 }
+
+fn default_split_left_width() -> f32 { 280.0 }
+fn default_split_right_width() -> f32 { 300.0 }
+fn default_split_left_h() -> f32 { 240.0 }
+fn default_split_center_h() -> f32 { 440.0 }
+fn default_split_right_h() -> f32 { 260.0 }
 
 #[derive(Debug, Deserialize)]
 struct LegacyConfig {
@@ -43,6 +59,11 @@ impl Default for BridgeConfig {
             show_card_transcript: true,
             show_card_telemetry: true,
             show_card_hotkeys: true,
+            split_left_width: default_split_left_width(),
+            split_right_width: default_split_right_width(),
+            split_left_h: default_split_left_h(),
+            split_center_h: default_split_center_h(),
+            split_right_h: default_split_right_h(),
         }
     }
 }

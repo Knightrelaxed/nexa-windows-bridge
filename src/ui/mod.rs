@@ -192,6 +192,18 @@ mod tests {
         assert_eq!(main_window.get_transcript_user_text().as_str(), "Halo N.E.X.A");
         main_window.set_auto_log_1("Clicked: [Search Bar]".into());
         assert_eq!(main_window.get_auto_log_1().as_str(), "Clicked: [Search Bar]");
+
+        // 15. Verify Dynamic Splitter properties
+        assert_eq!(main_window.get_split_left_width(), 280.0);
+        assert_eq!(main_window.get_split_right_width(), 300.0);
+        assert_eq!(main_window.get_split_left_h(), 240.0);
+        assert_eq!(main_window.get_split_center_h(), 440.0);
+        assert_eq!(main_window.get_split_right_h(), 260.0);
+
+        main_window.set_split_left_width(320.0);
+        assert_eq!(main_window.get_split_left_width(), 320.0);
+        main_window.set_split_center_h(480.0);
+        assert_eq!(main_window.get_split_center_h(), 480.0);
     }
 
     #[test]

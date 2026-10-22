@@ -61,6 +61,49 @@ export component VisionCard inherits Rectangle {
             }
         }
 
+        // Viewport Frame (Expands vertically when card is stretched)
+        Rectangle {
+            vertical-stretch: 1;
+            min-height: 52px;
+            background: #06090ECC;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: root.is_streaming ? #00E5FF4D : #21262D;
+
+            // Reticle & Scanner Indicators
+            VerticalLayout {
+                padding: 8px;
+                alignment: center;
+                spacing: 4px;
+
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 6px;
+                    Rectangle {
+                        width: 6px;
+                        height: 6px;
+                        border-radius: 3px;
+                        y: (parent.height - self.height) / 2;
+                        background: root.is_streaming ? #00E5FF : #546E7A;
+                    }
+                    Text {
+                        text: root.is_streaming ? "D3D11 LIVE STREAM ACTIVE" : "D3D11 HARDWARE CAPTURE";
+                        font-size: 9px;
+                        font-weight: 700;
+                        color: root.is_streaming ? #00E5FF : #8B949E;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    text: root.is_streaming ? "1920x1080 @ 1 FPS • DXGI Surface Duplication" : "Lenovo ThinkPad X380 Yoga • Primary Monitor";
+                    font-size: 9px;
+                    color: #546E7A;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+
         // Display Specs Box
         Rectangle {
             background: #06090ECC;

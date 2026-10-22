@@ -13,6 +13,7 @@ import { AutomationCard } from "components/automation_card.slint";
 import { TranscriptCard } from "components/transcript_card.slint";
 import { TelemetryCard } from "components/telemetry_card.slint";
 import { HotkeysCard } from "components/hotkeys_card.slint";
+import { ColSplitter, RowSplitter } from "components/splitter.slint";
 
 export { OverlayWindow }
 
@@ -73,6 +74,13 @@ export component MainWindow inherits Window {
     in-out property <string> test_status_text: "";
     in-out property <bool> is_testing: false;
     in-out property <string> app_version: "0.1.0";
+
+    // Dynamic HUD Splitter & Layout Properties (Smooth Draggable Panes)
+    in-out property <length> split_left_width: 280px;
+    in-out property <length> split_right_width: 300px;
+    in-out property <length> split_left_h: 240px;
+    in-out property <length> split_center_h: 440px;
+    in-out property <length> split_right_h: 260px;
 
     // Callbacks for Rust Orchestration
     callback toggle_connect();
@@ -318,9 +326,8 @@ export component MainWindow inherits Window {
         // MODE 2: FULL SCREEN (MODERN 3-COLUMN COMMAND CENTER)
         // ==============================================================
         if root.is_expanded_view : VerticalLayout {
-            padding: 14px;
-            spacing: 12px;
-            alignment: space-between;
+            padding: 12px;
+            spacing: 8px;
 
             // 1. Top Window Title & App Identity Bar
             HorizontalLayout {
@@ -391,6 +398,16 @@ export component MainWindow inherits Window {
                 HorizontalLayout {
                     spacing: 8px;
                     Button {
+                        text: "⟲ Reset Grid";
+                        clicked => {
+                            root.split_left_width = 280px;
+                            root.split_right_width = 300px;
+                            root.split_left_h = 240px;
+                            root.split_center_h = 440px;
+                            root.split_right_h = 260px;
+                        }
+                    }
+                    Button {
                         text: "⤡ Windowed Mode [F11]";
                         clicked => {
                             root.is_fullscreen = false;
@@ -404,47 +421,154 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // 2. Main 3-Column Command Center Workspace
+            // 2. Main 3-Column Command Center Workspace (Dynamic Flexible Grid)
             HorizontalLayout {
-                spacing: 12px;
+                vertical-stretch: 1;
+                spacing: 4px;
 
                 // ── LEFT COLUMN: Vision & Automation ─────────────────
                 if root.show_card_vision || root.show_card_automation : VerticalLayout {
-                    preferred-width: 260px;
-                    min-width: 220px;
-                    max-width: 320px;
-                    horizontal-stretch: 0;
-                    spacing: 12px;
+                    width: root.split_left_width;
+                    spacing: 0px;
 
-                    if root.show_card_vision : VisionCard {
+                    if root.show_card_vision && root.show_card_automation : VerticalLayout {
+                        vertical-stretch: 1;
+                        spacing: 0px;
+
+                        VisionCard {
+                            height: root.split_left_h;
+                            is_streaming: root.is_screen_sharing;
+                            toggle_share => { root.toggle_screen_share(); }
+                        }
+
+                        RowSplitter {
+                            delta_y(dy) => {
+                                root.split_left_h = Math.max(120px, Math.min(parent.height - 120px, root.split_left_h + dy));
+                            }
+                        }
+
+                        AutomationCard {
+                            vertical-stretch: 1;
+                            log_1: root.auto_log_1;
+                            log_2: root.auto_log_2;
+                            log_3: root.auto_log_3;
+                        }
+                    }
+
+                    if root.show_card_vision && !root.show_card_automation : VisionCard {
+                        vertical-stretch: 1;
                         is_streaming: root.is_screen_sharing;
                         toggle_share => { root.toggle_screen_share(); }
                     }
 
-                    if root.show_card_automation : AutomationCard {
+                    if !root.show_card_vision && root.show_card_automation : AutomationCard {
+                        vertical-stretch: 1;
                         log_1: root.auto_log_1;
                         log_2: root.auto_log_2;
                         log_3: root.auto_log_3;
                     }
                 }
 
+                // ── LEFT COLUMN SPLITTER ─────────────────────────────
+                if root.show_card_vision || root.show_card_automation : ColSplitter {
+                    delta_x(dx) => {
+                        root.split_left_width = Math.max(200px, Math.min(root.width * 0.45, root.split_left_width + dx));
+                    }
+                }
+
                 // ── CENTER COLUMN: Arc Reactor Orb & Transcript ───────
                 VerticalLayout {
                     horizontal-stretch: 1;
-                    min-width: 300px;
-                    spacing: 12px;
-                    alignment: space-between;
+                    min-width: 320px;
+                    spacing: 0px;
 
-                    // Centerpiece Box: Orb + Equalizer + Status
-                    Rectangle {
+                    if root.show_card_transcript : VerticalLayout {
+                        vertical-stretch: 1;
+                        spacing: 0px;
+
+                        // Centerpiece Box: Orb + Equalizer + Status
+                        Rectangle {
+                            height: root.split_center_h;
+                            background: #0B101AE6;
+                            border-radius: 8px;
+                            border-width: 1px;
+                            border-color: #30363D;
+
+                            VerticalLayout {
+                                padding: 14px;
+                                spacing: 8px;
+                                alignment: center;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    ArcReactorOrb {
+                                        state: root.avatar_state;
+                                        pulse_scale: root.pulse_scale;
+                                        orb_size: Math.min(220px, Math.max(130px, root.split_center_h * 0.40));
+                                    }
+                                }
+
+                                // Wide Audio Frequency Spectrum
+                                AudioMeter {
+                                    volume_level: root.volume_level;
+                                    is_active: root.avatar_state == "speaking" || root.avatar_state == "listening" || root.avatar_state == "transmitting_audio";
+                                    theme_color: root.avatar_state == "listening"          ? #00B4D8 :
+                                                 root.avatar_state == "transmitting_audio" ? #00E5FF :
+                                                 root.avatar_state == "speaking"           ? #00FF88 :
+                                                 root.avatar_state == "thinking"           ? #FFB300 :
+                                                 root.avatar_state == "idle"               ? #00E5FF : #546E7A;
+                                    bar_count: 36;
+                                    bar_width: 4px;
+                                    bar_spacing: 3px;
+                                    max_bar_height: 28px;
+                                }
+
+                                Text {
+                                    horizontal-alignment: center;
+                                    text: root.status_text_display;
+                                    font-size: 18px;
+                                    font-weight: 700;
+                                    color: root.avatar_state == "listening"          ? #00B4D8 :
+                                           root.avatar_state == "transmitting_audio" ? #00E5FF :
+                                           root.avatar_state == "thinking"           ? #FFB300 :
+                                           root.avatar_state == "speaking"           ? #00FF88 :
+                                           (root.avatar_state == "screen_sharing" || root.avatar_state == "transmitting_screen") ? #00B0FF :
+                                           root.avatar_state == "tool_executing"     ? #7C4DFF :
+                                           root.avatar_state == "idle"               ? #00E5FF : #C9D1D9;
+                                }
+
+                                Text {
+                                    horizontal-alignment: center;
+                                    text: root.status_message;
+                                    font-size: 11px;
+                                    color: #8B949E;
+                                }
+                            }
+                        }
+
+                        RowSplitter {
+                            delta_y(dy) => {
+                                root.split_center_h = Math.max(220px, Math.min(parent.height - 140px, root.split_center_h + dy));
+                            }
+                        }
+
+                        TranscriptCard {
+                            vertical-stretch: 1;
+                            user_text: root.transcript_user_text;
+                            assistant_text: root.transcript_assistant_text;
+                        }
+                    }
+
+                    if !root.show_card_transcript : Rectangle {
+                        vertical-stretch: 1;
                         background: #0B101AE6;
                         border-radius: 8px;
                         border-width: 1px;
                         border-color: #30363D;
 
                         VerticalLayout {
-                            padding: 16px;
-                            spacing: 12px;
+                            padding: 24px;
+                            spacing: 14px;
                             alignment: center;
 
                             HorizontalLayout {
@@ -452,11 +576,10 @@ export component MainWindow inherits Window {
                                 ArcReactorOrb {
                                     state: root.avatar_state;
                                     pulse_scale: root.pulse_scale;
-                                    orb_size: 200px;
+                                    orb_size: 240px;
                                 }
                             }
 
-                            // Wide Audio Frequency Spectrum
                             AudioMeter {
                                 volume_level: root.volume_level;
                                 is_active: root.avatar_state == "speaking" || root.avatar_state == "listening" || root.avatar_state == "transmitting_audio";
@@ -465,16 +588,16 @@ export component MainWindow inherits Window {
                                              root.avatar_state == "speaking"           ? #00FF88 :
                                              root.avatar_state == "thinking"           ? #FFB300 :
                                              root.avatar_state == "idle"               ? #00E5FF : #546E7A;
-                                bar_count: 36;
+                                bar_count: 44;
                                 bar_width: 4px;
                                 bar_spacing: 3px;
-                                max_bar_height: 32px;
+                                max_bar_height: 36px;
                             }
 
                             Text {
                                 horizontal-alignment: center;
                                 text: root.status_text_display;
-                                font-size: 20px;
+                                font-size: 22px;
                                 font-weight: 700;
                                 color: root.avatar_state == "listening"          ? #00B4D8 :
                                        root.avatar_state == "transmitting_audio" ? #00E5FF :
@@ -488,28 +611,52 @@ export component MainWindow inherits Window {
                             Text {
                                 horizontal-alignment: center;
                                 text: root.status_message;
-                                font-size: 12px;
+                                font-size: 13px;
                                 color: #8B949E;
                             }
                         }
                     }
+                }
 
-                    // Transcript Card (Center Bottom)
-                    if root.show_card_transcript : TranscriptCard {
-                        user_text: root.transcript_user_text;
-                        assistant_text: root.transcript_assistant_text;
+                // ── RIGHT COLUMN SPLITTER ────────────────────────────
+                if root.show_card_telemetry || root.show_card_hotkeys : ColSplitter {
+                    delta_x(dx) => {
+                        root.split_right_width = Math.max(220px, Math.min(root.width * 0.45, root.split_right_width - dx));
                     }
                 }
 
                 // ── RIGHT COLUMN: Telemetry, Hotkeys & Action Dock ───
                 if root.show_card_telemetry || root.show_card_hotkeys : VerticalLayout {
-                    preferred-width: 260px;
-                    min-width: 220px;
-                    max-width: 320px;
-                    horizontal-stretch: 0;
-                    spacing: 12px;
+                    width: root.split_right_width;
+                    spacing: 8px;
 
-                    if root.show_card_telemetry : TelemetryCard {
+                    if root.show_card_telemetry && root.show_card_hotkeys : VerticalLayout {
+                        vertical-stretch: 1;
+                        spacing: 0px;
+
+                        TelemetryCard {
+                            height: root.split_right_h;
+                            cpu_text: root.telemetry_cpu;
+                            cpu_val: root.telemetry_cpu_val;
+                            ram_text: root.telemetry_ram;
+                            ram_val: root.telemetry_ram_val;
+                            ping_text: root.telemetry_ping;
+                            wasapi_text: root.telemetry_audio;
+                        }
+
+                        RowSplitter {
+                            delta_y(dy) => {
+                                root.split_right_h = Math.max(160px, Math.min(parent.height - 180px, root.split_right_h + dy));
+                            }
+                        }
+
+                        HotkeysCard {
+                            vertical-stretch: 1;
+                        }
+                    }
+
+                    if root.show_card_telemetry && !root.show_card_hotkeys : TelemetryCard {
+                        vertical-stretch: 1;
                         cpu_text: root.telemetry_cpu;
                         cpu_val: root.telemetry_cpu_val;
                         ram_text: root.telemetry_ram;
@@ -518,9 +665,11 @@ export component MainWindow inherits Window {
                         wasapi_text: root.telemetry_audio;
                     }
 
-                    if root.show_card_hotkeys : HotkeysCard {}
+                    if !root.show_card_telemetry && root.show_card_hotkeys : HotkeysCard {
+                        vertical-stretch: 1;
+                    }
 
-                    // Action Controls Card
+                    // Action Controls Card (Fixed 52px height at bottom of right column)
                     Rectangle {
                         background: #0B101AE6;
                         border-radius: 8px;

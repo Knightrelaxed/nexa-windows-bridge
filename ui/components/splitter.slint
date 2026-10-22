@@ -1,0 +1,150 @@
+// ============================================================
+// HUD RESIZABLE SPLITTER COMPONENTS
+// Cybernetic Interactive Col & Row Drag Dividers
+// ============================================================
+
+export component ColSplitter inherits Rectangle {
+    in-out property <bool> is_dragging: touch.pressed;
+    callback delta_x(length);
+
+    width: 8px;
+    background: transparent;
+
+    // Outer Glow / Line Container
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        width: touch.pressed ? 2.5px : (touch.has-hover ? 2px : 1px);
+        height: 100%;
+        background: touch.pressed ? #00E5FF : (touch.has-hover ? #58A6FF80 : #30363D80);
+        animate background { duration: 120ms; }
+        animate width { duration: 120ms; }
+    }
+
+    // Centered Cybernetic Grip Notch
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 4px;
+        height: 28px;
+        border-radius: 2px;
+        background: touch.pressed ? #00E5FF : (touch.has-hover ? #58A6FF : #21262D);
+        border-width: 1px;
+        border-color: touch.pressed ? #00E5FF : (touch.has-hover ? #00E5FF4D : #30363D);
+        animate background { duration: 120ms; }
+        animate border-color { duration: 120ms; }
+
+        // Grip notches
+        VerticalLayout {
+            padding-top: 4px;
+            padding-bottom: 4px;
+            alignment: space-around;
+            HorizontalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 2px;
+                    height: 2px;
+                    border-radius: 1px;
+                    background: touch.pressed ? #FFFFFF : (touch.has-hover ? #00E5FF : #8B949E);
+                }
+            }
+            HorizontalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 2px;
+                    height: 2px;
+                    border-radius: 1px;
+                    background: touch.pressed ? #FFFFFF : (touch.has-hover ? #00E5FF : #8B949E);
+                }
+            }
+            HorizontalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 2px;
+                    height: 2px;
+                    border-radius: 1px;
+                    background: touch.pressed ? #FFFFFF : (touch.has-hover ? #00E5FF : #8B949E);
+                }
+            }
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: col-resize;
+        moved => {
+            root.delta_x(self.mouse-x - self.pressed-x);
+        }
+    }
+}
+
+export component RowSplitter inherits Rectangle {
+    in-out property <bool> is_dragging: touch.pressed;
+    callback delta_y(length);
+
+    height: 8px;
+    background: transparent;
+
+    // Outer Glow / Line Container
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: touch.pressed ? 2.5px : (touch.has-hover ? 2px : 1px);
+        width: 100%;
+        background: touch.pressed ? #00E5FF : (touch.has-hover ? #58A6FF80 : #30363D80);
+        animate background { duration: 120ms; }
+        animate height { duration: 120ms; }
+    }
+
+    // Centered Cybernetic Grip Notch
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        height: 4px;
+        width: 28px;
+        border-radius: 2px;
+        background: touch.pressed ? #00E5FF : (touch.has-hover ? #58A6FF : #21262D);
+        border-width: 1px;
+        border-color: touch.pressed ? #00E5FF : (touch.has-hover ? #00E5FF4D : #30363D);
+        animate background { duration: 120ms; }
+        animate border-color { duration: 120ms; }
+
+        // Grip notches
+        HorizontalLayout {
+            padding-left: 4px;
+            padding-right: 4px;
+            alignment: space-around;
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 2px;
+                    height: 2px;
+                    border-radius: 1px;
+                    background: touch.pressed ? #FFFFFF : (touch.has-hover ? #00E5FF : #8B949E);
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 2px;
+                    height: 2px;
+                    border-radius: 1px;
+                    background: touch.pressed ? #FFFFFF : (touch.has-hover ? #00E5FF : #8B949E);
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 2px;
+                    height: 2px;
+                    border-radius: 1px;
+                    background: touch.pressed ? #FFFFFF : (touch.has-hover ? #00E5FF : #8B949E);
+                }
+            }
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: row-resize;
+        moved => {
+            root.delta_y(self.mouse-y - self.pressed-y);
+        }
+    }
+}

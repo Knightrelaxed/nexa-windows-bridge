@@ -57,85 +57,100 @@ export component TranscriptCard inherits Rectangle {
             }
         }
 
-        // Dialogue Entries Container
-        VerticalLayout {
-            spacing: 8px;
+        // Expandable Dialogue Entries Container
+        Rectangle {
+            vertical-stretch: 1;
+            min-height: 80px;
+            background: #06090ECC;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: #21262D;
 
-            // User Turn Bubble
-            HorizontalLayout {
+            VerticalLayout {
+                padding: 10px;
                 spacing: 8px;
+                alignment: space-around;
 
-                Rectangle {
-                    width: 48px;
-                    height: 20px;
-                    background: #21262D;
-                    border-radius: 4px;
-                    border-width: 1px;
-                    border-color: #30363D;
+                // User Turn Bubble
+                HorizontalLayout {
+                    spacing: 8px;
 
-                    Text {
-                        text: "Faqih";
-                        font-size: 10px;
-                        font-weight: 700;
-                        color: #C9D1D9;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
+                    Rectangle {
+                        width: 48px;
+                        height: 22px;
+                        background: #21262D;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: #30363D;
+                        y: 0px;
 
-                Rectangle {
-                    background: #161B22;
-                    border-radius: 6px;
-                    border-width: 1px;
-                    border-color: #30363D;
-
-                    HorizontalLayout {
-                        padding: 6px;
                         Text {
-                            text: root.user_text != "" ? "“" + root.user_text + "”" : "“...”";
-                            font-size: 11px;
+                            text: "Faqih";
+                            font-size: 10px;
+                            font-weight: 700;
                             color: #C9D1D9;
-                            wrap: word-wrap;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        background: #161B22;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: #30363D;
+
+                        HorizontalLayout {
+                            padding: 8px;
+                            Text {
+                                text: root.user_text != "" ? "“" + root.user_text + "”" : "“...”";
+                                font-size: 11px;
+                                color: #C9D1D9;
+                                wrap: word-wrap;
+                            }
                         }
                     }
                 }
-            }
 
-            // N.E.X.A Response Bubble
-            HorizontalLayout {
-                spacing: 8px;
+                // N.E.X.A Response Bubble
+                HorizontalLayout {
+                    spacing: 8px;
 
-                Rectangle {
-                    width: 48px;
-                    height: 20px;
-                    background: #00E5FF1A;
-                    border-radius: 4px;
-                    border-width: 1px;
-                    border-color: #00E5FF4D;
+                    Rectangle {
+                        width: 48px;
+                        height: 22px;
+                        background: #00E5FF1A;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: #00E5FF4D;
+                        y: 0px;
 
-                    Text {
-                        text: "N.E.X.A";
-                        font-size: 10px;
-                        font-weight: 700;
-                        color: #00E5FF;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-
-                Rectangle {
-                    background: #0B101A;
-                    border-radius: 6px;
-                    border-width: 1px;
-                    border-color: #00E5FF33;
-
-                    HorizontalLayout {
-                        padding: 6px;
                         Text {
-                            text: root.assistant_text;
-                            font-size: 11px;
-                            color: #79C0FF;
-                            wrap: word-wrap;
+                            text: "N.E.X.A";
+                            font-size: 10px;
+                            font-weight: 700;
+                            color: #00E5FF;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        background: #0B101A;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: #00E5FF33;
+
+                        HorizontalLayout {
+                            padding: 8px;
+                            Text {
+                                text: root.assistant_text;
+                                font-size: 11px;
+                                color: #79C0FF;
+                                wrap: word-wrap;
+                            }
                         }
                     }
                 }
@@ -145,15 +160,18 @@ export component TranscriptCard inherits Rectangle {
         // Footer
         HorizontalLayout {
             alignment: space-between;
+            height: 16px;
             Text {
                 text: "AEC3 Voice Isolator: Online";
                 font-size: 9px;
                 color: #8B949E;
+                vertical-alignment: center;
             }
             Text {
                 text: "Gemini Live Duplex: Ready";
                 font-size: 9px;
                 color: #3FB950;
+                vertical-alignment: center;
             }
         }
     }

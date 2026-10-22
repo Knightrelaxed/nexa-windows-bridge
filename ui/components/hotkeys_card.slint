@@ -44,84 +44,134 @@ export component HotkeysCard inherits Rectangle {
             }
         }
 
-        // Key rows
-        VerticalLayout {
-            spacing: 5px;
+        // Expandable Key Rows Container
+        Rectangle {
+            vertical-stretch: 1;
+            min-height: 80px;
+            background: #06090ECC;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: #21262D;
 
-            // Row 1: Boss Key
-            HorizontalLayout {
-                alignment: space-between;
-                Rectangle {
-                    background: #161B22;
-                    border-radius: 3px;
-                    border-width: 1px;
-                    border-color: #30363D;
-                    height: 18px;
+            VerticalLayout {
+                padding: 8px;
+                alignment: space-around;
 
-                    HorizontalLayout {
-                        padding-left: 6px;
-                        padding-right: 6px;
-                        Text { text: "Win+Alt+N"; font-size: 9px; font-weight: 700; color: #00E5FF; vertical-alignment: center; }
+                // Row 1: Boss Key
+                HorizontalLayout {
+                    alignment: space-between;
+                    Rectangle {
+                        background: #161B22;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: #30363D;
+                        height: 18px;
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            Text {
+                                text: "Win + Alt + N";
+                                font-size: 9px;
+                                font-weight: 700;
+                                color: #58A6FF;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    Text {
+                        text: "Boss Key / Hide";
+                        font-size: 10px;
+                        color: #8B949E;
+                        vertical-alignment: center;
                     }
                 }
-                Text { text: "Boss Key / Hide"; font-size: 10px; color: #8B949E; vertical-alignment: center; }
-            }
 
-            // Row 2: Mute
-            HorizontalLayout {
-                alignment: space-between;
-                Rectangle {
-                    background: #161B22;
-                    border-radius: 3px;
-                    border-width: 1px;
-                    border-color: #30363D;
-                    height: 18px;
-
-                    HorizontalLayout {
-                        padding-left: 6px;
-                        padding-right: 6px;
-                        Text { text: "Win+Alt+M"; font-size: 9px; font-weight: 700; color: #00E5FF; vertical-alignment: center; }
+                // Row 2: Mute
+                HorizontalLayout {
+                    alignment: space-between;
+                    Rectangle {
+                        background: #161B22;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: #30363D;
+                        height: 18px;
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            Text {
+                                text: "Win + Alt + M";
+                                font-size: 9px;
+                                font-weight: 700;
+                                color: #58A6FF;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    Text {
+                        text: "Mute Microphone";
+                        font-size: 10px;
+                        color: #8B949E;
+                        vertical-alignment: center;
                     }
                 }
-                Text { text: "Mute Microphone"; font-size: 10px; color: #8B949E; vertical-alignment: center; }
-            }
 
-            // Row 3: Screen Share
-            HorizontalLayout {
-                alignment: space-between;
-                Rectangle {
-                    background: #161B22;
-                    border-radius: 3px;
-                    border-width: 1px;
-                    border-color: #30363D;
-                    height: 18px;
-
-                    HorizontalLayout {
-                        padding-left: 6px;
-                        padding-right: 6px;
-                        Text { text: "Win+Alt+S"; font-size: 9px; font-weight: 700; color: #00E5FF; vertical-alignment: center; }
+                // Row 3: Screen Share
+                HorizontalLayout {
+                    alignment: space-between;
+                    Rectangle {
+                        background: #161B22;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: #30363D;
+                        height: 18px;
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            Text {
+                                text: "Win + Alt + S";
+                                font-size: 9px;
+                                font-weight: 700;
+                                color: #58A6FF;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    Text {
+                        text: "Screen Share";
+                        font-size: 10px;
+                        color: #8B949E;
+                        vertical-alignment: center;
                     }
                 }
-                Text { text: "Screen Share"; font-size: 10px; color: #8B949E; vertical-alignment: center; }
-            }
 
-            // Row 4: Fullscreen
-            HorizontalLayout {
-                alignment: space-between;
-                Rectangle {
-                    background: #161B22;
-                    border-radius: 3px;
-                    border-width: 1px;
-                    border-color: #30363D;
-                    height: 18px;
-
-                    HorizontalLayout {
-                        padding-left: 6px;
-                        padding-right: 6px;
-                        Text { text: "F11"; font-size: 9px; font-weight: 700; color: #FFB300; vertical-alignment: center; }
+                // Row 4: Fullscreen
+                HorizontalLayout {
+                    alignment: space-between;
+                    Rectangle {
+                        background: #161B22;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: #30363D;
+                        height: 18px;
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            Text {
+                                text: "F11";
+                                font-size: 9px;
+                                font-weight: 700;
+                                color: #58A6FF;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    Text {
+                        text: "Fullscreen Toggle";
+                        font-size: 10px;
+                        color: #8B949E;
+                        vertical-alignment: center;
                     }
                 }
-                Text { text: "Fullscreen Toggle"; font-size: 10px; color: #8B949E; vertical-alignment: center; }
             }
         }
     }

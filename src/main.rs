@@ -156,6 +156,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         main_window.set_show_card_transcript(cfg.show_card_transcript);
         main_window.set_show_card_telemetry(cfg.show_card_telemetry);
         main_window.set_show_card_hotkeys(cfg.show_card_hotkeys);
+        main_window.set_split_left_width(cfg.split_left_width);
+        main_window.set_split_right_width(cfg.split_right_width);
+        main_window.set_split_left_h(cfg.split_left_h);
+        main_window.set_split_center_h(cfg.split_center_h);
+        main_window.set_split_right_h(cfg.split_right_h);
         main_window.set_app_version(env!("CARGO_PKG_VERSION").into());
         main_window.set_status_message("Ready to connect.".into());
     }
@@ -837,6 +842,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             cfg.show_card_transcript = trans;
             cfg.show_card_telemetry = telem;
             cfg.show_card_hotkeys = hotkeys;
+
+            if let Some(win) = window_weak.upgrade() {
+                cfg.split_left_width = win.get_split_left_width();
+                cfg.split_right_width = win.get_split_right_width();
+                cfg.split_left_h = win.get_split_left_h();
+                cfg.split_center_h = win.get_split_center_h();
+                cfg.split_right_h = win.get_split_right_h();
+            }
 
             let _ = platform::set_autostart_enabled(autostart);
 
