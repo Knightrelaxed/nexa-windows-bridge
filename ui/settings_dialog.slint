@@ -1,4 +1,4 @@
-import { Button, LineEdit, CheckBox } from "std-widgets.slint";
+import { Button, LineEdit, CheckBox, Slider } from "std-widgets.slint";
 
 export component SettingsDialog inherits Rectangle {
     in-out property <string> server_url: "ws://127.0.0.1:3000/ws";
@@ -87,6 +87,34 @@ export component SettingsDialog inherits Rectangle {
                 autostart_check := CheckBox {
                     text: "Autostart Windows (Tray)";
                     checked: root.autostart;
+                }
+            }
+
+            // Screen Capture Framerate Slider
+            VerticalLayout {
+                spacing: 3px;
+                HorizontalLayout {
+                    Text {
+                        text: "Direct3D 11 Capture Rate:";
+                        font-size: 11px;
+                        color: #A0AEC0;
+                    }
+                    Text {
+                        text: "\{Math.round(fps_slider.value)} FPS";
+                        font-size: 11px;
+                        font-weight: 700;
+                        color: #58A6FF;
+                        horizontal-alignment: right;
+                    }
+                }
+                fps_slider := Slider {
+                    minimum: 1;
+                    maximum: 5;
+                    step: 1;
+                    value: root.capture_fps;
+                    changed(val) => {
+                        root.capture_fps = Math.round(val);
+                    }
                 }
             }
         }

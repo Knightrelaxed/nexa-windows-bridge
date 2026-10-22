@@ -13,6 +13,7 @@ pub mod telemetry;
 
 pub use autostart::{is_autostart_enabled, set_autostart_enabled};
 pub use hotkeys::{HotkeyAction, HotkeyListener};
+#[allow(unused_imports)]
 pub use memory::{compact_memory_if_low_ram, trim_working_set};
 pub use power::{PowerListener, PowerStateEvent};
 pub use single_instance::SingleInstanceGuard;

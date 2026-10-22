@@ -67,10 +67,12 @@ export component MainWindow inherits Window {
     // Config bindings
     in-out property <string> cfg_server_url: "";
     in-out property <string> cfg_auth_token: "";
+    in-out property <int> cfg_fps: 1;
     in-out property <bool> cfg_low_ram_mode: true;
     in-out property <bool> cfg_autostart: false;
     in-out property <string> test_status_text: "";
     in-out property <bool> is_testing: false;
+    in-out property <string> app_version: "0.1.0";
 
     // Callbacks for Rust Orchestration
     callback toggle_connect();
@@ -147,7 +149,7 @@ export component MainWindow inherits Window {
                 HorizontalLayout {
                     spacing: 6px;
                     Button {
-                        text: "⤢ Command Center [F11]";
+                        text: "⤢ HUD [F11]";
                         clicked => {
                             root.is_fullscreen = true;
                             root.toggle_fullscreen();
@@ -244,7 +246,7 @@ export component MainWindow inherits Window {
                         background: root.connection_status == "connected" ? (root.is_mic_muted ? #FF9100 : #3FB950) : #8B949E;
                     }
                     Text {
-                        text: root.is_mic_muted ? "Mic Muted" : "WASAPI 48kHz";
+                        text: root.connection_status == "connected" ? (root.is_mic_muted ? "Muted" : "WASAPI 48k") : "Offline";
                         font-size: 10px;
                         color: #8B949E;
                         vertical-alignment: center;
@@ -262,7 +264,7 @@ export component MainWindow inherits Window {
                         background: root.connection_status == "connected" ? #3FB950 : #8B949E;
                     }
                     Text {
-                        text: "AEC3 Active";
+                        text: root.connection_status == "connected" ? "AEC3 Aktif" : "Standby";
                         font-size: 10px;
                         color: #8B949E;
                         vertical-alignment: center;
@@ -280,7 +282,7 @@ export component MainWindow inherits Window {
                         background: root.is_screen_sharing ? #00E5FF : (root.connection_status == "connected" ? #3FB950 : #8B949E);
                     }
                     Text {
-                        text: root.is_screen_sharing ? "D3D11 Streaming" : "D3D11 Vision";
+                        text: root.is_screen_sharing ? "1 FPS Live" : "D3D11 Ready";
                         font-size: 10px;
                         color: #8B949E;
                         vertical-alignment: center;
@@ -288,24 +290,24 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // 4. Quick Control Action Bar (Strict 36px height)
+            // 4. Quick Control Action Bar (Touch-friendly 38px height)
             HorizontalLayout {
-                height: 36px;
+                height: 38px;
                 spacing: 8px;
                 Button {
-                    text: root.is_mic_muted ? "🔇 Unmute" : "🎙️ Mute";
+                    text: root.is_mic_muted ? "Unmute" : "Mute";
                     clicked => {
                         root.is_mic_muted = !root.is_mic_muted;
                         root.toggle_mic_mute();
                     }
                 }
                 Button {
-                    text: root.is_screen_sharing ? "⏹️ Hentikan Layar" : "👁️ Berbagi Layar";
+                    text: root.is_screen_sharing ? "Stop Layar" : "Bagi Layar";
                     clicked => { root.toggle_screen_share(); }
                 }
                 Button {
                     text: root.connection_status == "connected" ? "Putuskan" :
-                          root.connection_status == "connecting" ? "Menghubungkan..." : "Hubungkan ke Server";
+                          root.connection_status == "connecting" ? "Batal" : "Hubungkan";
                     primary: root.connection_status != "connected";
                     clicked => { root.toggle_connect(); }
                 }
@@ -348,7 +350,7 @@ export component MainWindow inherits Window {
                     }
 
                     Text {
-                        text: "N.E.X.A WINDOWS BRIDGE v2.4 [DIRECTX 11 NATIVE]";
+                        text: "N.E.X.A WINDOWS BRIDGE v" + root.app_version + " [DIRECTX 11 NATIVE]";
                         font-size: 13px;
                         font-weight: 700;
                         color: #F0F6FC;
@@ -375,7 +377,7 @@ export component MainWindow inherits Window {
                                 background: root.connection_status == "connected" ? #3FB950 : #FF9100;
                             }
                             Text {
-                                text: "LIVE WASAPI 48kHz";
+                                text: root.connection_status == "connected" ? "LIVE WASAPI 48kHz" : "STANDBY";
                                 font-size: 10px;
                                 font-weight: 600;
                                 color: root.connection_status == "connected" ? #3FB950 : #FF9100;
@@ -408,7 +410,10 @@ export component MainWindow inherits Window {
 
                 // ── LEFT COLUMN: Vision & Automation ─────────────────
                 if root.show_card_vision || root.show_card_automation : VerticalLayout {
-                    width: 280px;
+                    preferred-width: 260px;
+                    min-width: 220px;
+                    max-width: 320px;
+                    horizontal-stretch: 0;
                     spacing: 12px;
 
                     if root.show_card_vision : VisionCard {
@@ -426,6 +431,7 @@ export component MainWindow inherits Window {
                 // ── CENTER COLUMN: Arc Reactor Orb & Transcript ───────
                 VerticalLayout {
                     horizontal-stretch: 1;
+                    min-width: 300px;
                     spacing: 12px;
                     alignment: space-between;
 
@@ -497,7 +503,10 @@ export component MainWindow inherits Window {
 
                 // ── RIGHT COLUMN: Telemetry, Hotkeys & Action Dock ───
                 if root.show_card_telemetry || root.show_card_hotkeys : VerticalLayout {
-                    width: 280px;
+                    preferred-width: 260px;
+                    min-width: 220px;
+                    max-width: 320px;
+                    horizontal-stretch: 0;
                     spacing: 12px;
 
                     if root.show_card_telemetry : TelemetryCard {
@@ -582,6 +591,7 @@ export component MainWindow inherits Window {
             y: (parent.height - self.height) / 2;
             server_url: root.cfg_server_url;
             auth_token: root.cfg_auth_token;
+            capture_fps: root.cfg_fps;
             low_ram_mode: root.cfg_low_ram_mode;
             autostart: root.cfg_autostart;
             show_card_vision: root.show_card_vision;
@@ -595,6 +605,7 @@ export component MainWindow inherits Window {
             save_clicked(url, token, fps, low_ram, autostart, vision, auto, trans, telem, hotkeys) => {
                 root.cfg_server_url = url;
                 root.cfg_auth_token = token;
+                root.cfg_fps = fps;
                 root.cfg_low_ram_mode = low_ram;
                 root.cfg_autostart = autostart;
                 root.show_card_vision = vision;

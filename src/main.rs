@@ -21,15 +21,17 @@ use platform::{
 };
 use slint::ComponentHandle;
 use std::sync::{Arc, Mutex};
-use tracing::{error, info};
+use tracing::{error, info, warn};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use ui::MainWindow;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 0. Single-Instance Mutex Arbiter (Milestone 7.4)
-    let _single_instance = platform::SingleInstanceGuard::acquire();
-    if !_single_instance.is_unique() {
-        eprintln!("N.E.X.A Bridge is already running. Focusing existing instance.");
+    // 0. Single-Instance Mutex Arbiter (Milestone 7.4 / Claude Bug #4)
+    let single_instance = platform::SingleInstanceGuard::acquire();
+    if !single_instance.is_unique() {
+        eprintln!("N.E.X.A Bridge is already running. Signaling existing instance to focus.");
         return Ok(());
     }
 
@@ -61,20 +63,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if args.iter().any(|arg| arg == "--version" || arg == "-v") {
-        println!("nexa-windows-bridge 0.1.0");
+        println!("nexa-windows-bridge {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     let start_minimized = args.iter().any(|arg| arg == "--autostart" || arg == "--minimized");
 
-    // 1. Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,nexa_windows_bridge=debug".into()),
-        )
+    // 1. Initialize persistent logging to %LOCALAPPDATA%\NexaBridge\logs + panic hook (Claude Bug #6)
+    let log_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("NexaBridge")
+        .join("logs");
+    let _ = std::fs::create_dir_all(&log_dir);
+
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "nexa-bridge.log");
+    let (non_blocking_file, _log_guard) = tracing_appender::non_blocking(file_appender);
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info,nexa_windows_bridge=debug".into());
+
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(non_blocking_file)
+        .with_ansi(false);
+
+    let stdout_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stdout);
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(file_layer)
+        .with(stdout_layer)
         .init();
 
-    info!("Starting N.E.X.A Windows Bridge v0.1.0 (Lenovo ThinkPad X380 Yoga)...");
+    // Panic hook to capture critical crash backtraces to disk (Claude Bug #6)
+    let panic_log_dir = log_dir.clone();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let payload = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            *s
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            s.as_str()
+        } else {
+            "Unknown panic payload"
+        };
+        let location = panic_info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown location".to_string());
+        let panic_msg = format!(
+            "[CRITICAL PANIC] at {}: {}\nBacktrace:\n{:?}",
+            location,
+            payload,
+            std::backtrace::Backtrace::capture()
+        );
+        eprintln!("{}", panic_msg);
+        let crash_file = panic_log_dir.join("crash.log");
+        let _ = std::fs::write(&crash_file, &panic_msg);
+    }));
+
+    info!(
+        "Starting N.E.X.A Windows Bridge v{} (Lenovo ThinkPad X380 Yoga)...",
+        env!("CARGO_PKG_VERSION")
+    );
 
     // 2. Load configuration
     let config = Arc::new(Mutex::new(BridgeConfig::load()));
@@ -82,12 +130,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 3. Initialize Slint MainWindow
     let main_window = MainWindow::new()?;
 
-    // Sync initial configuration & Auto-Start status to UI
+    // Wake listener: brings window to foreground when a second instance is launched (Claude Bug #4)
+    let window_weak_wake = main_window.as_weak();
+    single_instance.spawn_wake_listener(move || {
+        let window_weak = window_weak_wake.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(win) = window_weak.upgrade() {
+                win.window().set_minimized(false);
+                let _ = win.window().show();
+            }
+        });
+    });
+
+    // Sync initial configuration & Auto-Start status to UI (Claude Bug #1 & #10)
     {
         let cfg = config.lock().unwrap();
         let is_autostart = platform::is_autostart_enabled();
         main_window.set_cfg_server_url(cfg.server_url.clone().into());
         main_window.set_cfg_auth_token(cfg.auth_token.clone().into());
+        main_window.set_cfg_fps(cfg.capture_fps as i32);
         main_window.set_cfg_low_ram_mode(cfg.low_ram_mode);
         main_window.set_cfg_autostart(is_autostart);
         main_window.set_show_card_vision(cfg.show_card_vision);
@@ -95,19 +156,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         main_window.set_show_card_transcript(cfg.show_card_transcript);
         main_window.set_show_card_telemetry(cfg.show_card_telemetry);
         main_window.set_show_card_hotkeys(cfg.show_card_hotkeys);
+        main_window.set_app_version(env!("CARGO_PKG_VERSION").into());
         main_window.set_status_message("Ready to connect.".into());
-    }
-
-    // If started via Windows startup, hide window to system tray silently
-    if start_minimized {
-        let window_weak = main_window.as_weak();
-        let _ = slint::invoke_from_event_loop(move || {
-            if let Some(win) = window_weak.upgrade() {
-                let _ = win.window().hide();
-            }
-        });
-        info!("[MAIN] 🔕 Started in Auto-Start Standby mode (minimized to system tray)");
-        platform::trim_working_set();
     }
 
     // 3.1 Initialize Slint OverlayWindow and Stealth Highlighter Controller
@@ -119,10 +169,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 4. Initialize Network Client
     let network_client = NetworkClient::new(Arc::clone(&config));
 
-    // 5. Initialize WASAPI Duplex Audio Engine
-    let audio_engine = Arc::new(tokio::sync::Mutex::new(
-        audio::AudioEngine::new().map_err(|e| format!("Audio engine error: {}", e))?,
-    ));
+    // 5. Initialize WASAPI Duplex Audio Engine (Option-wrapped: Claude Bug #5)
+    let audio_engine: Option<Arc<tokio::sync::Mutex<audio::AudioEngine>>> =
+        match audio::AudioEngine::new() {
+            Ok(e) => Some(Arc::new(tokio::sync::Mutex::new(e))),
+            Err(e) => {
+                error!("[MAIN] WASAPI Audio Engine initialization failed: {}", e);
+                main_window.set_status_message(format!("Audio tidak tersedia: {}", e).into());
+                None
+            }
+        };
 
     // 5.1 Initialize Direct3D 11 GPU Screen Capture Controller
     let capture_controller: Arc<Mutex<Option<capture::ScreenCaptureController>>> =
@@ -161,16 +217,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             tokio::sync::mpsc::channel::<String>(1);
                         let net_client_frame = net_client.clone();
 
+                        // Stable session_id per screen sharing session (Claude Bug #9)
+                        let session_id = format!(
+                            "session_desktop_{}",
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis()
+                        );
+
                         tokio::spawn(async move {
                             while let Some(image_base64) = frame_rx.recv().await {
                                 if net_client_frame.is_connected() {
-                                    let now_ts = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_secs();
-
                                     let frame_msg = ClientMessage::VideoFrame {
-                                        command_id: format!("session_desktop_{}", now_ts),
+                                        command_id: session_id.clone(),
                                         image_chunk: image_base64,
                                     };
                                     let _ = net_client_frame.send_message(frame_msg).await;
@@ -179,24 +239,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             info!("[MAIN] Screen capture frame transmitter loop ended.");
                         });
 
-                        match capture::ScreenCaptureController::start(frame_tx, fps) {
-                            Ok(c) => {
-                                *ctrl = Some(c);
-                                win.set_avatar_state(
-                                    ui::CognitiveState::ScreenSharing.as_str().into(),
-                                );
-                                win.set_status_message(
-                                    ui::CognitiveState::ScreenSharing.status_text().into(),
-                                );
+                        // Run capture initialization in spawn_blocking so UI thread doesn't freeze (Claude Bug #7)
+                        let capture_ctrl_bg = Arc::clone(&capture_ctrl);
+                        let window_weak_bg = window_weak.clone();
+                        tokio::task::spawn_blocking(move || {
+                            match capture::ScreenCaptureController::start(frame_tx, fps) {
+                                Ok(c) => {
+                                    {
+                                        let mut ctrl = capture_ctrl_bg.lock().unwrap();
+                                        *ctrl = Some(c);
+                                    }
+                                    let _ = slint::invoke_from_event_loop(move || {
+                                        if let Some(win) = window_weak_bg.upgrade() {
+                                            win.set_avatar_state(
+                                                ui::CognitiveState::ScreenSharing.as_str().into(),
+                                            );
+                                            win.set_status_message(
+                                                ui::CognitiveState::ScreenSharing.status_text().into(),
+                                            );
+                                        }
+                                    });
+                                }
+                                Err(e) => {
+                                    error!("[MAIN] Failed to start screen capture: {}", e);
+                                    let _ = slint::invoke_from_event_loop(move || {
+                                        if let Some(win) = window_weak_bg.upgrade() {
+                                            win.set_is_screen_sharing(false);
+                                            win.set_status_message(
+                                                format!("Screen Capture Error: {}", e).into(),
+                                            );
+                                        }
+                                    });
+                                }
                             }
-                            Err(e) => {
-                                error!("[MAIN] Failed to start screen capture: {}", e);
-                                win.set_is_screen_sharing(false);
-                                win.set_status_message(
-                                    format!("Screen Capture Error: {}", e).into(),
-                                );
-                            }
-                        }
+                        });
                     } else {
                         if let Some(mut c) = ctrl.take() {
                             c.stop();
@@ -213,7 +289,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 6. Hook Connection State Watcher & Duplex Audio Engine Lifecycle
     let window_weak = main_window.as_weak();
     let mut state_rx = network_client.subscribe_state();
-    let audio_engine_conn = Arc::clone(&audio_engine);
+    let audio_engine_conn = audio_engine.clone();
     let net_client_audio = network_client.clone();
     let toggle_share_conn = Arc::clone(&toggle_screen_share);
 
@@ -225,6 +301,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let window_weak_mic = window_weak.clone();
         tokio::spawn(async move {
             let mut prev_had_voice = false;
+            let mut last_ui_mic_tick = std::time::Instant::now();
             while let Some(pcm_chunk) = mic_pcm_rx.recv().await {
                 if net_client_mic.is_connected() {
                     // Compute Mic RMS for user voice reactivity when listening
@@ -244,15 +321,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let vol = (rms * 3.5).min(1.0);
                         let pulse = 1.0 + vol * 0.25;
                         prev_had_voice = true;
-                        let window_weak = window_weak_mic.clone();
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(win) = window_weak.upgrade() {
-                                if win.get_avatar_state() == "listening" {
-                                    win.set_volume_level(vol);
-                                    win.set_pulse_scale(pulse);
+                        let now = std::time::Instant::now();
+                        if now.duration_since(last_ui_mic_tick) >= std::time::Duration::from_millis(60) {
+                            last_ui_mic_tick = now;
+                            let window_weak = window_weak_mic.clone();
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(win) = window_weak.upgrade() {
+                                    if win.get_avatar_state() == "listening" {
+                                        win.set_volume_level(vol);
+                                        win.set_pulse_scale(pulse);
+                                    }
                                 }
-                            }
-                        });
+                            });
+                        }
                     } else if prev_had_voice {
                         prev_had_voice = false;
                         let window_weak = window_weak_mic.clone();
@@ -275,40 +356,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let state = state_rx.borrow().clone();
             let window_weak = window_weak.clone();
 
-            match &state {
-                ConnectionState::Connected => {
-                    info!("[MAIN] 🎙️ Connection active: Starting WASAPI Duplex Audio Engine...");
-                    let mut engine = audio_engine_conn.lock().await;
-                    if let Err(e) = engine.start_duplex(mic_pcm_tx.clone()) {
-                        tracing::warn!("[MAIN] Audio Duplex start warning: {}", e);
-                    }
-
-                    // Explicitly notify server that desktop companion is ready for Live Voice
-                    let net_client_handshake = net_client_audio.clone();
-                    let now_ts = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    tokio::spawn(async move {
-                        let call_start_msg = ClientMessage::CallEvent {
-                            event: "CALL_ACCEPTED".to_string(),
-                            command_id: format!("win_desktop_{}", now_ts),
-                        };
-                        let _ = net_client_handshake.send_message(call_start_msg).await;
-                    });
-                }
-                ConnectionState::Disconnected | ConnectionState::Suspended => {
-                    info!("[MAIN] Connection inactive: Stopping WASAPI Duplex Audio Engine...");
-                    let mut engine = audio_engine_conn.lock().await;
-                    engine.stop_duplex();
-                }
-                _ => {}
-            }
-
+            // Update UI status immediately to prevent UI hanging on audio device lock (Claude Bug #8)
+            let state_clone = state.clone();
             let toggle_share_conn = toggle_share_conn.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(win) = window_weak.upgrade() {
-                    match state {
+                    match state_clone {
                         ConnectionState::Connected => {
                             win.set_connection_status("connected".into());
                             win.set_avatar_state(ui::CognitiveState::Idle.as_str().into());
@@ -356,13 +409,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             });
+
+            // Start or stop WASAPI duplex audio engine asynchronously in background task (Claude Bug #5 & #8)
+            match &state {
+                ConnectionState::Connected => {
+                    info!("[MAIN] 🎙️ Connection active: Starting WASAPI Duplex Audio Engine...");
+                    if let Some(audio_clone) = audio_engine_conn.as_ref().map(Arc::clone) {
+                        let mic_tx = mic_pcm_tx.clone();
+                        tokio::spawn(async move {
+                            let mut engine = audio_clone.lock().await;
+                            if let Err(e) = engine.start_duplex(mic_tx) {
+                                warn!("[MAIN] Audio Duplex start warning: {}", e);
+                            }
+                        });
+                    }
+
+                    // Explicitly notify server that desktop companion is ready for Live Voice
+                    let net_client_handshake = net_client_audio.clone();
+                    let now_ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    tokio::spawn(async move {
+                        let call_start_msg = ClientMessage::CallEvent {
+                            event: "CALL_ACCEPTED".to_string(),
+                            command_id: format!("win_desktop_{}", now_ts),
+                        };
+                        let _ = net_client_handshake.send_message(call_start_msg).await;
+                    });
+                }
+                ConnectionState::Disconnected | ConnectionState::Suspended => {
+                    info!("[MAIN] Connection inactive: Stopping WASAPI Duplex Audio Engine...");
+                    if let Some(audio_clone) = audio_engine_conn.as_ref().map(Arc::clone) {
+                        tokio::spawn(async move {
+                            let mut engine = audio_clone.lock().await;
+                            engine.stop_duplex();
+                        });
+                    }
+                }
+                _ => {}
+            }
         }
     });
 
     // 7. Hook Inbound Server Command & Audio Dispatcher
     let mut command_rx = network_client.subscribe_commands();
     let net_client_cmd = network_client.clone();
-    let audio_engine_cmd = Arc::clone(&audio_engine);
+    let audio_engine_cmd = audio_engine.clone();
     let window_weak_cmd = main_window.as_weak();
     let highlighter_cmd = Arc::clone(&highlighter_controller);
 
@@ -400,14 +493,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             });
                         }
 
-                        let mut engine = audio_engine_cmd.lock().await;
-                        engine.play_response_pcm(&bytes);
+                        if let Some(audio_clone) = audio_engine_cmd.as_ref() {
+                            let mut engine = audio_clone.lock().await;
+                            engine.play_response_pcm(&bytes);
+                        }
                     }
                 }
                 ServerMessage::AudioInterrupted => {
                     info!("[MAIN] Server signaled audio interrupted (barge-in).");
-                    let mut engine = audio_engine_cmd.lock().await;
-                    engine.stop_speaking();
+                    if let Some(audio_clone) = audio_engine_cmd.as_ref() {
+                        let mut engine = audio_clone.lock().await;
+                        engine.stop_speaking();
+                    }
 
                     let window_weak = window_weak_cmd.clone();
                     let _ = slint::invoke_from_event_loop(move || {
@@ -475,7 +572,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     info!("[MAIN] 🛠️ Executing command '{}' [{}]", action, command_id);
 
                     let window_weak_auto = window_weak_cmd.clone();
-                    let action_log = format!("Exec: {} [{}]", action, &command_id[..command_id.len().min(8)]);
+                    // Safe UTF-8 substring extraction to prevent character boundary panics (Claude Bug #12)
+                    let short_id: String = command_id.chars().take(8).collect();
+                    let action_log = format!("Exec: {} [{}]", action, short_id);
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(win) = window_weak_auto.upgrade() {
                             let p1 = win.get_auto_log_1();
@@ -506,37 +605,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // 8. Hook User Barge-In Notification (Mic energy threshold exceeded during AI speech)
-    let barge_in_notify = {
-        let engine = audio_engine.lock().await;
-        engine.barge_in_notify()
-    };
-    let net_client_barge = network_client.clone();
-    let audio_engine_barge = Arc::clone(&audio_engine);
-    let window_weak_barge = main_window.as_weak();
+    if let Some(audio_engine_barge) = audio_engine.as_ref().map(Arc::clone) {
+        let barge_in_notify = {
+            let engine = audio_engine_barge.lock().await;
+            engine.barge_in_notify()
+        };
+        let net_client_barge = network_client.clone();
+        let window_weak_barge = main_window.as_weak();
 
-    tokio::spawn(async move {
-        loop {
-            barge_in_notify.notified().await;
-            info!("[MAIN] 🗣️ User Barge-In detected! Preempting AI speech output.");
-            {
-                let mut engine = audio_engine_barge.lock().await;
-                engine.stop_speaking();
-            }
-            let _ = net_client_barge
-                .send_message(ClientMessage::AudioInterrupted)
-                .await;
-
-            let window_weak = window_weak_barge.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(win) = window_weak.upgrade() {
-                    win.set_avatar_state(ui::CognitiveState::BargeIn.as_str().into());
-                    win.set_status_message(ui::CognitiveState::BargeIn.status_text().into());
-                    win.set_volume_level(0.0);
-                    win.set_pulse_scale(1.0);
+        tokio::spawn(async move {
+            loop {
+                barge_in_notify.notified().await;
+                info!("[MAIN] 🗣️ User Barge-In detected! Preempting AI speech output.");
+                {
+                    let mut engine = audio_engine_barge.lock().await;
+                    engine.stop_speaking();
                 }
-            });
-        }
-    });
+                let _ = net_client_barge
+                    .send_message(ClientMessage::AudioInterrupted)
+                    .await;
+
+                let window_weak = window_weak_barge.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(win) = window_weak.upgrade() {
+                        win.set_avatar_state(ui::CognitiveState::BargeIn.as_str().into());
+                        win.set_status_message(ui::CognitiveState::BargeIn.status_text().into());
+                        win.set_volume_level(0.0);
+                        win.set_pulse_scale(1.0);
+                    }
+                });
+            }
+        });
+    }
 
     // 9. Register Windows OS Power Listener (Sleep & Wake)
     let net_client_power = network_client.clone();
@@ -551,11 +651,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 10. Register Windows Native System Tray Controller
     let window_weak_tray = main_window.as_weak();
-    let audio_engine_tray = Arc::clone(&audio_engine);
+    let audio_engine_tray = audio_engine.clone();
     let toggle_share_tray = Arc::clone(&toggle_screen_share);
     let _system_tray = SystemTray::spawn(move |event| {
         let window_weak = window_weak_tray.clone();
-        let audio_engine = Arc::clone(&audio_engine_tray);
+        let audio_engine = audio_engine_tray.clone();
         let toggle_share = Arc::clone(&toggle_share_tray);
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(win) = window_weak.upgrade() {
@@ -569,7 +669,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let _ = win.window().show();
                         } else if is_vis {
                             let _ = win.window().hide();
-                            platform::trim_working_set();
                         } else {
                             let _ = win.window().show();
                         }
@@ -583,11 +682,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let muted = !win.get_is_mic_muted();
                         info!("[TRAY] Context menu 'Mute / Unmute' activated: muted={}", muted);
                         win.set_is_mic_muted(muted);
-                        let audio_clone = Arc::clone(&audio_engine);
-                        tokio::spawn(async move {
-                            let engine = audio_clone.lock().await;
-                            engine.set_mic_muted(muted);
-                        });
+                        if let Some(audio_clone) = audio_engine.as_ref() {
+                            let audio_clone = Arc::clone(audio_clone);
+                            tokio::spawn(async move {
+                                let engine = audio_clone.lock().await;
+                                engine.set_mic_muted(muted);
+                            });
+                        }
                     }
                     TrayEvent::ToggleFullscreen => {
                         let fs = !win.get_is_fullscreen();
@@ -619,11 +720,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 11. Register Windows Global Hotkeys (Boss Key, Mic Mute, Fullscreen, Screen Share)
     let window_weak_hotkey = main_window.as_weak();
-    let audio_engine_hotkey = Arc::clone(&audio_engine);
+    let audio_engine_hotkey = audio_engine.clone();
     let toggle_share_hotkey = Arc::clone(&toggle_screen_share);
     let _hotkey_listener = HotkeyListener::spawn(move |action| {
         let window_weak = window_weak_hotkey.clone();
-        let audio_engine = Arc::clone(&audio_engine_hotkey);
+        let audio_engine = audio_engine_hotkey.clone();
         let toggle_share = Arc::clone(&toggle_share_hotkey);
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(win) = window_weak.upgrade() {
@@ -637,7 +738,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let _ = win.window().show();
                         } else if is_vis {
                             let _ = win.window().hide();
-                            platform::trim_working_set();
                         } else {
                             let _ = win.window().show();
                         }
@@ -646,11 +746,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let muted = !win.get_is_mic_muted();
                         info!("[HOTKEY] 🎙️ Mic Mute (Win+Alt+M) triggered: muted={}", muted);
                         win.set_is_mic_muted(muted);
-                        let audio_clone = Arc::clone(&audio_engine);
-                        tokio::spawn(async move {
-                            let engine = audio_clone.lock().await;
-                            engine.set_mic_muted(muted);
-                        });
+                        if let Some(audio_clone) = audio_engine.as_ref() {
+                            let audio_clone = Arc::clone(audio_clone);
+                            tokio::spawn(async move {
+                                let engine = audio_clone.lock().await;
+                                engine.set_mic_muted(muted);
+                            });
+                        }
                     }
                     HotkeyAction::ToggleFullscreen => {
                         let fs = !win.get_is_fullscreen();
@@ -689,6 +791,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let is_connected = net_client_telem.is_connected();
 
             let window_weak = window_weak_telem.clone();
+            let rtt = net_client_telem.get_last_rtt_ms();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(win) = window_weak.upgrade() {
                     win.set_telemetry_cpu(format!("{}%", cpu_pct).into());
@@ -698,12 +801,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     if win.get_is_mic_muted() {
                         win.set_telemetry_audio("WASAPI (Muted)".into());
-                    } else {
+                    } else if is_connected {
                         win.set_telemetry_audio("WASAPI 48kHz (AEC3)".into());
+                    } else {
+                        win.set_telemetry_audio("Standby".into());
                     }
 
                     if is_connected {
-                        win.set_telemetry_ping("18ms".into());
+                        if rtt > 0 {
+                            win.set_telemetry_ping(format!("{}ms", rtt).into());
+                        } else {
+                            win.set_telemetry_ping("<10ms".into());
+                        }
                     } else {
                         win.set_telemetry_ping("--".into());
                     }
@@ -716,10 +825,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_clone = Arc::clone(&config);
     let window_weak = main_window.as_weak();
     main_window.on_save_settings(
-        move |url, token, _fps, low_ram, autostart, vision, auto, trans, telem, hotkeys| {
+        move |url, token, fps, low_ram, autostart, vision, auto, trans, telem, hotkeys| {
             let mut cfg = config_clone.lock().unwrap();
             cfg.server_url = url.to_string();
             cfg.auth_token = token.to_string();
+            cfg.capture_fps = fps.max(1) as u32;
             cfg.low_ram_mode = low_ram;
             cfg.autostart = autostart;
             cfg.show_card_vision = vision;
@@ -732,10 +842,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             match cfg.save() {
                 Ok(_) => {
-                    info!("Settings saved successfully (autostart={}).", autostart);
+                    info!("Settings saved successfully (autostart={}, fps={}).", autostart, fps);
                     if let Some(win) = window_weak.upgrade() {
                         win.set_cfg_server_url(url.clone());
                         win.set_cfg_auth_token(token.clone());
+                        win.set_cfg_fps(fps.max(1));
                         win.set_cfg_low_ram_mode(low_ram);
                         win.set_cfg_autostart(autostart);
                         win.set_show_card_vision(vision);
@@ -814,17 +925,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Hook Microphone Mute Toggle
-    let audio_engine_mute = Arc::clone(&audio_engine);
+    let audio_engine_mute = audio_engine.clone();
     let window_weak = main_window.as_weak();
     main_window.on_toggle_mic_mute(move || {
         if let Some(win) = window_weak.upgrade() {
             let muted = win.get_is_mic_muted();
             info!("[MAIN] 🎙️ Microphone mute toggled: {}", muted);
-            let audio_clone = Arc::clone(&audio_engine_mute);
-            tokio::spawn(async move {
-                let engine = audio_clone.lock().await;
-                engine.set_mic_muted(muted);
-            });
+            if let Some(audio_clone) = audio_engine_mute.as_ref() {
+                let audio_clone = Arc::clone(audio_clone);
+                tokio::spawn(async move {
+                    let engine = audio_clone.lock().await;
+                    engine.set_mic_muted(muted);
+                });
+            }
         }
     });
 
@@ -842,18 +955,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Intercept Window Close Button [X]: Hide window to system tray instead of abrupt termination
+    // Intercept Window Close Button [X]: Hide window to system tray instead of abrupt termination (Claude Bug #2)
     main_window.window().on_close_requested(|| {
         info!("[MAIN] Window close [X] requested. Hiding window to system tray.");
-        platform::trim_working_set();
         slint::CloseRequestResponse::HideWindow
     });
 
     // Keep overlay window alive across application runtime
     let _overlay_guard = overlay_window;
 
-    // Run the Slint GUI Event Loop
-    main_window.run()?;
+    // Run the Slint GUI Event Loop until explicit quit (Claude Bug #2 & #3)
+    if !start_minimized {
+        main_window.show()?;
+    } else {
+        info!("[MAIN] 🔕 Started in Auto-Start Standby mode (minimized to system tray)");
+    }
+    slint::run_event_loop_until_quit()?;
     Ok(())
 }
 

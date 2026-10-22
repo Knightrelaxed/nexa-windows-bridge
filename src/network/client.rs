@@ -6,6 +6,7 @@
 use super::protocol::{ClientMessage, ServerMessage};
 use crate::config::BridgeConfig;
 use futures_util::{SinkExt, StreamExt};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, watch, Notify};
@@ -41,6 +42,7 @@ pub struct NetworkClient {
     session_interrupt: Arc<Notify>,
     enabled: Arc<Mutex<bool>>,
     is_suspended: Arc<Mutex<bool>>,
+    last_rtt_ms: Arc<AtomicU32>,
 }
 
 impl NetworkClient {
@@ -52,6 +54,7 @@ impl NetworkClient {
         let session_interrupt = Arc::new(Notify::new());
         let enabled = Arc::new(Mutex::new(false));
         let is_suspended = Arc::new(Mutex::new(false));
+        let last_rtt_ms = Arc::new(AtomicU32::new(0));
 
         let client = Self {
             config: Arc::clone(&config),
@@ -62,6 +65,7 @@ impl NetworkClient {
             session_interrupt: Arc::clone(&session_interrupt),
             enabled: Arc::clone(&enabled),
             is_suspended: Arc::clone(&is_suspended),
+            last_rtt_ms: Arc::clone(&last_rtt_ms),
         };
 
         // Spawn background connection lifecycle worker
@@ -74,9 +78,15 @@ impl NetworkClient {
             session_interrupt,
             enabled,
             is_suspended,
+            Arc::clone(&client.last_rtt_ms),
         ));
 
         client
+    }
+
+    /// Retrieve the most recent measured round-trip time in milliseconds
+    pub fn get_last_rtt_ms(&self) -> u32 {
+        self.last_rtt_ms.load(Ordering::Relaxed)
     }
 
     /// Subscribe to real-time connection state updates
@@ -169,6 +179,7 @@ async fn run_client_worker(
     session_interrupt: Arc<Notify>,
     enabled: Arc<Mutex<bool>>,
     is_suspended: Arc<Mutex<bool>>,
+    last_rtt_ms: Arc<AtomicU32>,
 ) {
     let mut attempt = 0;
     let mut backoff_ms = 500;
@@ -179,6 +190,7 @@ async fn run_client_worker(
         while !*enabled.lock().unwrap() || *is_suspended.lock().unwrap() {
             attempt = 0;
             backoff_ms = 500;
+            last_rtt_ms.store(0, Ordering::Relaxed);
             reconnect_notify.notified().await;
         }
 
@@ -211,11 +223,22 @@ async fn run_client_worker(
                 let _ = state_tx.send(ConnectionState::Connected);
 
                 let (mut ws_write, mut ws_read) = ws_stream.split();
-                let mut ping_interval = tokio::time::interval(Duration::from_secs(20));
+                let mut ping_interval = tokio::time::interval(Duration::from_secs(5));
                 ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
                 // Drain any stale outbound items from previous sessions
                 while outbound_rx.try_recv().is_ok() {}
+
+                // Send immediate initial ping to measure initial RTT right away
+                {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    if let Ok(json) = (ClientMessage::Ping { timestamp: now }).to_json() {
+                        let _ = ws_write.send(Message::Text(json.into())).await;
+                    }
+                }
 
                 // 3. Active Session Loop
                 let mut session_active = true;
@@ -234,7 +257,7 @@ async fn run_client_worker(
                             break;
                         }
 
-                        // Keepalive Watchdog (Sends PING every 20s)
+                        // Keepalive Watchdog (Sends PING every 5s)
                         _ = ping_interval.tick() => {
                             let now = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -266,8 +289,13 @@ async fn run_client_worker(
                             match msg_opt {
                                 Some(Ok(Message::Text(text))) => {
                                     match ServerMessage::from_json(&text) {
-                                        Ok(ServerMessage::Pong { .. }) => {
-                                            // Keepalive pong verified
+                                        Ok(ServerMessage::Pong { timestamp }) => {
+                                            let now = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap_or_default()
+                                                .as_millis() as u64;
+                                            let rtt = if now >= timestamp { (now - timestamp) as u32 } else { 0 };
+                                            last_rtt_ms.store(rtt, Ordering::Relaxed);
                                         }
                                         Ok(ServerMessage::Unknown) => {
                                             // Silently ignore future extension types
