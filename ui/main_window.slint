@@ -25,9 +25,9 @@ export component MainWindow inherits Window {
     full-screen: root.is_fullscreen;
     no-frame: !root.is_fullscreen;
     always-on-top: !root.is_fullscreen;
-    min-width: root.is_fullscreen ? 1024px : (root.show_settings ? 500px : 380px);
-    min-height: root.is_fullscreen ? 720px : (root.show_settings ? 460px : 48px);
-    preferred-width: root.is_fullscreen ? 1920px : (root.show_settings ? 540px : 396px);
+    min-width: root.is_fullscreen ? 1024px : (root.show_settings ? 500px : 400px);
+    min-height: root.is_fullscreen ? 720px : (root.show_settings ? 460px : 56px);
+    preferred-width: root.is_fullscreen ? 1920px : (root.show_settings ? 540px : 410px);
     preferred-height: root.is_fullscreen ? 1080px : (root.show_settings ? 500px : 64px);
     background: root.is_fullscreen ? #080B10 : transparent;
     default-font-family: "Segoe UI";
@@ -132,33 +132,36 @@ export component MainWindow inherits Window {
         // ==============================================================
         // MODE 1: COMPACT FLOATING DYNAMIC CAPSULE PILL
         // ==============================================================
-        if !root.is_expanded_view && !root.show_settings : VerticalLayout {
-            alignment: center;
-            padding: 8px;
+        if !root.is_expanded_view && !root.show_settings : Rectangle {
+            width: 100%;
+            height: 100%;
+            background: transparent;
 
-            HorizontalLayout {
-                alignment: center;
-                FloatingPill {
-                    avatar_state: root.avatar_state;
-                    connection_status: root.connection_status;
-                    status_text: root.status_text_display;
-                    volume_level: root.volume_level;
-                    pulse_scale: root.pulse_scale;
-                    is_mic_muted: root.is_mic_muted;
-                    is_screen_sharing: root.is_screen_sharing;
-                    toggle_connect => { root.toggle_connect(); }
-                    toggle_mic_mute => { root.toggle_mic_mute(); }
-                    toggle_screen_share => { root.toggle_screen_share(); }
-                    expand_hud => {
-                        root.is_fullscreen = true;
-                        root.toggle_fullscreen();
-                    }
-                    open_settings => {
-                        root.show_settings = true;
-                        root.open_settings();
-                    }
-                    start_drag => { root.start_window_drag(); }
+            FloatingPill {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                avatar_state: root.avatar_state;
+                connection_status: root.connection_status;
+                status_text: root.status_text_display;
+                volume_level: root.volume_level;
+                pulse_scale: root.pulse_scale;
+                is_mic_muted: root.is_mic_muted;
+                is_screen_sharing: root.is_screen_sharing;
+                toggle_connect => { root.toggle_connect(); }
+                toggle_mic_mute => {
+                    root.is_mic_muted = !root.is_mic_muted;
+                    root.toggle_mic_mute();
                 }
+                toggle_screen_share => { root.toggle_screen_share(); }
+                expand_hud => {
+                    root.is_fullscreen = true;
+                    root.toggle_fullscreen();
+                }
+                open_settings => {
+                    root.show_settings = true;
+                    root.open_settings();
+                }
+                start_drag => { root.start_window_drag(); }
             }
         }
 

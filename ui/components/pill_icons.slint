@@ -131,14 +131,18 @@ export component PillButton inherits Rectangle {
     width: 28px;
     height: 28px;
     border-radius: 14px;
-    background: touch.has-hover ? #FFFFFF1A : (root.is_active ? root.active_glow.with-alpha(0.12) : transparent);
-    animate background { duration: 150ms; }
+    background: touch.has-hover ? #FFFFFF26 : (root.is_active ? root.active_glow.with-alpha(0.18) : #FFFFFF0D);
+    animate background { duration: 120ms; }
 
-    border-width: root.is_active ? 1px : 0px;
-    border-color: root.is_active ? root.active_glow.with-alpha(0.4) : transparent;
+    border-width: root.is_active ? 1px : (touch.has-hover ? 1px : 0px);
+    border-color: root.is_active ? root.active_glow.with-alpha(0.6) : (touch.has-hover ? #FFFFFF33 : transparent);
+
+    @children
 
     touch := TouchArea {
-        clicked => { root.clicked(); }
+        width: 100%;
+        height: 100%;
         mouse-cursor: pointer;
+        clicked => { root.clicked(); }
     }
 }

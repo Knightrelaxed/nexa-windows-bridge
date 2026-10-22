@@ -141,18 +141,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if !win.get_is_fullscreen() {
                     unsafe {
                         use windows_sys::Win32::UI::WindowsAndMessaging::{
-                            FindWindowW, GetSystemMetrics, SetForegroundWindow, SetWindowPos,
-                            HWND_TOPMOST, SM_CXSCREEN, SWP_SHOWWINDOW,
+                            FindWindowW, SetForegroundWindow,
                         };
                         let title: Vec<u16> = "N.E.X.A Windows Bridge\0".encode_utf16().collect();
                         let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
                         if !hwnd.is_null() {
-                            let screen_w = GetSystemMetrics(SM_CXSCREEN);
-                            let pill_w = 400;
-                            let pill_h = 64;
-                            let pos_x = (screen_w - pill_w) / 2;
-                            let pos_y = 16;
-                            SetWindowPos(hwnd, HWND_TOPMOST, pos_x, pos_y, pill_w, pill_h, SWP_SHOWWINDOW);
+                            position_floating_pill_window(hwnd);
                             SetForegroundWindow(hwnd);
                         }
                     }
@@ -959,19 +953,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !fs {
                 win.window().set_maximized(false);
                 unsafe {
-                    use windows_sys::Win32::UI::WindowsAndMessaging::{
-                        FindWindowW, GetSystemMetrics, SetWindowPos, HWND_TOPMOST, SM_CXSCREEN,
-                        SWP_SHOWWINDOW,
-                    };
+                    use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW;
                     let title: Vec<u16> = "N.E.X.A Windows Bridge\0".encode_utf16().collect();
                     let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
                     if !hwnd.is_null() {
-                        let screen_w = GetSystemMetrics(SM_CXSCREEN);
-                        let pill_w = 400;
-                        let pill_h = 64;
-                        let pos_x = (screen_w - pill_w) / 2;
-                        let pos_y = 16;
-                        SetWindowPos(hwnd, HWND_TOPMOST, pos_x, pos_y, pill_w, pill_h, SWP_SHOWWINDOW);
+                        position_floating_pill_window(hwnd);
                     }
                 }
             }
@@ -1024,45 +1010,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             win.set_show_settings(true);
             if !win.get_is_fullscreen() {
                 unsafe {
-                    use windows_sys::Win32::UI::WindowsAndMessaging::{
-                        FindWindowW, GetSystemMetrics, SetWindowPos, HWND_TOPMOST, SM_CXSCREEN,
-                        SWP_SHOWWINDOW,
-                    };
+                    use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW;
                     let title: Vec<u16> = "N.E.X.A Windows Bridge\0".encode_utf16().collect();
                     let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
                     if !hwnd.is_null() {
-                        let screen_w = GetSystemMetrics(SM_CXSCREEN);
-                        let w = 560;
-                        let h = 540;
-                        let pos_x = (screen_w - w) / 2;
-                        let pos_y = 60;
-                        SetWindowPos(hwnd, HWND_TOPMOST, pos_x, pos_y, w, h, SWP_SHOWWINDOW);
+                        position_settings_window(hwnd);
                     }
                 }
             }
         }
     });
 
-    // Hook Settings Modal Close (Restores to 400x64 Floating Capsule Pill)
+    // Hook Settings Modal Close (Restores to Floating Capsule Pill)
     let window_weak = main_window.as_weak();
     main_window.on_close_settings(move || {
         if let Some(win) = window_weak.upgrade() {
             win.set_show_settings(false);
             if !win.get_is_fullscreen() {
                 unsafe {
-                    use windows_sys::Win32::UI::WindowsAndMessaging::{
-                        FindWindowW, GetSystemMetrics, SetWindowPos, HWND_TOPMOST, SM_CXSCREEN,
-                        SWP_SHOWWINDOW,
-                    };
+                    use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW;
                     let title: Vec<u16> = "N.E.X.A Windows Bridge\0".encode_utf16().collect();
                     let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
                     if !hwnd.is_null() {
-                        let screen_w = GetSystemMetrics(SM_CXSCREEN);
-                        let pill_w = 400;
-                        let pill_h = 64;
-                        let pos_x = (screen_w - pill_w) / 2;
-                        let pos_y = 16;
-                        SetWindowPos(hwnd, HWND_TOPMOST, pos_x, pos_y, pill_w, pill_h, SWP_SHOWWINDOW);
+                        position_floating_pill_window(hwnd);
                     }
                 }
             }
@@ -1083,19 +1053,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !start_minimized {
         main_window.show()?;
         unsafe {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                FindWindowW, GetSystemMetrics, SetWindowPos, HWND_TOPMOST, SM_CXSCREEN,
-                SWP_SHOWWINDOW,
-            };
+            use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW;
             let title: Vec<u16> = "N.E.X.A Windows Bridge\0".encode_utf16().collect();
             let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
             if !hwnd.is_null() {
-                let screen_w = GetSystemMetrics(SM_CXSCREEN);
-                let pill_w = 400;
-                let pill_h = 64;
-                let pos_x = (screen_w - pill_w) / 2;
-                let pos_y = 16;
-                SetWindowPos(hwnd, HWND_TOPMOST, pos_x, pos_y, pill_w, pill_h, SWP_SHOWWINDOW);
+                position_floating_pill_window(hwnd);
             }
         }
     } else {
@@ -1134,4 +1096,49 @@ async fn test_ws_handshake(url: &str, token: &str) -> Result<(), String> {
         Ok(Err(e)) => Err(format!("Connection error: {}", e)),
         Err(_) => Err("Connection timed out after 4s".to_string()),
     }
+}
+
+/// Helper to configure the pill window geometry and position (top-center, DPI-scaled)
+unsafe fn position_floating_pill_window(hwnd: windows_sys::Win32::Foundation::HWND) {
+    use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, SetWindowPos, HWND_TOPMOST, SM_CXSCREEN, SWP_SHOWWINDOW,
+    };
+
+    let dpi = GetDpiForWindow(hwnd);
+    let scale = if dpi > 0 { dpi as f64 / 96.0 } else { 1.0 };
+
+    // Logical dimensions for the floating pill window: 420px x 64px
+    let logical_w = 420.0;
+    let logical_h = 64.0;
+    let pill_w = (logical_w * scale).round() as i32;
+    let pill_h = (logical_h * scale).round() as i32;
+
+    let screen_w = GetSystemMetrics(SM_CXSCREEN);
+    let pos_x = (screen_w - pill_w) / 2;
+    let pos_y = (16.0 * scale).round() as i32;
+
+    SetWindowPos(hwnd, HWND_TOPMOST, pos_x, pos_y, pill_w, pill_h, SWP_SHOWWINDOW);
+}
+
+/// Helper to configure the settings dialog window geometry and position (DPI-scaled)
+unsafe fn position_settings_window(hwnd: windows_sys::Win32::Foundation::HWND) {
+    use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, SetWindowPos, HWND_TOPMOST, SM_CXSCREEN, SWP_SHOWWINDOW,
+    };
+
+    let dpi = GetDpiForWindow(hwnd);
+    let scale = if dpi > 0 { dpi as f64 / 96.0 } else { 1.0 };
+
+    let logical_w = 560.0;
+    let logical_h = 540.0;
+    let w = (logical_w * scale).round() as i32;
+    let h = (logical_h * scale).round() as i32;
+
+    let screen_w = GetSystemMetrics(SM_CXSCREEN);
+    let pos_x = (screen_w - w) / 2;
+    let pos_y = (60.0 * scale).round() as i32;
+
+    SetWindowPos(hwnd, HWND_TOPMOST, pos_x, pos_y, w, h, SWP_SHOWWINDOW);
 }

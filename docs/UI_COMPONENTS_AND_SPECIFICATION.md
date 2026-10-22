@@ -93,40 +93,45 @@ Semua berkas markup antarmuka berada di folder `ui/`:
 
 ## 3. Mode 1: Floating Dynamic Capsule Pill (Widget Kapsul Melayang)
 
-Mode ini aktif saat `!root.is_expanded_view` (ukuran jendela melayang ramping ~380x48px dengan radius 24px, frameless transparan `no-frame: true; background: transparent;`).
+Mode ini aktif saat `!root.is_expanded_view` (ukuran jendela melayang ramping ~420x64px dengan pill kapsul terpusat 384x48px radius 24px, frameless transparan `no-frame: true; background: transparent; always-on-top: true;`, mendukung penuh Windows High-DPI scaling 125%/150%).
 
 ```
-+---------------------------------------------------------------------------------------------+
-| (O) [o]  Listening... ||||||||||||||||           [ 🎙️ ]   [ 👁️ ]   [ ⤢ ]   [ ⚙ ]           |
-| Core Dot Status Text  Audio Equalizer (16 bars)   Mic     Screen    HUD     Settings        |
-| 34px 8px                                          Mute    Share     Mode 2  (Dynamic Exp)   |
-+---------------------------------------------------------------------------------------------+
++---------------------------------------------------------------------------------------------------+
+|  (O) [o]   Listening... ||||||||||||||             [ 🎙️ ]   [ 👁️ ]   [ ⤢ ]   [ ⚙ ]               |
+|  Core Dot  Status Text  Equalizer (14 bars)         Mic     Screen    HUD     Settings            |
+|  32px 7px  (Dynamic Center Drag Area)               Mute    Share     Mode 2  (Dynamic Exp)       |
+|  [<-- 54px -->] [<------- 184px ------->]          [<------------- 130px ------------->]          |
++---------------------------------------------------------------------------------------------------+
 ```
 
 ### Rincian Elemen Floating Capsule Pill:
 
-#### A. Avatar & Indikator Koneksi Interaktif (Sisi Kiri)
-1. **3D Quantum Neural Core Mini (`34x34px`)**
+#### A. Avatar & Indikator Koneksi Interaktif (Sisi Kiri: Fixed 54px)
+1. **3D Quantum Neural Core Mini (`32x32px`)**
    * Avatar miniatur Fibonacci 3D yang berputar konstan dan berdenyut mengikuti amplitudo suara.
    * Menekan area avatar/dot memicu callback `toggle_connect` (Hubungkan / Putuskan koneksi).
-2. **Interactive Status Dot (`8x8px`, radius `4px`)**
-   * **Warna Dinamis:** `#3FB950` (Hijau Emerald: Connected), `#FFB300` (Amber: Connecting), `#EF4444` (Merah Ruby: Disconnected/Offline).
+2. **Interactive Status Dot (`7x7px`, radius `3.5px`)**
+   * **Warna Dinamis:** `#3FB950` (Hijau Emerald: Connected), `#FF9100` (Amber: Connecting), `#EF4444` (Merah Ruby: Disconnected/Offline).
    * Dilengkapi animasi hover skala 1.25x dan glow pendar neon.
 
-#### B. Draggable Center & Audio Visualizer (Area Tengah)
+#### B. Draggable Center & Audio Visualizer (Area Tengah: Fluid 184px)
 1. **Native Win32 Fluid Dragging Area (`TouchArea`)**
    * Area tengah diapit antara Avatar dan Action Dock dapat diklik dan ditahan untuk menggeser jendela secara bebas dan halus ke seluruh layar desktop tanpa lag, memanfaatkan Win32 native messages `ReleaseCapture()` + `SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0)`.
 2. **Status Text Display**
    * Menampilkan status AI teknis profesional dalam bahasa Inggris: `Listening...`, `Processing...`, `Speaking...`, `Offline`, dll.
-3. **Parametric Audio Equalizer (16 Bars)**
+3. **Parametric Audio Equalizer (14 Bars)**
    * Bar frekuensi audio vertikal yang bergerak dinamis mengikuti level desibel RMS input mikrofon dan vokal AI.
 
-#### C. Minimalist Action Dock (Sisi Kanan)
-Terdiri dari 4 tombol mikro berukuran `28x28px` dengan ikon vektor SVG presisi tinggi (`ui/components/pill_icons.slint`) berlatar frosted glassmorphism:
-1. **🎙️ Mic Mute/Unmute (`PillMicIcon`)**: Ikon mikrofon SVG dengan status aktif/mute garis miring diagonal.
-2. **👁️ Screen Share Toggle (`PillEyeIcon`)**: Ikon mata siber SVG dengan pupil bercahaya saat aktif streaming Direct3D 11.
-3. **⤢ Expand to HUD Mode 2 (`PillExpandIcon`)**: Ikon 4 panah diagonal untuk beralih seketika ke layar penuh Mode 2 Command Center (`F11`).
-4. **⚙ Settings (`PillGearIcon`)**: Ikon roda gigi SVG teknis. Membuka modal pengaturan konfigurasi dengan animasi ekspansi vertikal dinamis (Option A: jendela membesar halus ke ~560x540px saat pengaturan terbuka, dan mengecil kembali ke kapsul 48px saat disimpan/ditutup).
+#### C. Minimalist Action Dock (Sisi Kanan: Fixed 130px, Selalu Stabil)
+Terdiri dari 4 tombol mikro berukuran `28x28px` (dengan spacing `6px`) berlatar frosted glassmorphism dan ikon vektor SVG presisi tinggi (`ui/components/pill_icons.slint`). Sisi kanan ini di-lock pada lebar tetap 130px sehingga posisi tombol **100% stabil dan tidak akan bergeser/terpotong** oleh perubahan panjang teks status:
+1. **🎙️ Mic Mute/Unmute (`PillMicIcon`)**: Menekan tombol ini membalikkan status `root.is_mic_muted` secara instan, menyalakan pendar amber `#FF9100`, dan mematikan tangkapan mikrofon WASAPI.
+2. **👁️ Screen Share Toggle (`PillEyeIcon`)**: Menekan tombol ini mengaktifkan/menonaktifkan streaming Direct3D 11 DXGI 1920x1080@1fps dengan pupil bercahaya cyan `#00E5FF`.
+3. **⤢ Expand to HUD Mode 2 (`PillExpandIcon`)**: Menekan tombol ini (atau tombol `F11`) langsung memperluas jendela ke Mode 2 Command Center Layar Penuh.
+4. **⚙ Settings (`PillGearIcon`)**: Ikon roda gigi SVG teknis. Membuka modal pengaturan konfigurasi dengan ekspansi vertikal dinamis (Option A: jendela membesar halus ke ~560x540px saat pengaturan terbuka, dan mengecil kembali ke kapsul saat disimpan/ditutup).
+
+#### D. Penanganan Windows High-DPI Scaling (125% / 150%)
+Untuk mencegah masalah window clipping pada laptop modern (seperti ThinkPad dengan skala 125%), antarmuka mengimplementasikan penyesuaian DPI otomatis (`GetDpiForWindow`):
+* Ukuran logis jendela 420x64px dikalikan dengan faktor skala display (e.g. 1.25x = 525x80 physical pixels), memastikan seluruh bodi kapsul 384x48px, keempat tombol dock, dan drop shadow tampil utuh tanpa terpotong batas jendela Windows.
 
 ---
 

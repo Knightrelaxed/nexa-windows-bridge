@@ -23,8 +23,8 @@ export component FloatingPill inherits Rectangle {
     callback open_settings();
     callback start_drag();
 
-    // Visual geometry: 380px x 48px stadium capsule
-    width: 380px;
+    // Visual geometry: 384px x 48px stadium capsule
+    width: 384px;
     height: 48px;
     border-radius: 24px;
     background: #0E141DF2;
@@ -34,47 +34,47 @@ export component FloatingPill inherits Rectangle {
     drop-shadow-color: #00000080;
 
     HorizontalLayout {
-        padding-left: 8px;
-        padding-right: 12px;
+        padding-left: 10px;
+        padding-right: 10px;
         spacing: 8px;
         alignment: space-between;
 
-        // ── 1. LEFT: Avatar + Status Dot ─────────────────────────
-        HorizontalLayout {
-            spacing: 6px;
-            alignment: center;
+        // ── 1. LEFT: Avatar + Status Dot (Fixed width: 54px) ─────
+        Rectangle {
+            width: 54px;
+            height: 40px;
+            background: transparent;
 
-            // TouchArea for Avatar/Dot click to toggle connection
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+
+                QuantumCore {
+                    state: root.avatar_state;
+                    level: root.volume_level;
+                    pulse_scale: root.pulse_scale;
+                    is_screen_sharing: root.is_screen_sharing;
+                    orb_size: 32px;
+                }
+
+                // Status Dot Indicator
+                Rectangle {
+                    width: 7px;
+                    height: 7px;
+                    border-radius: 3.5px;
+                    y: (parent.height - self.height) / 2;
+                    background: root.connection_status == "connected" ? #3FB950 :
+                                (root.connection_status == "connecting" ? #FF9100 : #EF4444);
+                    drop-shadow-blur: root.connection_status == "connected" ? 6px : 0px;
+                    drop-shadow-color: root.connection_status == "connected" ? #3FB950 : transparent;
+                }
+            }
+
             TouchArea {
-                width: 48px;
-                height: 40px;
+                width: 100%;
+                height: 100%;
                 mouse-cursor: pointer;
                 clicked => { root.toggle_connect(); }
-
-                HorizontalLayout {
-                    spacing: 6px;
-                    alignment: center;
-
-                    QuantumCore {
-                        state: root.avatar_state;
-                        level: root.volume_level;
-                        pulse_scale: root.pulse_scale;
-                        is_screen_sharing: root.is_screen_sharing;
-                        orb_size: 34px;
-                    }
-
-                    // Status Dot Indicator
-                    Rectangle {
-                        width: 7px;
-                        height: 7px;
-                        border-radius: 3.5px;
-                        y: (parent.height - self.height) / 2;
-                        background: root.connection_status == "connected" ? #3FB950 :
-                                    (root.connection_status == "connecting" ? #FF9100 : #484F58);
-                        drop-shadow-blur: root.connection_status == "connected" ? 6px : 0px;
-                        drop-shadow-color: root.connection_status == "connected" ? #3FB950 : transparent;
-                    }
-                }
             }
         }
 
@@ -93,6 +93,7 @@ export component FloatingPill inherits Rectangle {
                     text: root.status_text;
                     font-size: 11px;
                     font-weight: 700;
+                    horizontal-alignment: center;
                     color: root.avatar_state == "listening"          ? #00B4D8 :
                            root.avatar_state == "transmitting_audio" ? #00E5FF :
                            root.avatar_state == "thinking"           ? #FFB300 :
@@ -111,7 +112,7 @@ export component FloatingPill inherits Rectangle {
                                  root.avatar_state == "speaking"           ? #00FF88 :
                                  root.avatar_state == "thinking"           ? #FFB300 :
                                  root.avatar_state == "idle"               ? #00E5FF : #546E7A;
-                    bar_count: 16;
+                    bar_count: 14;
                     bar_width: 2.5px;
                     bar_spacing: 2px;
                     max_bar_height: 12px;
@@ -121,6 +122,8 @@ export component FloatingPill inherits Rectangle {
 
             // Window Drag Surface via pointer-event down
             TouchArea {
+                width: 100%;
+                height: 100%;
                 mouse-cursor: move;
                 pointer-event(event) => {
                     if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
@@ -130,54 +133,62 @@ export component FloatingPill inherits Rectangle {
             }
         }
 
-        // ── 3. RIGHT: Action Dock (4 Minimalist Vector Buttons) ────
-        HorizontalLayout {
-            spacing: 4px;
-            alignment: center;
+        // ── 3. RIGHT: Action Dock (Fixed width: 130px, 4 Buttons) ──
+        Rectangle {
+            width: 130px;
+            height: 40px;
+            background: transparent;
 
-            // Mic Mute Button
-            PillButton {
-                is_active: root.is_mic_muted;
-                active_glow: #FF9100;
-                clicked => { root.toggle_mic_mute(); }
-                PillMicIcon {
-                    is_muted: root.is_mic_muted;
-                    icon_color: #C9D1D9;
-                    x: (parent.width - self.width) / 2;
-                    y: (parent.height - self.height) / 2;
+            HorizontalLayout {
+                width: 100%;
+                height: 100%;
+                spacing: 6px;
+                alignment: end;
+
+                // 1. Mic Mute Button
+                PillButton {
+                    is_active: root.is_mic_muted;
+                    active_glow: #FF9100;
+                    clicked => { root.toggle_mic_mute(); }
+                    PillMicIcon {
+                        is_muted: root.is_mic_muted;
+                        icon_color: root.is_mic_muted ? #FF9100 : #C9D1D9;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
                 }
-            }
 
-            // Screen Share Button
-            PillButton {
-                is_active: root.is_screen_sharing;
-                active_glow: #00E5FF;
-                clicked => { root.toggle_screen_share(); }
-                PillEyeIcon {
-                    is_streaming: root.is_screen_sharing;
-                    icon_color: #C9D1D9;
-                    x: (parent.width - self.width) / 2;
-                    y: (parent.height - self.height) / 2;
+                // 2. Screen Share Button
+                PillButton {
+                    is_active: root.is_screen_sharing;
+                    active_glow: #00E5FF;
+                    clicked => { root.toggle_screen_share(); }
+                    PillEyeIcon {
+                        is_streaming: root.is_screen_sharing;
+                        icon_color: root.is_screen_sharing ? #00E5FF : #C9D1D9;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
                 }
-            }
 
-            // Expand to Command Center HUD
-            PillButton {
-                clicked => { root.expand_hud(); }
-                PillExpandIcon {
-                    icon_color: #C9D1D9;
-                    x: (parent.width - self.width) / 2;
-                    y: (parent.height - self.height) / 2;
+                // 3. Expand to Command Center HUD
+                PillButton {
+                    clicked => { root.expand_hud(); }
+                    PillExpandIcon {
+                        icon_color: #C9D1D9;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
                 }
-            }
 
-            // Settings Button
-            PillButton {
-                clicked => { root.open_settings(); }
-                PillGearIcon {
-                    icon_color: #C9D1D9;
-                    x: (parent.width - self.width) / 2;
-                    y: (parent.height - self.height) / 2;
+                // 4. Settings Button
+                PillButton {
+                    clicked => { root.open_settings(); }
+                    PillGearIcon {
+                        icon_color: #C9D1D9;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
                 }
             }
         }
