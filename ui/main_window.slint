@@ -20,6 +20,7 @@ export { OverlayWindow }
 
 export component MainWindow inherits Window {
     title: "N.E.X.A Windows Bridge";
+    icon: @image-url("../assets/icon.png");
     full-screen: root.is_fullscreen;
     min-width: 360px;
     min-height: 220px;
@@ -36,7 +37,7 @@ export component MainWindow inherits Window {
     in-out property <string> avatar_state: "offline";       // "idle" | "listening" | "transmitting_audio" | "thinking" | "speaking" | "barge_in" | "screen_sharing" | "tool_executing" | "connecting" | "offline"
     in-out property <float> pulse_scale: 1.0;
     in-out property <float> volume_level: 0.0;             // Real-time audio RMS volume level (0.0 to 1.0)
-    in-out property <string> status_message: "Siap terhubung ke N.E.X.A Server";
+    in-out property <string> status_message: "Ready to connect to N.E.X.A Server";
     in-out property <bool> show_settings: false;
 
     // Computed property: true if explicitly fullscreen or window is maximized/large
@@ -62,7 +63,7 @@ export component MainWindow inherits Window {
     in-out property <string> transcript_assistant_text: "";
 
     // Automation Log Stream Properties
-    in-out property <string> auto_log_1: "Menunggu perintah otomasi AI...";
+    in-out property <string> auto_log_1: "Waiting for AI automation commands...";
     in-out property <string> auto_log_2: "";
     in-out property <string> auto_log_3: "";
 
@@ -92,17 +93,17 @@ export component MainWindow inherits Window {
     callback save_settings(string, string, int, bool, bool, bool, bool, bool, bool, bool);
     callback test_connection(string, string);
 
-    // Primary Computed Status Text (100% Mobile Bridge Parity)
+    // Primary Computed Status Text (English Clean AI State)
     property <string> status_text_display:
-        root.avatar_state == "listening"          ? "Mendengarkan Tuan Faqih..." :
-        root.avatar_state == "transmitting_audio" ? "Mentransmisikan suara (WASAPI 16kHz)..." :
-        root.avatar_state == "thinking"           ? "Sedang menalar & memproses..." :
-        root.avatar_state == "speaking"           ? "N.E.X.A sedang berbicara..." :
-        root.avatar_state == "barge_in"           ? "Mendengarkan interupsi Tuan..." :
-        (root.avatar_state == "screen_sharing" || root.avatar_state == "transmitting_screen") ? "Mentransmisikan layar & audio (D3D11 1 FPS)..." :
-        root.avatar_state == "tool_executing"     ? "Mengeksekusi perintah sistem..." :
-        (root.avatar_state == "connecting" || root.avatar_state == "reconnecting") ? "Menghubungkan kembali ke server..." :
-        root.avatar_state == "idle"               ? "Online & Siaga" : "Bridge Terputus (Offline)";
+        root.avatar_state == "listening"          ? "Listening..." :
+        root.avatar_state == "transmitting_audio" ? "Transmitting audio..." :
+        root.avatar_state == "thinking"           ? "Processing..." :
+        root.avatar_state == "speaking"           ? "Speaking..." :
+        root.avatar_state == "barge_in"           ? "Barge-in..." :
+        (root.avatar_state == "screen_sharing" || root.avatar_state == "transmitting_screen") ? "Transmitting screen..." :
+        root.avatar_state == "tool_executing"     ? "Executing command..." :
+        (root.avatar_state == "connecting" || root.avatar_state == "reconnecting") ? "Connecting..." :
+        root.avatar_state == "idle"               ? "Ready" : "Offline";
 
     // Top-Level Keyboard Handler (F11 Fullscreen Toggle & Escape Exit Fullscreen)
     FocusScope {
@@ -216,6 +217,7 @@ export component MainWindow inherits Window {
                         }
 
                         Text {
+                            visible: root.status_message != "" && root.status_message != root.status_text_display;
                             text: root.status_message;
                             font-size: 11px;
                             color: #8B949E;
@@ -313,12 +315,12 @@ export component MainWindow inherits Window {
                     }
                 }
                 Button {
-                    text: root.is_screen_sharing ? "Stop Layar" : "Bagi Layar";
+                    text: root.is_screen_sharing ? "Stop Screen" : "Share Screen";
                     clicked => { root.toggle_screen_share(); }
                 }
                 Button {
-                    text: root.connection_status == "connected" ? "Putuskan" :
-                          root.connection_status == "connecting" ? "Batal" : "Hubungkan";
+                    text: root.connection_status == "connected" ? "Disconnect" :
+                          root.connection_status == "connecting" ? "Cancel" : "Connect";
                     primary: root.connection_status != "connected";
                     clicked => { root.toggle_connect(); }
                 }
@@ -543,6 +545,7 @@ export component MainWindow inherits Window {
                                 }
 
                                 Text {
+                                    visible: root.status_message != "" && root.status_message != root.status_text_display;
                                     horizontal-alignment: center;
                                     text: root.status_message;
                                     font-size: 11px;
@@ -696,11 +699,11 @@ export component MainWindow inherits Window {
                                 }
                             }
                             Button {
-                                text: root.is_screen_sharing ? "⏹️ Layar" : "👁️ Layar";
+                                text: root.is_screen_sharing ? "⏹️ Stop Screen" : "👁️ Share Screen";
                                 clicked => { root.toggle_screen_share(); }
                             }
                             Button {
-                                text: root.connection_status == "connected" ? "Putuskan" : "Hubungkan";
+                                text: root.connection_status == "connected" ? "Disconnect" : "Connect";
                                 primary: root.connection_status != "connected";
                                 clicked => { root.toggle_connect(); }
                             }

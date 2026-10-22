@@ -69,13 +69,20 @@ impl SystemTray {
 
             unsafe {
                 let hinstance = GetModuleHandleW(std::ptr::null());
+                let app_icon = LoadIconW(hinstance, 1 as _);
+                let icon = if !app_icon.is_null() {
+                    app_icon
+                } else {
+                    LoadIconW(0 as _, IDI_APPLICATION)
+                };
+
                 let wnd_class = WNDCLASSW {
                     style: 0,
                     lpfnWndProc: Some(tray_wnd_proc),
                     cbClsExtra: 0,
                     cbWndExtra: 0,
                     hInstance: hinstance,
-                    hIcon: LoadIconW(0 as _, IDI_APPLICATION),
+                    hIcon: icon,
                     hCursor: 0 as _,
                     hbrBackground: 0 as _,
                     lpszMenuName: std::ptr::null(),
@@ -111,7 +118,6 @@ impl SystemTray {
                 WM_TASKBAR_CREATED.store(taskbar_msg, Ordering::SeqCst);
 
                 // Configure NOTIFYICONDATAW
-                let icon = LoadIconW(0 as _, IDI_APPLICATION);
                 let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
                 nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
                 nid.hWnd = hwnd;
@@ -257,12 +263,12 @@ unsafe fn show_context_menu(hwnd: HWND) {
         return;
     }
 
-    let item_open: Vec<u16> = "👁️ Buka N.E.X.A\0".encode_utf16().collect();
-    let item_mute: Vec<u16> = "🎙️ Mute / Unmute Mikrofon\0".encode_utf16().collect();
-    let item_screen: Vec<u16> = "🖥️ Mulai / Hentikan Layar (Win+Alt+S)\0".encode_utf16().collect();
-    let item_fs: Vec<u16> = "⛶ Layar Penuh / Jendela (F11)\0".encode_utf16().collect();
-    let item_settings: Vec<u16> = "⚙ Pengaturan (~/.nexa-bridge.json)\0".encode_utf16().collect();
-    let item_quit: Vec<u16> = "❌ Keluar\0".encode_utf16().collect();
+    let item_open: Vec<u16> = "👁️ Open N.E.X.A\0".encode_utf16().collect();
+    let item_mute: Vec<u16> = "🎙️ Mute / Unmute Microphone\0".encode_utf16().collect();
+    let item_screen: Vec<u16> = "🖥️ Toggle Screen Share (Win+Alt+S)\0".encode_utf16().collect();
+    let item_fs: Vec<u16> = "⛶ Fullscreen / Windowed (F11)\0".encode_utf16().collect();
+    let item_settings: Vec<u16> = "⚙ Settings (~/.nexa-bridge.json)\0".encode_utf16().collect();
+    let item_quit: Vec<u16> = "❌ Quit\0".encode_utf16().collect();
 
     AppendMenuW(hmenu, MF_STRING, MENU_OPEN, item_open.as_ptr());
     AppendMenuW(hmenu, MF_STRING, MENU_MUTE, item_mute.as_ptr());
