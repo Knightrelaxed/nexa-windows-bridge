@@ -19,14 +19,14 @@ export component SettingsDialog inherits Rectangle {
     border-color: #2D3748;
 
     VerticalLayout {
-        padding: 24px;
-        spacing: 16px;
+        padding: 20px;
+        spacing: 14px;
 
         // Header
         HorizontalLayout {
             Text {
                 text: "Bridge Settings";
-                font-size: 18px;
+                font-size: 17px;
                 font-weight: 700;
                 color: #F7FAFC;
                 vertical-alignment: center;
@@ -35,30 +35,32 @@ export component SettingsDialog inherits Rectangle {
 
         // Server URL
         VerticalLayout {
-            spacing: 6px;
+            spacing: 4px;
             Text {
                 text: "Server Endpoint (WebSocket)";
-                font-size: 13px;
+                font-size: 12px;
                 color: #A0AEC0;
             }
             url_input := LineEdit {
                 text: root.server_url;
                 placeholder-text: "wss://nexa-server.example.com/ws";
+                height: 34px;
             }
         }
 
         // Auth Token
         VerticalLayout {
-            spacing: 6px;
+            spacing: 4px;
             Text {
                 text: "Device Authorization Token";
-                font-size: 13px;
+                font-size: 12px;
                 color: #A0AEC0;
             }
             token_input := LineEdit {
                 text: root.auth_token;
                 placeholder-text: "Enter secret token";
                 input-type: password;
+                height: 34px;
             }
         }
 
@@ -67,7 +69,7 @@ export component SettingsDialog inherits Rectangle {
             spacing: 8px;
             Text {
                 text: "Performance & Startup";
-                font-size: 13px;
+                font-size: 12px;
                 color: #A0AEC0;
             }
             low_ram_check := CheckBox {
@@ -87,10 +89,11 @@ export component SettingsDialog inherits Rectangle {
             color: #48BB78;
         }
 
-        // Action Buttons
+        // Action Buttons (Fixed height 36px so it never stretches into tall blocks)
         HorizontalLayout {
-            spacing: 12px;
+            spacing: 10px;
             alignment: end;
+            height: 36px;
 
             Button {
                 text: root.is_testing ? "Testing..." : "Test Connection";

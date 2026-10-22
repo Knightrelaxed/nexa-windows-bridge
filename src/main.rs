@@ -569,6 +569,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         info!("[TRAY] Context menu 'Layar Penuh' activated: fs={}", fs);
                         win.set_is_fullscreen(fs);
                         win.window().set_fullscreen(fs);
+                        if !fs {
+                            win.window().set_maximized(false);
+                        }
                     }
                     TrayEvent::ToggleScreenShare => {
                         info!("[TRAY] Context menu 'Berbagi Layar' activated.");
@@ -629,6 +632,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         info!("[HOTKEY] ⛶ Fullscreen Toggle (F11 / Win+Alt+F) triggered: fs={}", fs);
                         win.set_is_fullscreen(fs);
                         win.window().set_fullscreen(fs);
+                        if !fs {
+                            win.window().set_maximized(false);
+                        }
                     }
                     HotkeyAction::ToggleScreenShare => {
                         info!("[HOTKEY] 🖥️ Screen Share (Win+Alt+S) triggered.");
@@ -762,6 +768,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let fs = win.get_is_fullscreen();
             info!("[MAIN] ⛶ Fullscreen toggled: {}", fs);
             win.window().set_fullscreen(fs);
+            if !fs {
+                win.window().set_maximized(false);
+            }
         }
     });
 

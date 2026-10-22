@@ -32,6 +32,9 @@ export component MainWindow inherits Window {
     in-out property <string> status_message: "Siap terhubung ke N.E.X.A Server";
     in-out property <bool> show_settings: false;
 
+    // Computed property: true if explicitly fullscreen or window is maximized/large
+    property <bool> is_expanded_view: root.is_fullscreen || root.width > 600px || root.height > 420px;
+
     // Telemetry properties for Fullscreen HUD
     in-out property <string> telemetry_cpu: "12%";
     in-out property <string> telemetry_ram: "34%";
@@ -88,12 +91,14 @@ export component MainWindow inherits Window {
         // ==============================================================
         // MODE 1: COMPACT FLOATING COMPANION (NON-INTRUSIVE MINI WIDGET)
         // ==============================================================
-        if !root.is_fullscreen : VerticalLayout {
+        if !root.is_expanded_view : VerticalLayout {
             padding: 12px;
             spacing: 8px;
+            alignment: space-between;
 
             // 1. Top Header Bar (Integrated Single Bar)
             HorizontalLayout {
+                height: 28px;
                 alignment: space-between;
 
                 HorizontalLayout {
@@ -198,6 +203,7 @@ export component MainWindow inherits Window {
 
             // 3. Hardware Indicators Pill Row
             HorizontalLayout {
+                height: 18px;
                 spacing: 12px;
                 alignment: center;
 
@@ -256,8 +262,9 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // 4. Quick Control Action Bar (3 Balanced Action Buttons)
+            // 4. Quick Control Action Bar (Strict 36px height - Never stretches into massive blocks!)
             HorizontalLayout {
+                height: 36px;
                 spacing: 8px;
                 Button {
                     text: root.is_mic_muted ? "🔇 Unmute" : "🎙️ Mute";
@@ -282,12 +289,14 @@ export component MainWindow inherits Window {
         // ==========================================
         // MODE 2: FULL SCREEN (J.A.R.V.I.S COMMAND CENTER)
         // ==========================================
-        if root.is_fullscreen : VerticalLayout {
-            padding: 30px;
-            spacing: 24px;
+        if root.is_expanded_view : VerticalLayout {
+            padding: 24px;
+            spacing: 20px;
+            alignment: space-between;
 
             // Top HUD Telemetry Bar
             HorizontalLayout {
+                height: 44px;
                 alignment: space-between;
 
                 // Left: HUD Telemetry Panel
@@ -357,23 +366,23 @@ export component MainWindow inherits Window {
             // Center: Imposing Avatar & Dialog Transcript
             VerticalLayout {
                 alignment: center;
-                spacing: 24px;
+                spacing: 20px;
 
                 HorizontalLayout {
                     alignment: center;
                     Avatar {
                         state: root.avatar_state;
                         pulse_scale: root.pulse_scale;
-                        eye_size: 130px;
-                        width: 380px;
-                        height: 150px;
+                        eye_size: 120px;
+                        width: 340px;
+                        height: 140px;
                     }
                 }
 
                 Text {
                     horizontal-alignment: center;
                     text: root.status_text_display;
-                    font-size: 26px;
+                    font-size: 24px;
                     font-weight: 700;
                     color: root.avatar_state == "listening" ? #00B4D8 :
                            root.avatar_state == "thinking"  ? #FFB300 :
@@ -384,7 +393,7 @@ export component MainWindow inherits Window {
                 Text {
                     horizontal-alignment: center;
                     text: root.status_message;
-                    font-size: 15px;
+                    font-size: 14px;
                     color: #8B949E;
                 }
 
@@ -399,13 +408,14 @@ export component MainWindow inherits Window {
                     bar_count: 48;
                     bar_width: 4px;
                     bar_spacing: 4px;
-                    max_bar_height: 40px;
+                    max_bar_height: 38px;
                 }
             }
 
-            // Bottom Fullscreen HUD Action Dock
+            // Bottom Fullscreen HUD Action Dock (Clean floating pill container)
             HorizontalLayout {
                 alignment: center;
+                height: 52px;
 
                 Rectangle {
                     background: #161B22E6;
@@ -448,15 +458,15 @@ export component MainWindow inherits Window {
         }
     }
 
-    // Modal Settings Overlay (Shared across both modes)
+    // Modal Settings Overlay (Shared across both modes - Strictly bounded to 500x460 max)
     if root.show_settings : Rectangle {
         width: 100%;
         height: 100%;
         background: #000000CC;
 
         SettingsDialog {
-            width: root.is_fullscreen ? 480px : (parent.width - 24px);
-            height: root.is_fullscreen ? 460px : (parent.height - 20px);
+            width: min(500px, parent.width - 32px);
+            height: min(460px, parent.height - 32px);
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             server_url: root.cfg_server_url;
