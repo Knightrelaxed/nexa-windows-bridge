@@ -60,14 +60,15 @@ export component MainWindow inherits Window {
 
     // Primary Computed Status Text (100% Mobile Bridge Parity)
     property <string> status_text_display:
-        root.avatar_state == "listening"      ? "Mendengarkan Tuan Faqih..." :
-        root.avatar_state == "thinking"       ? "Sedang menalar & memproses..." :
-        root.avatar_state == "speaking"       ? "N.E.X.A sedang berbicara..." :
-        root.avatar_state == "barge_in"       ? "Mendengarkan interupsi Tuan..." :
-        root.avatar_state == "screen_sharing" ? "Mentransmisikan layar & audio (D3D11 1 FPS)..." :
-        root.avatar_state == "tool_executing" ? "Mengeksekusi perintah sistem..." :
+        root.avatar_state == "listening"          ? "Mendengarkan Tuan Faqih..." :
+        root.avatar_state == "transmitting_audio" ? "Mentransmisikan suara (WASAPI 16kHz)..." :
+        root.avatar_state == "thinking"           ? "Sedang menalar & memproses..." :
+        root.avatar_state == "speaking"           ? "N.E.X.A sedang berbicara..." :
+        root.avatar_state == "barge_in"           ? "Mendengarkan interupsi Tuan..." :
+        (root.avatar_state == "screen_sharing" || root.avatar_state == "transmitting_screen") ? "Mentransmisikan layar & audio (D3D11 1 FPS)..." :
+        root.avatar_state == "tool_executing"     ? "Mengeksekusi perintah sistem..." :
         (root.avatar_state == "connecting" || root.avatar_state == "reconnecting") ? "Menghubungkan kembali ke server..." :
-        root.avatar_state == "idle"           ? "Online & Siaga" : "Bridge Terputus (Offline)";
+        root.avatar_state == "idle"               ? "Online & Siaga" : "Bridge Terputus (Offline)";
 
     // Top-Level Keyboard Handler (F11 Fullscreen Toggle & Escape Exit Fullscreen)
     FocusScope {
@@ -170,10 +171,13 @@ export component MainWindow inherits Window {
                             text: root.status_text_display;
                             font-size: 13px;
                             font-weight: 700;
-                            color: root.avatar_state == "listening" ? #00B4D8 :
-                                   root.avatar_state == "thinking"  ? #FFB300 :
-                                   root.avatar_state == "speaking"  ? #00FF88 :
-                                   root.avatar_state == "idle"      ? #00E5FF : #C9D1D9;
+                            color: root.avatar_state == "listening"          ? #00B4D8 :
+                                   root.avatar_state == "transmitting_audio" ? #00E5FF :
+                                   root.avatar_state == "thinking"           ? #FFB300 :
+                                   root.avatar_state == "speaking"           ? #00FF88 :
+                                   (root.avatar_state == "screen_sharing" || root.avatar_state == "transmitting_screen") ? #00B0FF :
+                                   root.avatar_state == "tool_executing"     ? #7C4DFF :
+                                   root.avatar_state == "idle"               ? #00E5FF : #C9D1D9;
                             overflow: elide;
                         }
 
@@ -187,11 +191,12 @@ export component MainWindow inherits Window {
                         // Compact 18-bar Fluid Equalizer
                         AudioMeter {
                             volume_level: root.volume_level;
-                            is_active: root.avatar_state == "speaking" || root.avatar_state == "listening";
-                            theme_color: root.avatar_state == "listening" ? #00B4D8 :
-                                         root.avatar_state == "speaking"  ? #00FF88 :
-                                         root.avatar_state == "thinking"  ? #FFB300 :
-                                         root.avatar_state == "idle"      ? #00E5FF : #546E7A;
+                            is_active: root.avatar_state == "speaking" || root.avatar_state == "listening" || root.avatar_state == "transmitting_audio";
+                            theme_color: root.avatar_state == "listening"          ? #00B4D8 :
+                                         root.avatar_state == "transmitting_audio" ? #00E5FF :
+                                         root.avatar_state == "speaking"           ? #00FF88 :
+                                         root.avatar_state == "thinking"           ? #FFB300 :
+                                         root.avatar_state == "idle"               ? #00E5FF : #546E7A;
                             bar_count: 18;
                             bar_width: 3px;
                             bar_spacing: 2px;
@@ -384,10 +389,13 @@ export component MainWindow inherits Window {
                     text: root.status_text_display;
                     font-size: 24px;
                     font-weight: 700;
-                    color: root.avatar_state == "listening" ? #00B4D8 :
-                           root.avatar_state == "thinking"  ? #FFB300 :
-                           root.avatar_state == "speaking"  ? #00FF88 :
-                           root.avatar_state == "idle"      ? #00E5FF : #C9D1D9;
+                    color: root.avatar_state == "listening"          ? #00B4D8 :
+                           root.avatar_state == "transmitting_audio" ? #00E5FF :
+                           root.avatar_state == "thinking"           ? #FFB300 :
+                           root.avatar_state == "speaking"           ? #00FF88 :
+                           (root.avatar_state == "screen_sharing" || root.avatar_state == "transmitting_screen") ? #00B0FF :
+                           root.avatar_state == "tool_executing"     ? #7C4DFF :
+                           root.avatar_state == "idle"               ? #00E5FF : #C9D1D9;
                 }
 
                 Text {
@@ -400,11 +408,12 @@ export component MainWindow inherits Window {
                 // Wide Frequency Spectrum Audio Equalizer
                 AudioMeter {
                     volume_level: root.volume_level;
-                    is_active: root.avatar_state == "speaking" || root.avatar_state == "listening";
-                    theme_color: root.avatar_state == "listening" ? #00B4D8 :
-                                 root.avatar_state == "speaking"  ? #00FF88 :
-                                 root.avatar_state == "thinking"  ? #FFB300 :
-                                 root.avatar_state == "idle"      ? #00E5FF : #546E7A;
+                    is_active: root.avatar_state == "speaking" || root.avatar_state == "listening" || root.avatar_state == "transmitting_audio";
+                    theme_color: root.avatar_state == "listening"          ? #00B4D8 :
+                                 root.avatar_state == "transmitting_audio" ? #00E5FF :
+                                 root.avatar_state == "speaking"           ? #00FF88 :
+                                 root.avatar_state == "thinking"           ? #FFB300 :
+                                 root.avatar_state == "idle"               ? #00E5FF : #546E7A;
                     bar_count: 48;
                     bar_width: 4px;
                     bar_spacing: 4px;

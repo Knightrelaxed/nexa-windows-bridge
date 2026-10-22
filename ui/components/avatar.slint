@@ -160,24 +160,26 @@ export component Avatar inherits Rectangle {
     height: 90px;
     background: transparent;
 
-    // 9 Cognitive Spectrum Colors
+    // 10 Cognitive Spectrum Colors
     property <color> theme_color:
-        root.state == "listening"      ? #00B4D8 :
+        root.state == "listening"          ? #00B4D8 :
+        root.state == "transmitting_audio" ? #00E5FF :
         root.state == "thinking"       ? #FFB300 :
         root.state == "speaking"       ? #00FF88 :
         root.state == "barge_in"       ? #E0F7FA :
-        root.state == "screen_sharing" ? #00B0FF :
+        (root.state == "screen_sharing" || root.state == "transmitting_screen") ? #00B0FF :
         root.state == "tool_executing" ? #7C4DFF :
         (root.state == "connecting" || root.state == "reconnecting") ? #FF9100 :
         root.state == "idle"           ? #00E5FF :
         #37474F; // offline / sleeping
 
     property <color> glow_color:
-        root.state == "listening"      ? #00B4D833 :
+        root.state == "listening"          ? #00B4D833 :
+        root.state == "transmitting_audio" ? #00E5FF33 :
         root.state == "thinking"       ? #FFB30033 :
         root.state == "speaking"       ? #00FF8833 :
         root.state == "barge_in"       ? #E0F7FA66 :
-        root.state == "screen_sharing" ? #00B0FF33 :
+        (root.state == "screen_sharing" || root.state == "transmitting_screen") ? #00B0FF33 :
         root.state == "tool_executing" ? #7C4DFF33 :
         (root.state == "connecting" || root.state == "reconnecting") ? #FF910033 :
         root.state == "idle"           ? #00E5FF26 :
@@ -198,11 +200,11 @@ export component Avatar inherits Rectangle {
 
     // Pupil Dilation (Receptive in listening, focused in thinking)
     property <float> pupil_dilation:
-        root.state == "listening" ? 1.25 :
+        (root.state == "listening" || root.state == "transmitting_audio") ? 1.25 :
         root.state == "thinking"  ? 0.85 :
         root.state == "offline"   ? 0.50 : 1.0;
 
-    property <bool> is_vision_active: root.state == "screen_sharing";
+    property <bool> is_vision_active: root.state == "screen_sharing" || root.state == "transmitting_screen";
 
     // Layout: Left Eye + Central Arc Reactor Core + Right Eye
     HorizontalLayout {

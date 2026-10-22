@@ -310,19 +310,20 @@ classDiagram
     Avatar --> "2" CyberEye : Ocular Kiri & Kanan
 ```
 
-### 9 Spektrum Warna & Perilaku Kognitif:
+### 10 Spektrum Warna & Perilaku Kognitif:
 
 | Status (`state`) | Teks Tampil (`status_text_display`) | Kode Hex Warna | Efek Animasi Slint | Perilaku Logika |
 | :--- | :--- | :--- | :--- | :--- |
 | `idle` | *"Online & Siaga"* | `#00E5FF` (Cyan Lembut) | Berkedip natural setiap 3.5 detik | Bridge standby menunggu ucapan pengguna. |
 | `listening` | *"Mendengarkan Tuan Faqih..."* | `#00B4D8` (Vibrant Cyan-Blue) | Pupil melebar (`dilation: 1.25`), denyut audio reaktif | Audio mikrofon dihitung RMS-nya dan ditransmisikan. |
+| `transmitting_audio` | *"Mentransmisikan suara (WASAPI 16kHz)..."* | `#00E5FF` (Electric Cyan) | Denyut gelombang vokal aktif | Transmisi aliran suara lisan pengguna ke server. |
 | `thinking` | *"Sedang menalar & memproses..."* | `#FFB300` (Cognitive Gold) | **Rotasi Giroskopik Orbit 360° per 2.0s** (Mata kiri CCW, kanan CW) | Server sedang menjalankan inferensi LLM Gemini. |
 | `speaking` | *"N.E.X.A sedang berbicara..."* | `#00FF88` (Cyber Emerald) | Pupil modulasi vokal, denyut iris membesar | Suara AI diterima dan diputar di speaker via WASAPI. |
 | `barge_in` | *"Mendengarkan interupsi Tuan..."* | `#E0F7FA` (Flash Cyan) | Denyut kilat putih seketika | Suara AI dihentikan seketika karena pengguna menyela. |
-| `screen_sharing`| *"Mentransmisikan layar & audio..."*| `#00B0FF` (Holographic Azure) | **Laser Scanner Bar** menyapu vertikal secara sinusoidal | Direct3D 11 GPU capture aktif mengirim 1 FPS. |
+| `screen_sharing` / `transmitting_screen` | *"Mentransmisikan layar & audio (D3D11 1 FPS)..."*| `#00B0FF` (Holographic Azure) | **Laser Scanner Bar** menyapu vertikal secara sinusoidal | Direct3D 11 GPU capture aktif mengirim 1 FPS. |
 | `tool_executing`| *"Mengeksekusi perintah sistem..."*| `#7C4DFF` (Quantum Violet) | Inti Arc Reactor berdenyut cepat | Otomasi keyboard/mouse/eksekusi aplikasi lokal. |
-| `connecting` | *"Menghubungkan kembali..."* | `#FF9100` (Amber) | **Rotasi Giroskopik Cepat 360° per 1.5s** | Percobaan jabat tangan WebSocket dengan *exponential backoff*. |
-| `offline` | *"Bridge Terputus (Offline)"* | `#37474F` (Deep Slate Gray) | Kelopak mata tertutup penuh (`blink: 1.0`, mode tidur) | Klien terputus dari server, audio engine non-aktif. |
+| `connecting` / `reconnecting` | *"Menghubungkan kembali ke server..."* | `#FF9100` (Amber) | **Rotasi Giroskopik Cepat 360° per 1.5s** | Percobaan jabat tangan WebSocket dengan *exponential backoff*. |
+| `offline` / `disconnected` | *"Bridge Terputus (Offline)"* | `#37474F` (Deep Slate Gray) | Kelopak mata tertutup penuh (`blink: 1.0`, mode tidur) | Klien terputus dari server, audio engine non-aktif. |
 
 ### Detail Anatomi `CyberEye`:
 1. **Static Outer Telemetry Brackets:** Braket HUD sudut lingkaran luar (`theme_color.transparentize(0.7)`).

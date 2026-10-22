@@ -6,13 +6,14 @@
 // Slint code generation imports
 slint::include_modules!();
 
-/// 9 Cognitive States for the Sentient Cybernetic Avatar
+/// 10 Cognitive & Operational States for the Sentient Cybernetic Avatar
 /// Perfectly aligned with Mobile Bridge and N.E.X.A Server.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CognitiveState {
     Idle,
     Listening,
+    TransmittingAudio,
     Thinking,
     Speaking,
     BargeIn,
@@ -28,6 +29,7 @@ impl CognitiveState {
         match self {
             Self::Idle => "idle",
             Self::Listening => "listening",
+            Self::TransmittingAudio => "transmitting_audio",
             Self::Thinking => "thinking",
             Self::Speaking => "speaking",
             Self::BargeIn => "barge_in",
@@ -42,13 +44,14 @@ impl CognitiveState {
         match s.trim().to_lowercase().as_str() {
             "idle" | "ready" => Self::Idle,
             "listening" => Self::Listening,
+            "transmitting_audio" | "transmitting-audio" | "transmitting" => Self::TransmittingAudio,
             "thinking" | "processing" => Self::Thinking,
             "speaking" => Self::Speaking,
             "barge_in" | "interrupted" => Self::BargeIn,
-            "screen_sharing" | "vision" => Self::ScreenSharing,
+            "screen_sharing" | "vision" | "transmitting_screen" | "transmitting-screen" => Self::ScreenSharing,
             "tool_executing" | "executing" => Self::ToolExecuting,
             "connecting" | "reconnecting" => Self::Connecting,
-            "offline" | "disconnecting" => Self::Offline,
+            "offline" | "disconnecting" | "disconnected" => Self::Offline,
             _ => Self::Idle,
         }
     }
@@ -66,21 +69,23 @@ impl CognitiveState {
 
     pub fn hex_color(&self) -> &'static str {
         match self {
-            Self::Idle => "#00E5FF",          // Soft Cyan
-            Self::Listening => "#00B4D8",     // Vibrant Cyan-Blue
-            Self::Thinking => "#FFB300",      // Cognitive Gold
-            Self::Speaking => "#00FF88",      // Cyber Emerald
-            Self::BargeIn => "#E0F7FA",       // Flash White-Cyan
-            Self::ScreenSharing => "#00B0FF", // Holographic Azure
-            Self::ToolExecuting => "#7C4DFF", // Quantum Violet
-            Self::Connecting => "#FF9100",    // Amber Warning
-            Self::Offline => "#37474F",       // Deep Slate Gray
+            Self::Idle => "#00E5FF",              // Soft Cyan
+            Self::Listening => "#00B4D8",         // Vibrant Cyan-Blue
+            Self::TransmittingAudio => "#00E5FF", // Electric Cyan
+            Self::Thinking => "#FFB300",          // Cognitive Gold
+            Self::Speaking => "#00FF88",          // Cyber Emerald
+            Self::BargeIn => "#E0F7FA",           // Flash White-Cyan
+            Self::ScreenSharing => "#00B0FF",     // Holographic Azure
+            Self::ToolExecuting => "#7C4DFF",     // Quantum Violet
+            Self::Connecting => "#FF9100",        // Amber Warning
+            Self::Offline => "#37474F",           // Deep Slate Gray
         }
     }
 
     pub fn status_text(&self) -> &'static str {
         match self {
             Self::Listening => "Mendengarkan Tuan Faqih...",
+            Self::TransmittingAudio => "Mentransmisikan suara (WASAPI 16kHz)...",
             Self::Thinking => "Sedang menalar & memproses...",
             Self::Speaking => "N.E.X.A sedang berbicara...",
             Self::BargeIn => "Mendengarkan interupsi Tuan...",
@@ -97,7 +102,7 @@ impl CognitiveState {
     }
 
     pub fn is_vocal(&self) -> bool {
-        matches!(self, Self::Speaking | Self::Listening)
+        matches!(self, Self::Speaking | Self::Listening | Self::TransmittingAudio)
     }
 }
 
@@ -177,6 +182,8 @@ mod tests {
         assert_eq!(CognitiveState::Idle.hex_color(), "#00E5FF");
         assert_eq!(CognitiveState::Listening.as_str(), "listening");
         assert_eq!(CognitiveState::Listening.hex_color(), "#00B4D8");
+        assert_eq!(CognitiveState::TransmittingAudio.as_str(), "transmitting_audio");
+        assert_eq!(CognitiveState::TransmittingAudio.hex_color(), "#00E5FF");
         assert_eq!(CognitiveState::Thinking.as_str(), "thinking");
         assert_eq!(CognitiveState::Thinking.hex_color(), "#FFB300");
         assert_eq!(CognitiveState::Speaking.as_str(), "speaking");
@@ -198,15 +205,19 @@ mod tests {
         assert_eq!(CognitiveState::from_str_loose("idle"), CognitiveState::Idle);
         assert_eq!(CognitiveState::from_str_loose("READY"), CognitiveState::Idle);
         assert_eq!(CognitiveState::from_str_loose("listening"), CognitiveState::Listening);
+        assert_eq!(CognitiveState::from_str_loose("transmitting_audio"), CognitiveState::TransmittingAudio);
+        assert_eq!(CognitiveState::from_str_loose("transmitting"), CognitiveState::TransmittingAudio);
         assert_eq!(CognitiveState::from_str_loose("processing"), CognitiveState::Thinking);
         assert_eq!(CognitiveState::from_str_loose("THINKING"), CognitiveState::Thinking);
         assert_eq!(CognitiveState::from_str_loose("speaking"), CognitiveState::Speaking);
         assert_eq!(CognitiveState::from_str_loose("interrupted"), CognitiveState::BargeIn);
         assert_eq!(CognitiveState::from_str_loose("vision"), CognitiveState::ScreenSharing);
+        assert_eq!(CognitiveState::from_str_loose("transmitting_screen"), CognitiveState::ScreenSharing);
         assert_eq!(CognitiveState::from_str_loose("executing"), CognitiveState::ToolExecuting);
         assert_eq!(CognitiveState::from_str_loose("reconnecting"), CognitiveState::Connecting);
         assert_eq!(CognitiveState::from_str_loose("offline"), CognitiveState::Offline);
         assert_eq!(CognitiveState::from_str_loose("disconnecting"), CognitiveState::Offline);
+        assert_eq!(CognitiveState::from_str_loose("disconnected"), CognitiveState::Offline);
         assert_eq!(CognitiveState::from_str_loose("unknown_value"), CognitiveState::Idle);
     }
 
@@ -221,6 +232,7 @@ mod tests {
     #[test]
     fn test_cognitive_state_status_text_mobile_parity() {
         assert_eq!(CognitiveState::Listening.status_text(), "Mendengarkan Tuan Faqih...");
+        assert_eq!(CognitiveState::TransmittingAudio.status_text(), "Mentransmisikan suara (WASAPI 16kHz)...");
         assert_eq!(CognitiveState::Thinking.status_text(), "Sedang menalar & memproses...");
         assert_eq!(CognitiveState::Speaking.status_text(), "N.E.X.A sedang berbicara...");
         assert_eq!(CognitiveState::BargeIn.status_text(), "Mendengarkan interupsi Tuan...");
@@ -244,6 +256,7 @@ mod tests {
     fn test_cognitive_state_is_vocal() {
         assert!(CognitiveState::Speaking.is_vocal());
         assert!(CognitiveState::Listening.is_vocal());
+        assert!(CognitiveState::TransmittingAudio.is_vocal());
         assert!(!CognitiveState::Thinking.is_vocal());
         assert!(!CognitiveState::Idle.is_vocal());
         assert!(!CognitiveState::BargeIn.is_vocal());
