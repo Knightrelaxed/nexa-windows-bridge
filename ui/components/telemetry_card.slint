@@ -1,0 +1,150 @@
+// ============================================================
+// SYSTEM TELEMETRY CARD COMPONENT
+// Hardware Meters: CPU, RAM, Latency, WASAPI Audio, AEC3 DSP
+// ============================================================
+
+export component TelemetryCard inherits Rectangle {
+    in property <string> cpu_text: "12%";
+    in property <float> cpu_val: 0.12;
+    in property <string> ram_text: "34%";
+    in property <float> ram_val: 0.34;
+    in property <string> ping_text: "24ms";
+    in property <string> wasapi_text: "WASAPI 48kHz (AEC3)";
+    in property <string> aec3_text: "Active (-18dB)";
+
+    background: #0B101AE6;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: #30363D;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        // Card Header
+        HorizontalLayout {
+            alignment: space-between;
+            height: 20px;
+
+            HorizontalLayout {
+                spacing: 6px;
+                Rectangle {
+                    width: 7px;
+                    height: 7px;
+                    border-radius: 3.5px;
+                    y: (parent.height - self.height) / 2;
+                    background: #58A6FF;
+                }
+                Text {
+                    text: "SYSTEM TELEMETRY";
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: #C9D1D9;
+                    vertical-alignment: center;
+                }
+            }
+
+            Text {
+                text: "DirectX 11 Native";
+                font-size: 10px;
+                color: #8B949E;
+                vertical-alignment: center;
+            }
+        }
+
+        // Metrics Meters
+        VerticalLayout {
+            spacing: 6px;
+
+            // CPU Usage Meter
+            VerticalLayout {
+                spacing: 2px;
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text { text: "CPU Usage:"; font-size: 10px; color: #8B949E; }
+                    Text { text: root.cpu_text; font-size: 10px; font-weight: 700; color: #58A6FF; }
+                }
+                Rectangle {
+                    height: 5px;
+                    background: #161B22;
+                    border-radius: 2.5px;
+                    Rectangle {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width * max(0.05, min(1.0, root.cpu_val));
+                        height: parent.height;
+                        border-radius: 2.5px;
+                        background: #00E5FF;
+                    }
+                }
+            }
+
+            // RAM Allocation Meter
+            VerticalLayout {
+                spacing: 2px;
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text { text: "RAM Allocation:"; font-size: 10px; color: #8B949E; }
+                    Text { text: root.ram_text; font-size: 10px; font-weight: 700; color: #58A6FF; }
+                }
+                Rectangle {
+                    height: 5px;
+                    background: #161B22;
+                    border-radius: 2.5px;
+                    Rectangle {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width * max(0.05, min(1.0, root.ram_val));
+                        height: parent.height;
+                        border-radius: 2.5px;
+                        background: #38BDF8;
+                    }
+                }
+            }
+
+            // Latency & Audio Rows
+            Rectangle {
+                background: #06090ECC;
+                border-radius: 4px;
+
+                VerticalLayout {
+                    padding: 6px;
+                    spacing: 4px;
+
+                    HorizontalLayout {
+                        alignment: space-between;
+                        Text { text: "Round-Trip Latency:"; font-size: 10px; color: #8B949E; }
+                        Text { text: root.ping_text; font-size: 10px; font-weight: 700; color: #3FB950; }
+                    }
+
+                    HorizontalLayout {
+                        alignment: space-between;
+                        Text { text: "WASAPI Audio:"; font-size: 10px; color: #8B949E; }
+                        Text { text: root.wasapi_text; font-size: 10px; color: #C9D1D9; }
+                    }
+
+                    HorizontalLayout {
+                        alignment: space-between;
+                        Text { text: "AEC3 Noise Suppression:"; font-size: 10px; color: #8B949E; }
+                        Text { text: root.aec3_text; font-size: 10px; color: #3FB950; }
+                    }
+                }
+            }
+        }
+
+        // Footer
+        HorizontalLayout {
+            alignment: space-between;
+            Text {
+                text: "Buffer: 10ms Lock-Free";
+                font-size: 9px;
+                color: #8B949E;
+            }
+            Text {
+                text: "Audio Clock: Sync";
+                font-size: 9px;
+                color: #00E5FF;
+            }
+        }
+    }
+}

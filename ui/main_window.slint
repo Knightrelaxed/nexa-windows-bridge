@@ -1,13 +1,18 @@
 // ============================================================
 // WINDOWS BRIDGE MAIN INTERFACE
-// Dual-Mode Slint Window (Compact Floating Companion vs Fullscreen Command Center)
+// Dual-Mode Slint Window (Compact Floating Companion vs Modern 3-Column Command Center)
 // ============================================================
 
 import { Button } from "std-widgets.slint";
-import { Avatar } from "components/avatar.slint";
+import { ArcReactorOrb } from "components/arc_reactor.slint";
 import { AudioMeter } from "components/audio_meter.slint";
 import { SettingsDialog } from "settings_dialog.slint";
 import { OverlayWindow } from "overlay_window.slint";
+import { VisionCard } from "components/vision_card.slint";
+import { AutomationCard } from "components/automation_card.slint";
+import { TranscriptCard } from "components/transcript_card.slint";
+import { TelemetryCard } from "components/telemetry_card.slint";
+import { HotkeysCard } from "components/hotkeys_card.slint";
 
 export { OverlayWindow }
 
@@ -18,7 +23,7 @@ export component MainWindow inherits Window {
     min-height: 220px;
     preferred-width: root.is_fullscreen ? 1920px : 380px;
     preferred-height: root.is_fullscreen ? 1080px : 250px;
-    background: #0D1117;
+    background: #080B10;
     default-font-family: "Segoe UI";
 
     // Dual-Mode State properties
@@ -26,7 +31,7 @@ export component MainWindow inherits Window {
     in-out property <bool> is_mic_muted: false;
     in-out property <bool> is_screen_sharing: false;
     in-out property <string> connection_status: "offline"; // "connected" | "connecting" | "offline"
-    in-out property <string> avatar_state: "offline";       // "idle" | "listening" | "thinking" | "speaking" | "barge_in" | "screen_sharing" | "tool_executing" | "connecting" | "offline"
+    in-out property <string> avatar_state: "offline";       // "idle" | "listening" | "transmitting_audio" | "thinking" | "speaking" | "barge_in" | "screen_sharing" | "tool_executing" | "connecting" | "offline"
     in-out property <float> pulse_scale: 1.0;
     in-out property <float> volume_level: 0.0;             // Real-time audio RMS volume level (0.0 to 1.0)
     in-out property <string> status_message: "Siap terhubung ke N.E.X.A Server";
@@ -35,11 +40,29 @@ export component MainWindow inherits Window {
     // Computed property: true if explicitly fullscreen or window is maximized/large
     property <bool> is_expanded_view: root.is_fullscreen || root.width > 600px || root.height > 420px;
 
+    // Modular HUD Card Visibility Controls (Customizable via Settings)
+    in-out property <bool> show_card_vision: true;
+    in-out property <bool> show_card_automation: true;
+    in-out property <bool> show_card_transcript: true;
+    in-out property <bool> show_card_telemetry: true;
+    in-out property <bool> show_card_hotkeys: true;
+
     // Telemetry properties for Fullscreen HUD
     in-out property <string> telemetry_cpu: "12%";
+    in-out property <float> telemetry_cpu_val: 0.12;
     in-out property <string> telemetry_ram: "34%";
+    in-out property <float> telemetry_ram_val: 0.34;
     in-out property <string> telemetry_audio: "WASAPI 48kHz (AEC3)";
     in-out property <string> telemetry_ping: "24ms";
+
+    // Live Transcript Properties
+    in-out property <string> transcript_user_text: "";
+    in-out property <string> transcript_assistant_text: "";
+
+    // Automation Log Stream Properties
+    in-out property <string> auto_log_1: "Menunggu perintah otomasi AI...";
+    in-out property <string> auto_log_2: "";
+    in-out property <string> auto_log_3: "";
 
     // Config bindings
     in-out property <string> cfg_server_url: "";
@@ -55,7 +78,7 @@ export component MainWindow inherits Window {
     callback toggle_mic_mute();
     callback toggle_screen_share();
     callback open_settings();
-    callback save_settings(string, string, int, bool, bool);
+    callback save_settings(string, string, int, bool, bool, bool, bool, bool, bool, bool);
     callback test_connection(string, string);
 
     // Primary Computed Status Text (100% Mobile Bridge Parity)
@@ -137,7 +160,7 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // 2. Central Companion Card: Avatar + Speech + Audio Meter
+            // 2. Central Companion Card: Arc Reactor Orb + Speech + Audio Meter
             Rectangle {
                 background: #161B22CC;
                 border-radius: 8px;
@@ -153,13 +176,11 @@ export component MainWindow inherits Window {
                     spacing: 12px;
                     alignment: center;
 
-                    // Left: Compact Cybernetic Avatar
-                    Avatar {
+                    // Left: Compact Holographic Arc Reactor Orb
+                    ArcReactorOrb {
                         state: root.avatar_state;
                         pulse_scale: root.pulse_scale;
-                        eye_size: 44px;
-                        width: 130px;
-                        height: 52px;
+                        orb_size: 58px;
                     }
 
                     // Right: Status Narrative & Real-time Equalizer
@@ -267,7 +288,7 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // 4. Quick Control Action Bar (Strict 36px height - Never stretches into massive blocks!)
+            // 4. Quick Control Action Bar (Strict 36px height)
             HorizontalLayout {
                 height: 36px;
                 spacing: 8px;
@@ -291,69 +312,82 @@ export component MainWindow inherits Window {
             }
         }
 
-        // ==========================================
-        // MODE 2: FULL SCREEN (J.A.R.V.I.S COMMAND CENTER)
-        // ==========================================
+        // ==============================================================
+        // MODE 2: FULL SCREEN (MODERN 3-COLUMN COMMAND CENTER)
+        // ==============================================================
         if root.is_expanded_view : VerticalLayout {
-            padding: 24px;
-            spacing: 20px;
+            padding: 14px;
+            spacing: 12px;
             alignment: space-between;
 
-            // Top HUD Telemetry Bar
+            // 1. Top Window Title & App Identity Bar
             HorizontalLayout {
-                height: 44px;
+                height: 36px;
                 alignment: space-between;
 
-                // Left: HUD Telemetry Panel
-                Rectangle {
-                    background: #161B22CC;
-                    border-radius: 8px;
-                    border-width: 1px;
-                    border-color: #30363D;
-                    height: 44px;
-
-                    HorizontalLayout {
-                        padding-left: 18px;
-                        padding-right: 18px;
-                        spacing: 24px;
-                        alignment: center;
+                // Left: Branding & Status Badge
+                HorizontalLayout {
+                    spacing: 10px;
+                    Rectangle {
+                        width: 22px;
+                        height: 22px;
+                        border-radius: 4px;
+                        y: (parent.height - self.height) / 2;
+                        background: #00E5FF1A;
+                        border-width: 1px;
+                        border-color: #00E5FF80;
 
                         Text {
-                            text: "💻 CPU: " + root.telemetry_cpu;
-                            font-size: 12px;
-                            color: #58A6FF;
+                            text: "NX";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: #00E5FF;
+                            horizontal-alignment: center;
                             vertical-alignment: center;
                         }
-                        Text {
-                            text: "🧠 RAM: " + root.telemetry_ram;
-                            font-size: 12px;
-                            color: #58A6FF;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: "🎙️ WASAPI Audio: " + (root.connection_status == "connected" ? "Active (16kHz)" : "Standby");
-                            font-size: 12px;
-                            color: root.connection_status == "connected" ? #3FB950 : #8B949E;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: "🛡️ AEC3: " + (root.connection_status == "connected" ? "Active (-18dB)" : "Standby");
-                            font-size: 12px;
-                            color: root.connection_status == "connected" ? #3FB950 : #8B949E;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: "⚡ Latency: " + root.telemetry_ping;
-                            font-size: 12px;
-                            color: #79C0FF;
-                            vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: "N.E.X.A WINDOWS BRIDGE v2.4 [DIRECTX 11 NATIVE]";
+                        font-size: 13px;
+                        font-weight: 700;
+                        color: #F0F6FC;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle {
+                        height: 20px;
+                        border-radius: 10px;
+                        background: #00E5FF14;
+                        border-width: 1px;
+                        border-color: #00E5FF4D;
+                        y: (parent.height - self.height) / 2;
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 4px;
+                            Rectangle {
+                                width: 6px;
+                                height: 6px;
+                                border-radius: 3px;
+                                y: (parent.height - self.height) / 2;
+                                background: root.connection_status == "connected" ? #3FB950 : #FF9100;
+                            }
+                            Text {
+                                text: "LIVE WASAPI 48kHz";
+                                font-size: 10px;
+                                font-weight: 600;
+                                color: root.connection_status == "connected" ? #3FB950 : #FF9100;
+                                vertical-alignment: center;
+                            }
                         }
                     }
                 }
 
-                // Right: Fullscreen Actions
+                // Right: Controls
                 HorizontalLayout {
-                    spacing: 10px;
+                    spacing: 8px;
                     Button {
                         text: "⤡ Windowed Mode [F11]";
                         clicked => {
@@ -368,129 +402,207 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // Center: Imposing Avatar & Dialog Transcript
-            VerticalLayout {
-                alignment: center;
-                spacing: 20px;
+            // 2. Main 3-Column Command Center Workspace
+            HorizontalLayout {
+                spacing: 12px;
 
-                HorizontalLayout {
-                    alignment: center;
-                    Avatar {
-                        state: root.avatar_state;
-                        pulse_scale: root.pulse_scale;
-                        eye_size: 120px;
-                        width: 340px;
-                        height: 140px;
+                // ── LEFT COLUMN: Vision & Automation ─────────────────
+                if root.show_card_vision || root.show_card_automation : VerticalLayout {
+                    width: 280px;
+                    spacing: 12px;
+
+                    if root.show_card_vision : VisionCard {
+                        is_streaming: root.is_screen_sharing;
+                        toggle_share => { root.toggle_screen_share(); }
+                    }
+
+                    if root.show_card_automation : AutomationCard {
+                        log_1: root.auto_log_1;
+                        log_2: root.auto_log_2;
+                        log_3: root.auto_log_3;
                     }
                 }
 
-                Text {
-                    horizontal-alignment: center;
-                    text: root.status_text_display;
-                    font-size: 24px;
-                    font-weight: 700;
-                    color: root.avatar_state == "listening"          ? #00B4D8 :
-                           root.avatar_state == "transmitting_audio" ? #00E5FF :
-                           root.avatar_state == "thinking"           ? #FFB300 :
-                           root.avatar_state == "speaking"           ? #00FF88 :
-                           (root.avatar_state == "screen_sharing" || root.avatar_state == "transmitting_screen") ? #00B0FF :
-                           root.avatar_state == "tool_executing"     ? #7C4DFF :
-                           root.avatar_state == "idle"               ? #00E5FF : #C9D1D9;
+                // ── CENTER COLUMN: Arc Reactor Orb & Transcript ───────
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 12px;
+                    alignment: space-between;
+
+                    // Centerpiece Box: Orb + Equalizer + Status
+                    Rectangle {
+                        background: #0B101AE6;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: #30363D;
+
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 12px;
+                            alignment: center;
+
+                            HorizontalLayout {
+                                alignment: center;
+                                ArcReactorOrb {
+                                    state: root.avatar_state;
+                                    pulse_scale: root.pulse_scale;
+                                    orb_size: 200px;
+                                }
+                            }
+
+                            // Wide Audio Frequency Spectrum
+                            AudioMeter {
+                                volume_level: root.volume_level;
+                                is_active: root.avatar_state == "speaking" || root.avatar_state == "listening" || root.avatar_state == "transmitting_audio";
+                                theme_color: root.avatar_state == "listening"          ? #00B4D8 :
+                                             root.avatar_state == "transmitting_audio" ? #00E5FF :
+                                             root.avatar_state == "speaking"           ? #00FF88 :
+                                             root.avatar_state == "thinking"           ? #FFB300 :
+                                             root.avatar_state == "idle"               ? #00E5FF : #546E7A;
+                                bar_count: 36;
+                                bar_width: 4px;
+                                bar_spacing: 3px;
+                                max_bar_height: 32px;
+                            }
+
+                            Text {
+                                horizontal-alignment: center;
+                                text: root.status_text_display;
+                                font-size: 20px;
+                                font-weight: 700;
+                                color: root.avatar_state == "listening"          ? #00B4D8 :
+                                       root.avatar_state == "transmitting_audio" ? #00E5FF :
+                                       root.avatar_state == "thinking"           ? #FFB300 :
+                                       root.avatar_state == "speaking"           ? #00FF88 :
+                                       (root.avatar_state == "screen_sharing" || root.avatar_state == "transmitting_screen") ? #00B0FF :
+                                       root.avatar_state == "tool_executing"     ? #7C4DFF :
+                                       root.avatar_state == "idle"               ? #00E5FF : #C9D1D9;
+                            }
+
+                            Text {
+                                horizontal-alignment: center;
+                                text: root.status_message;
+                                font-size: 12px;
+                                color: #8B949E;
+                            }
+                        }
+                    }
+
+                    // Transcript Card (Center Bottom)
+                    if root.show_card_transcript : TranscriptCard {
+                        user_text: root.transcript_user_text;
+                        assistant_text: root.transcript_assistant_text;
+                    }
                 }
 
-                Text {
-                    horizontal-alignment: center;
-                    text: root.status_message;
-                    font-size: 14px;
-                    color: #8B949E;
-                }
+                // ── RIGHT COLUMN: Telemetry, Hotkeys & Action Dock ───
+                if root.show_card_telemetry || root.show_card_hotkeys : VerticalLayout {
+                    width: 280px;
+                    spacing: 12px;
 
-                // Wide Frequency Spectrum Audio Equalizer
-                AudioMeter {
-                    volume_level: root.volume_level;
-                    is_active: root.avatar_state == "speaking" || root.avatar_state == "listening" || root.avatar_state == "transmitting_audio";
-                    theme_color: root.avatar_state == "listening"          ? #00B4D8 :
-                                 root.avatar_state == "transmitting_audio" ? #00E5FF :
-                                 root.avatar_state == "speaking"           ? #00FF88 :
-                                 root.avatar_state == "thinking"           ? #FFB300 :
-                                 root.avatar_state == "idle"               ? #00E5FF : #546E7A;
-                    bar_count: 48;
-                    bar_width: 4px;
-                    bar_spacing: 4px;
-                    max_bar_height: 38px;
+                    if root.show_card_telemetry : TelemetryCard {
+                        cpu_text: root.telemetry_cpu;
+                        cpu_val: root.telemetry_cpu_val;
+                        ram_text: root.telemetry_ram;
+                        ram_val: root.telemetry_ram_val;
+                        ping_text: root.telemetry_ping;
+                        wasapi_text: root.telemetry_audio;
+                    }
+
+                    if root.show_card_hotkeys : HotkeysCard {}
+
+                    // Action Controls Card
+                    Rectangle {
+                        background: #0B101AE6;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: #30363D;
+                        height: 52px;
+
+                        HorizontalLayout {
+                            padding: 8px;
+                            spacing: 8px;
+
+                            Button {
+                                text: root.is_mic_muted ? "🔇 Unmute" : "🎙️ Mute";
+                                clicked => {
+                                    root.is_mic_muted = !root.is_mic_muted;
+                                    root.toggle_mic_mute();
+                                }
+                            }
+                            Button {
+                                text: root.is_screen_sharing ? "⏹️ Layar" : "👁️ Layar";
+                                clicked => { root.toggle_screen_share(); }
+                            }
+                            Button {
+                                text: root.connection_status == "connected" ? "Putuskan" : "Hubungkan";
+                                primary: root.connection_status != "connected";
+                                clicked => { root.toggle_connect(); }
+                            }
+                        }
+                    }
                 }
             }
 
-            // Bottom Fullscreen HUD Action Dock (Clean floating pill container)
+            // 3. Bottom App Shell Diagnostic Status Bar
             HorizontalLayout {
-                alignment: center;
-                height: 52px;
+                height: 22px;
+                alignment: space-between;
 
-                Rectangle {
-                    background: #161B22E6;
-                    border-radius: 20px;
-                    border-width: 1px;
-                    border-color: #30363D;
-                    height: 52px;
-
-                    HorizontalLayout {
-                        padding-left: 20px;
-                        padding-right: 20px;
-                        spacing: 16px;
-                        alignment: center;
-
-                        Button {
-                            text: root.is_mic_muted ? "🔇 Unmute Mic" : "🎙️ Mute Mic";
-                            clicked => {
-                                root.is_mic_muted = !root.is_mic_muted;
-                                root.toggle_mic_mute();
-                            }
-                        }
-                        Button {
-                            text: root.is_screen_sharing ? "⏹️ Hentikan Layar" : "👁️ Berbagi Layar (1 FPS)";
-                            clicked => { root.toggle_screen_share(); }
-                        }
-                        Button {
-                            text: root.connection_status == "connected" ? "Putuskan Sambungan" : "Hubungkan ke Server";
-                            primary: root.connection_status != "connected";
-                            clicked => { root.toggle_connect(); }
-                        }
-                        Text {
-                            text: "💡 [F11] Layar Penuh | [Win+Alt+N] Boss Key | [Win+Alt+S] Layar";
-                            font-size: 11px;
-                            color: #8B949E;
-                            vertical-alignment: center;
-                        }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: "● Backend: Rust + Slint Native | AEC3: Active | Display: DXGI D3D11";
+                        font-size: 10px;
+                        color: #8B949E;
+                        vertical-alignment: center;
                     }
+                }
+
+                Text {
+                    text: "Device: Lenovo ThinkPad X380 Yoga | Mode: Command Center";
+                    font-size: 10px;
+                    color: #58A6FF;
+                    vertical-alignment: center;
                 }
             }
         }
     }
 
-    // Modal Settings Overlay (Shared across both modes - Strictly bounded to 500x460 max)
+    // Modal Settings Overlay
     if root.show_settings : Rectangle {
         width: 100%;
         height: 100%;
         background: #000000CC;
 
         SettingsDialog {
-            width: min(500px, parent.width - 32px);
-            height: min(460px, parent.height - 32px);
+            width: min(560px, parent.width - 32px);
+            height: min(520px, parent.height - 32px);
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             server_url: root.cfg_server_url;
             auth_token: root.cfg_auth_token;
             low_ram_mode: root.cfg_low_ram_mode;
             autostart: root.cfg_autostart;
+            show_card_vision: root.show_card_vision;
+            show_card_automation: root.show_card_automation;
+            show_card_transcript: root.show_card_transcript;
+            show_card_telemetry: root.show_card_telemetry;
+            show_card_hotkeys: root.show_card_hotkeys;
             test_status_text: root.test_status_text;
             is_testing: root.is_testing;
 
-            save_clicked(url, token, fps, low_ram, autostart) => {
+            save_clicked(url, token, fps, low_ram, autostart, vision, auto, trans, telem, hotkeys) => {
                 root.cfg_server_url = url;
                 root.cfg_auth_token = token;
                 root.cfg_low_ram_mode = low_ram;
                 root.cfg_autostart = autostart;
-                root.save_settings(url, token, fps, low_ram, autostart);
+                root.show_card_vision = vision;
+                root.show_card_automation = auto;
+                root.show_card_transcript = trans;
+                root.show_card_telemetry = telem;
+                root.show_card_hotkeys = hotkeys;
+                root.save_settings(url, token, fps, low_ram, autostart, vision, auto, trans, telem, hotkeys);
                 root.show_settings = false;
             }
             test_connection_clicked(url, token) => {

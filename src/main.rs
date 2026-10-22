@@ -90,6 +90,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         main_window.set_cfg_auth_token(cfg.auth_token.clone().into());
         main_window.set_cfg_low_ram_mode(cfg.low_ram_mode);
         main_window.set_cfg_autostart(is_autostart);
+        main_window.set_show_card_vision(cfg.show_card_vision);
+        main_window.set_show_card_automation(cfg.show_card_automation);
+        main_window.set_show_card_transcript(cfg.show_card_transcript);
+        main_window.set_show_card_telemetry(cfg.show_card_telemetry);
+        main_window.set_show_card_hotkeys(cfg.show_card_hotkeys);
         main_window.set_status_message("Ready to connect.".into());
     }
 
@@ -412,7 +417,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
                 }
-                ServerMessage::StatusUpdate { status, text, .. } => {
+                ServerMessage::StatusUpdate {
+                    status,
+                    text,
+                    user_transcript,
+                } => {
                     let maybe_cog = ui::CognitiveState::try_from_status(&status);
                     let window_weak = window_weak_cmd.clone();
                     let _ = slint::invoke_from_event_loop(move || {
@@ -424,8 +433,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     win.set_pulse_scale(1.0);
                                 }
                             }
-                            if let Some(t) = text {
-                                win.set_status_message(t.into());
+                            if let Some(ref ut) = user_transcript {
+                                win.set_transcript_user_text(ut.clone().into());
+                            }
+                            if let Some(ref t) = text {
+                                win.set_transcript_assistant_text(t.clone().into());
+                                win.set_status_message(t.clone().into());
                             } else if let Some(cog) = maybe_cog {
                                 win.set_status_message(cog.status_text().into());
                             }
@@ -460,6 +473,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ..
                 } => {
                     info!("[MAIN] 🛠️ Executing command '{}' [{}]", action, command_id);
+
+                    let window_weak_auto = window_weak_cmd.clone();
+                    let action_log = format!("Exec: {} [{}]", action, &command_id[..command_id.len().min(8)]);
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(win) = window_weak_auto.upgrade() {
+                            let p1 = win.get_auto_log_1();
+                            let p2 = win.get_auto_log_2();
+                            win.set_auto_log_3(p2);
+                            win.set_auto_log_2(p1);
+                            win.set_auto_log_1(action_log.into());
+                        }
+                    });
 
                     let hl = Arc::clone(&highlighter_cmd);
                     let net_tx = net_client_cmd.clone();
@@ -667,7 +692,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(win) = window_weak.upgrade() {
                     win.set_telemetry_cpu(format!("{}%", cpu_pct).into());
+                    win.set_telemetry_cpu_val((cpu_pct as f32) / 100.0);
                     win.set_telemetry_ram(format!("{}%", ram_pct).into());
+                    win.set_telemetry_ram_val((ram_pct as f32) / 100.0);
 
                     if win.get_is_mic_muted() {
                         win.set_telemetry_audio("WASAPI (Muted)".into());
@@ -688,34 +715,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 8. Hook Slint UI Callbacks
     let config_clone = Arc::clone(&config);
     let window_weak = main_window.as_weak();
-    main_window.on_save_settings(move |url, token, _fps, low_ram, autostart| {
-        let mut cfg = config_clone.lock().unwrap();
-        cfg.server_url = url.to_string();
-        cfg.auth_token = token.to_string();
-        cfg.low_ram_mode = low_ram;
-        cfg.autostart = autostart;
+    main_window.on_save_settings(
+        move |url, token, _fps, low_ram, autostart, vision, auto, trans, telem, hotkeys| {
+            let mut cfg = config_clone.lock().unwrap();
+            cfg.server_url = url.to_string();
+            cfg.auth_token = token.to_string();
+            cfg.low_ram_mode = low_ram;
+            cfg.autostart = autostart;
+            cfg.show_card_vision = vision;
+            cfg.show_card_automation = auto;
+            cfg.show_card_transcript = trans;
+            cfg.show_card_telemetry = telem;
+            cfg.show_card_hotkeys = hotkeys;
 
-        let _ = platform::set_autostart_enabled(autostart);
+            let _ = platform::set_autostart_enabled(autostart);
 
-        match cfg.save() {
-            Ok(_) => {
-                info!("Settings saved successfully (autostart={}).", autostart);
-                if let Some(win) = window_weak.upgrade() {
-                    win.set_cfg_server_url(url.clone());
-                    win.set_cfg_auth_token(token.clone());
-                    win.set_cfg_low_ram_mode(low_ram);
-                    win.set_cfg_autostart(autostart);
-                    win.set_status_message("Settings saved & applied.".into());
+            match cfg.save() {
+                Ok(_) => {
+                    info!("Settings saved successfully (autostart={}).", autostart);
+                    if let Some(win) = window_weak.upgrade() {
+                        win.set_cfg_server_url(url.clone());
+                        win.set_cfg_auth_token(token.clone());
+                        win.set_cfg_low_ram_mode(low_ram);
+                        win.set_cfg_autostart(autostart);
+                        win.set_show_card_vision(vision);
+                        win.set_show_card_automation(auto);
+                        win.set_show_card_transcript(trans);
+                        win.set_show_card_telemetry(telem);
+                        win.set_show_card_hotkeys(hotkeys);
+                        win.set_status_message("Settings saved & applied.".into());
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to save settings: {}", e);
+                    if let Some(win) = window_weak.upgrade() {
+                        win.set_status_message(format!("Error saving settings: {}", e).into());
+                    }
                 }
             }
-            Err(e) => {
-                error!("Failed to save settings: {}", e);
-                if let Some(win) = window_weak.upgrade() {
-                    win.set_status_message(format!("Error saving settings: {}", e).into());
-                }
-            }
-        }
-    });
+        },
+    );
 
     let window_weak = main_window.as_weak();
     main_window.on_test_connection(move |url, token| {

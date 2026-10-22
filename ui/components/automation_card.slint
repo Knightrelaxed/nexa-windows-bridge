@@ -1,0 +1,137 @@
+// ============================================================
+// AUTOMATION LOG CARD COMPONENT
+// Real-Time Win32 Native Desktop Automation Activity Feed
+// ============================================================
+
+export component AutomationCard inherits Rectangle {
+    in property <string> log_1: "Menunggu perintah otomasi AI...";
+    in property <string> log_2: "";
+    in property <string> log_3: "";
+
+    background: #0B101AE6;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: #30363D;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        // Card Header
+        HorizontalLayout {
+            alignment: space-between;
+            height: 20px;
+
+            HorizontalLayout {
+                spacing: 6px;
+                Rectangle {
+                    width: 7px;
+                    height: 7px;
+                    border-radius: 3.5px;
+                    y: (parent.height - self.height) / 2;
+                    background: #7C4DFF;
+                }
+                Text {
+                    text: "AUTOMATION LOG";
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: #C9D1D9;
+                    vertical-alignment: center;
+                }
+            }
+
+            Text {
+                text: "Win32 Hook";
+                font-size: 10px;
+                color: #8B949E;
+                vertical-alignment: center;
+            }
+        }
+
+        // Log Items List
+        VerticalLayout {
+            spacing: 6px;
+
+            // Log Item 1 (Most recent)
+            Rectangle {
+                background: #06090ECC;
+                border-radius: 4px;
+
+                HorizontalLayout {
+                    Rectangle {
+                        width: 2.5px;
+                        background: #00E5FF;
+                    }
+                    HorizontalLayout {
+                        padding: 6px;
+                        Text {
+                            text: root.log_1;
+                            font-size: 10px;
+                            color: #C9D1D9;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+
+            // Log Item 2
+            if root.log_2 != "" : Rectangle {
+                background: #06090ECC;
+                border-radius: 4px;
+
+                HorizontalLayout {
+                    Rectangle {
+                        width: 2.5px;
+                        background: #3FB950;
+                    }
+                    HorizontalLayout {
+                        padding: 6px;
+                        Text {
+                            text: root.log_2;
+                            font-size: 10px;
+                            color: #8B949E;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+
+            // Log Item 3
+            if root.log_3 != "" : Rectangle {
+                background: #06090ECC;
+                border-radius: 4px;
+
+                HorizontalLayout {
+                    Rectangle {
+                        width: 2.5px;
+                        background: #7C4DFF;
+                    }
+                    HorizontalLayout {
+                        padding: 6px;
+                        Text {
+                            text: root.log_3;
+                            font-size: 10px;
+                            color: #8B949E;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Card Footer
+        HorizontalLayout {
+            alignment: space-between;
+            Text {
+                text: "UI Automation API: Connected";
+                font-size: 9px;
+                color: #8B949E;
+            }
+            Text {
+                text: "Rate: Active";
+                font-size: 9px;
+                color: #00E5FF;
+            }
+        }
+    }
+}

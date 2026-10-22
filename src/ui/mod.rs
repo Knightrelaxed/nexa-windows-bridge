@@ -174,6 +174,24 @@ mod tests {
         // 12. Verify Status Message Binding
         main_window.set_status_message("N.E.X.A Connected".into());
         assert_eq!(main_window.get_status_message().as_str(), "N.E.X.A Connected");
+
+        // 13. Verify Modular Card Visibility properties
+        assert!(main_window.get_show_card_vision());
+        assert!(main_window.get_show_card_automation());
+        assert!(main_window.get_show_card_transcript());
+        assert!(main_window.get_show_card_telemetry());
+        assert!(main_window.get_show_card_hotkeys());
+
+        main_window.set_show_card_vision(false);
+        assert!(!main_window.get_show_card_vision());
+        main_window.set_show_card_vision(true);
+        assert!(main_window.get_show_card_vision());
+
+        // 14. Verify Live Transcript and Automation Log bindings
+        main_window.set_transcript_user_text("Halo N.E.X.A".into());
+        assert_eq!(main_window.get_transcript_user_text().as_str(), "Halo N.E.X.A");
+        main_window.set_auto_log_1("Clicked: [Search Bar]".into());
+        assert_eq!(main_window.get_auto_log_1().as_str(), "Clicked: [Search Bar]");
     }
 
     #[test]

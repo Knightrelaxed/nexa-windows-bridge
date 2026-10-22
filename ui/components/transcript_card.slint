@@ -1,0 +1,160 @@
+// ============================================================
+// TRANSKRIP LIVE CARD COMPONENT
+// Dual-Turn Real-Time Conversation Dialogue Bubbles
+// ============================================================
+
+export component TranscriptCard inherits Rectangle {
+    in property <string> user_text: "Bicara kepada N.E.X.A...";
+    in property <string> assistant_text: "N.E.X.A siap mendengarkan Tuan Faqih.";
+
+    background: #0B101AE6;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: #30363D;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        // Header
+        HorizontalLayout {
+            alignment: space-between;
+            height: 20px;
+
+            HorizontalLayout {
+                spacing: 6px;
+                Rectangle {
+                    width: 7px;
+                    height: 7px;
+                    border-radius: 3.5px;
+                    y: (parent.height - self.height) / 2;
+                    background: #3FB950;
+                }
+                Text {
+                    text: "TRANSKRIP LIVE";
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: #C9D1D9;
+                    vertical-alignment: center;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 4px;
+                Rectangle {
+                    width: 6px;
+                    height: 6px;
+                    border-radius: 3px;
+                    y: (parent.height - self.height) / 2;
+                    background: #3FB950;
+                }
+                Text {
+                    text: "Real-time Sync";
+                    font-size: 9px;
+                    color: #3FB950;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Dialogue Entries Container
+        VerticalLayout {
+            spacing: 8px;
+
+            // User Turn Bubble
+            HorizontalLayout {
+                spacing: 8px;
+
+                Rectangle {
+                    width: 48px;
+                    height: 20px;
+                    background: #21262D;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: #30363D;
+
+                    Text {
+                        text: "Faqih";
+                        font-size: 10px;
+                        font-weight: 700;
+                        color: #C9D1D9;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    background: #161B22;
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: #30363D;
+
+                    HorizontalLayout {
+                        padding: 6px;
+                        Text {
+                            text: root.user_text != "" ? "“" + root.user_text + "”" : "“...”";
+                            font-size: 11px;
+                            color: #C9D1D9;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+
+            // N.E.X.A Response Bubble
+            HorizontalLayout {
+                spacing: 8px;
+
+                Rectangle {
+                    width: 48px;
+                    height: 20px;
+                    background: #00E5FF1A;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: #00E5FF4D;
+
+                    Text {
+                        text: "N.E.X.A";
+                        font-size: 10px;
+                        font-weight: 700;
+                        color: #00E5FF;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    background: #0B101A;
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: #00E5FF33;
+
+                    HorizontalLayout {
+                        padding: 6px;
+                        Text {
+                            text: root.assistant_text;
+                            font-size: 11px;
+                            color: #79C0FF;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Footer
+        HorizontalLayout {
+            alignment: space-between;
+            Text {
+                text: "AEC3 Voice Isolator: Online";
+                font-size: 9px;
+                color: #8B949E;
+            }
+            Text {
+                text: "Gemini Live Duplex: Ready";
+                font-size: 9px;
+                color: #3FB950;
+            }
+        }
+    }
+}

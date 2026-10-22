@@ -6,10 +6,16 @@ export component SettingsDialog inherits Rectangle {
     in-out property <int> capture_fps: 1;
     in-out property <bool> low_ram_mode: true;
     in-out property <bool> autostart: false;
+    in-out property <bool> show_card_vision: true;
+    in-out property <bool> show_card_automation: true;
+    in-out property <bool> show_card_transcript: true;
+    in-out property <bool> show_card_telemetry: true;
+    in-out property <bool> show_card_hotkeys: true;
+
     in property <string> test_status_text: "";
     in property <bool> is_testing: false;
 
-    callback save_clicked(string, string, int, bool, bool);
+    callback save_clicked(string, string, int, bool, bool, bool, bool, bool, bool, bool);
     callback test_connection_clicked(string, string);
     callback close_clicked();
 
@@ -19,14 +25,14 @@ export component SettingsDialog inherits Rectangle {
     border-color: #2D3748;
 
     VerticalLayout {
-        padding: 20px;
-        spacing: 14px;
+        padding: 18px;
+        spacing: 12px;
 
         // Header
         HorizontalLayout {
             Text {
-                text: "Bridge Settings";
-                font-size: 17px;
+                text: "Bridge Settings & HUD Modules";
+                font-size: 16px;
                 font-weight: 700;
                 color: #F7FAFC;
                 vertical-alignment: center;
@@ -35,65 +41,108 @@ export component SettingsDialog inherits Rectangle {
 
         // Server URL
         VerticalLayout {
-            spacing: 4px;
+            spacing: 3px;
             Text {
                 text: "Server Endpoint (WebSocket)";
-                font-size: 12px;
+                font-size: 11px;
                 color: #A0AEC0;
             }
             url_input := LineEdit {
                 text: root.server_url;
                 placeholder-text: "wss://nexa-server.example.com/ws";
-                height: 34px;
+                height: 32px;
             }
         }
 
         // Auth Token
         VerticalLayout {
-            spacing: 4px;
+            spacing: 3px;
             Text {
                 text: "Device Authorization Token";
-                font-size: 12px;
+                font-size: 11px;
                 color: #A0AEC0;
             }
             token_input := LineEdit {
                 text: root.auth_token;
                 placeholder-text: "Enter secret token";
                 input-type: password;
-                height: 34px;
+                height: 32px;
             }
         }
 
-        // Performance & Capture
+        // Performance & Startup
         VerticalLayout {
-            spacing: 8px;
+            spacing: 6px;
             Text {
                 text: "Performance & Startup";
-                font-size: 12px;
+                font-size: 11px;
                 color: #A0AEC0;
             }
-            low_ram_check := CheckBox {
-                text: "Ultra-Low RAM Mode (<25MB, Lean Buffer)";
-                checked: root.low_ram_mode;
+            HorizontalLayout {
+                spacing: 12px;
+                low_ram_check := CheckBox {
+                    text: "Low RAM Mode (<25MB)";
+                    checked: root.low_ram_mode;
+                }
+                autostart_check := CheckBox {
+                    text: "Autostart Windows (Tray)";
+                    checked: root.autostart;
+                }
             }
-            autostart_check := CheckBox {
-                text: "Mulai Otomatis saat Windows Menyala (Standby di Tray)";
-                checked: root.autostart;
+        }
+
+        // HUD Card Visibility Customization (Modular Command Center)
+        VerticalLayout {
+            spacing: 6px;
+            Text {
+                text: "Kustomisasi Kartu Command Center (HUD Modular):";
+                font-size: 11px;
+                font-weight: 700;
+                color: #58A6FF;
+            }
+            HorizontalLayout {
+                spacing: 12px;
+                VerticalLayout {
+                    spacing: 4px;
+                    card_vision_check := CheckBox {
+                        text: "Panel Vision Stream (Kiri Atas)";
+                        checked: root.show_card_vision;
+                    }
+                    card_automation_check := CheckBox {
+                        text: "Panel Automation Log (Kiri Bawah)";
+                        checked: root.show_card_automation;
+                    }
+                    card_transcript_check := CheckBox {
+                        text: "Panel Transkrip Live (Tengah)";
+                        checked: root.show_card_transcript;
+                    }
+                }
+                VerticalLayout {
+                    spacing: 4px;
+                    card_telemetry_check := CheckBox {
+                        text: "Panel Telemetry (Kanan Atas)";
+                        checked: root.show_card_telemetry;
+                    }
+                    card_hotkeys_check := CheckBox {
+                        text: "Panel Global Hotkeys (Kanan Bawah)";
+                        checked: root.show_card_hotkeys;
+                    }
+                }
             }
         }
 
         // Test status feedback
         if root.test_status_text != "" : Text {
             text: root.test_status_text;
-            font-size: 12px;
+            font-size: 11px;
             color: #48BB78;
         }
 
-        // Action Buttons (Fixed height 36px so it never stretches into tall blocks)
+        // Action Buttons (Fixed height 34px)
         HorizontalLayout {
             spacing: 10px;
             alignment: end;
-            height: 36px;
+            height: 34px;
 
             Button {
                 text: root.is_testing ? "Testing..." : "Test Connection";
@@ -112,7 +161,12 @@ export component SettingsDialog inherits Rectangle {
                         token_input.text,
                         root.capture_fps,
                         low_ram_check.checked,
-                        autostart_check.checked
+                        autostart_check.checked,
+                        card_vision_check.checked,
+                        card_automation_check.checked,
+                        card_transcript_check.checked,
+                        card_telemetry_check.checked,
+                        card_hotkeys_check.checked
                     );
                 }
             }

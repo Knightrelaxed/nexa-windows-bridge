@@ -1,0 +1,229 @@
+// ============================================================
+// ARC REACTOR HOLOGRAPHIC ORB (J.A.R.V.I.S COMMAND CORE)
+// Circular Concentric Cybernetic Core with 10 Cognitive States
+// ============================================================
+
+export component ArcReactorOrb inherits Rectangle {
+    in property <string> state: "offline";
+    in property <float> pulse_scale: 1.0;
+    in property <length> orb_size: 220px;
+
+    width: root.orb_size;
+    height: root.orb_size;
+    background: transparent;
+
+    // 10 Cognitive Spectrum Colors
+    property <color> theme_color:
+        root.state == "listening"          ? #00B4D8 :
+        root.state == "transmitting_audio" ? #00E5FF :
+        root.state == "thinking"           ? #FFB300 :
+        root.state == "speaking"           ? #00FF88 :
+        root.state == "barge_in"           ? #E0F7FA :
+        (root.state == "screen_sharing" || root.state == "transmitting_screen") ? #00B0FF :
+        root.state == "tool_executing"     ? #7C4DFF :
+        (root.state == "connecting" || root.state == "reconnecting") ? #FF9100 :
+        root.state == "idle"               ? #00E5FF :
+        #37474F; // offline / sleeping
+
+    property <color> glow_color:
+        root.state == "listening"          ? #00B4D833 :
+        root.state == "transmitting_audio" ? #00E5FF33 :
+        root.state == "thinking"           ? #FFB30033 :
+        root.state == "speaking"           ? #00FF8833 :
+        root.state == "barge_in"           ? #E0F7FA66 :
+        (root.state == "screen_sharing" || root.state == "transmitting_screen") ? #00B0FF33 :
+        root.state == "tool_executing"     ? #7C4DFF33 :
+        (root.state == "connecting" || root.state == "reconnecting") ? #FF910033 :
+        root.state == "idle"               ? #00E5FF26 :
+        #2632381A;
+
+    // Continuous Gyroscopic Rotation (360° in 2.0s during thinking, 1.5s during connecting, 12s idle flux)
+    property <angle> gyro_angle_slow:
+        root.state == "thinking" ? (animation-tick() / 2000ms * 360deg) :
+        (root.state == "connecting" || root.state == "reconnecting") ? (animation-tick() / 1500ms * 360deg) :
+        (animation-tick() / 14000ms * 360deg);
+
+    property <angle> gyro_angle_fast:
+        root.state == "thinking" ? -(animation-tick() / 1500ms * 360deg) :
+        (root.state == "connecting" || root.state == "reconnecting") ? -(animation-tick() / 1000ms * 360deg) :
+        -(animation-tick() / 8000ms * 360deg);
+
+    // Dynamic scale driven by audio volume RMS pulse
+    property <float> effective_pulse: root.state == "offline" ? 0.95 : max(0.9, min(1.3, root.pulse_scale));
+
+    // ─────────────────────────────────────────────────────────
+    // 1. Outer Atmospheric Glow Halo
+    // ─────────────────────────────────────────────────────────
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: parent.width * 1.15 * root.effective_pulse;
+        height: parent.height * 1.15 * root.effective_pulse;
+        border-radius: self.width / 2;
+        background: root.glow_color;
+
+        animate width, height {
+            duration: 100ms;
+            easing: ease-out;
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // 2. Outer Orbital Flux Ring (Slow CW Rotation with 4 Ticks)
+    // ─────────────────────────────────────────────────────────
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: parent.width * 0.98;
+        height: parent.height * 0.98;
+        border-radius: self.width / 2;
+        border-width: 1.2px;
+        border-color: root.theme_color.transparentize(0.5);
+        background: transparent;
+        transform-rotation: root.gyro_angle_slow;
+
+        // Top Tick
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: 0px;
+            width: 4px;
+            height: 8px;
+            border-radius: 1px;
+            background: root.theme_color;
+        }
+        // Bottom Tick
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: parent.height - self.height;
+            width: 4px;
+            height: 8px;
+            border-radius: 1px;
+            background: root.theme_color;
+        }
+        // Left Node
+        Rectangle {
+            x: 0px;
+            y: (parent.height - self.height) / 2;
+            width: 8px;
+            height: 4px;
+            border-radius: 1px;
+            background: root.theme_color;
+        }
+        // Right Node
+        Rectangle {
+            x: parent.width - self.width;
+            y: (parent.height - self.height) / 2;
+            width: 8px;
+            height: 4px;
+            border-radius: 1px;
+            background: root.theme_color;
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // 3. Intermediate Orbital Ring (Fast CCW Rotation with Cyan Dots)
+    // ─────────────────────────────────────────────────────────
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: parent.width * 0.86;
+        height: parent.height * 0.86;
+        border-radius: self.width / 2;
+        border-width: 1px;
+        border-color: root.theme_color.transparentize(0.65);
+        background: transparent;
+        transform-rotation: root.gyro_angle_fast;
+
+        // Diagonal Dot 1
+        Rectangle {
+            x: parent.width * 0.15;
+            y: parent.height * 0.15;
+            width: 5px;
+            height: 5px;
+            border-radius: 2.5px;
+            background: root.theme_color;
+        }
+        // Diagonal Dot 2
+        Rectangle {
+            x: parent.width * 0.85 - 5px;
+            y: parent.height * 0.85 - 5px;
+            width: 5px;
+            height: 5px;
+            border-radius: 2.5px;
+            background: root.theme_color;
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // 4. Central Reactor Cylinder & Particle Core
+    // ─────────────────────────────────────────────────────────
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: parent.width * 0.72;
+        height: parent.height * 0.72;
+        border-radius: self.width / 2;
+        border-width: 2px;
+        border-color: root.theme_color;
+        background: #040810;
+        clip: true;
+
+        // Inner Concentric Pulse Arc
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: parent.width * min(1.15, max(0.85, root.effective_pulse));
+            height: parent.width * min(1.15, max(0.85, root.effective_pulse));
+            border-radius: self.width / 2;
+            border-width: 1.5px;
+            border-color: root.theme_color.transparentize(0.3);
+            background: root.theme_color.transparentize(0.88);
+
+            animate width, height {
+                duration: 90ms;
+                easing: ease-out;
+            }
+        }
+
+        // Inner Iris Ring
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: parent.width * 0.52;
+            height: parent.height * 0.52;
+            border-radius: self.width / 2;
+            border-width: 1.5px;
+            border-color: root.theme_color;
+            background: root.theme_color.transparentize(0.5);
+        }
+
+        // Glowing Core Reactor Heart
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: parent.width * 0.28;
+            height: parent.height * 0.28;
+            border-radius: self.width / 2;
+            background: #FFFFFF;
+
+            // Diamond Specular Accent
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: parent.width * 0.6;
+                height: parent.height * 0.6;
+                border-radius: 2px;
+                transform-rotation: 45deg;
+                background: root.theme_color;
+            }
+        }
+
+        // Laser Scanner Sweep Bar (Active during Screen Sharing)
+        if (root.state == "screen_sharing" || root.state == "transmitting_screen") : Rectangle {
+            width: parent.width;
+            height: 2.5px;
+            y: (parent.height - self.height) * (sin(animation-tick() / 600ms * 180deg) + 1.0) / 2.0;
+            background: #E0F7FA;
+        }
+    }
+}

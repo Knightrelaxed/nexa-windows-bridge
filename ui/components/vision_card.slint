@@ -1,0 +1,128 @@
+// ============================================================
+// VISION STREAM (D3D11) CARD COMPONENT
+// DirectX 11 Desktop Duplication Status & Control
+// ============================================================
+
+import { Button } from "std-widgets.slint";
+
+export component VisionCard inherits Rectangle {
+    in property <bool> is_streaming: false;
+    callback toggle_share();
+
+    background: #0B101AE6;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: #30363D;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        // Card Header
+        HorizontalLayout {
+            alignment: space-between;
+            height: 20px;
+
+            HorizontalLayout {
+                spacing: 6px;
+                Rectangle {
+                    width: 7px;
+                    height: 7px;
+                    border-radius: 3.5px;
+                    y: (parent.height - self.height) / 2;
+                    background: root.is_streaming ? #00E5FF : #546E7A;
+                }
+                Text {
+                    text: "VISION STREAM (D3D11)";
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: #C9D1D9;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle {
+                background: #00E5FF1A;
+                border-radius: 4px;
+                border-width: 1px;
+                border-color: #00E5FF4D;
+                height: 18px;
+
+                HorizontalLayout {
+                    padding-left: 6px;
+                    padding-right: 6px;
+                    Text {
+                        text: "1 FPS Sampling";
+                        font-size: 9px;
+                        color: #00E5FF;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // Display Specs Box
+        Rectangle {
+            background: #06090ECC;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: #21262D;
+
+            VerticalLayout {
+                padding: 8px;
+                spacing: 4px;
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text {
+                        text: "Display:";
+                        font-size: 10px;
+                        color: #8B949E;
+                    }
+                    Text {
+                        text: "1920x1080 @ 1 FPS";
+                        font-size: 10px;
+                        font-weight: 600;
+                        color: #58A6FF;
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text {
+                        text: "Engine:";
+                        font-size: 10px;
+                        color: #8B949E;
+                    }
+                    Text {
+                        text: "DXGI Desktop Duplication";
+                        font-size: 10px;
+                        color: #C9D1D9;
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text {
+                        text: "Status:";
+                        font-size: 10px;
+                        color: #8B949E;
+                    }
+                    Text {
+                        text: root.is_streaming ? "Streaming Active" : "Standby (Idle)";
+                        font-size: 10px;
+                        font-weight: 700;
+                        color: root.is_streaming ? #3FB950 : #8B949E;
+                    }
+                }
+            }
+        }
+
+        // Action Button
+        Button {
+            text: root.is_streaming ? "⏹️ Hentikan Layar" : "👁️ Mulai Berbagi Layar";
+            height: 32px;
+            clicked => { root.toggle_share(); }
+        }
+    }
+}

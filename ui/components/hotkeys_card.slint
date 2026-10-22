@@ -1,0 +1,128 @@
+// ============================================================
+// GLOBAL HOTKEYS CARD COMPONENT
+// Keyboard Shortcuts Quick Reference Card
+// ============================================================
+
+export component HotkeysCard inherits Rectangle {
+    background: #0B101AE6;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: #30363D;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        // Header
+        HorizontalLayout {
+            alignment: space-between;
+            height: 20px;
+
+            HorizontalLayout {
+                spacing: 6px;
+                Rectangle {
+                    width: 7px;
+                    height: 7px;
+                    border-radius: 3.5px;
+                    y: (parent.height - self.height) / 2;
+                    background: #38BDF8;
+                }
+                Text {
+                    text: "GLOBAL HOTKEYS";
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: #C9D1D9;
+                    vertical-alignment: center;
+                }
+            }
+
+            Text {
+                text: "Win32 Hook";
+                font-size: 10px;
+                color: #8B949E;
+                vertical-alignment: center;
+            }
+        }
+
+        // Key rows
+        VerticalLayout {
+            spacing: 5px;
+
+            // Row 1: Boss Key
+            HorizontalLayout {
+                alignment: space-between;
+                Rectangle {
+                    background: #161B22;
+                    border-radius: 3px;
+                    border-width: 1px;
+                    border-color: #30363D;
+                    height: 18px;
+
+                    HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        Text { text: "Win+Alt+N"; font-size: 9px; font-weight: 700; color: #00E5FF; vertical-alignment: center; }
+                    }
+                }
+                Text { text: "Boss Key / Hide"; font-size: 10px; color: #8B949E; vertical-alignment: center; }
+            }
+
+            // Row 2: Mute
+            HorizontalLayout {
+                alignment: space-between;
+                Rectangle {
+                    background: #161B22;
+                    border-radius: 3px;
+                    border-width: 1px;
+                    border-color: #30363D;
+                    height: 18px;
+
+                    HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        Text { text: "Win+Alt+M"; font-size: 9px; font-weight: 700; color: #00E5FF; vertical-alignment: center; }
+                    }
+                }
+                Text { text: "Mute Microphone"; font-size: 10px; color: #8B949E; vertical-alignment: center; }
+            }
+
+            // Row 3: Screen Share
+            HorizontalLayout {
+                alignment: space-between;
+                Rectangle {
+                    background: #161B22;
+                    border-radius: 3px;
+                    border-width: 1px;
+                    border-color: #30363D;
+                    height: 18px;
+
+                    HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        Text { text: "Win+Alt+S"; font-size: 9px; font-weight: 700; color: #00E5FF; vertical-alignment: center; }
+                    }
+                }
+                Text { text: "Screen Share"; font-size: 10px; color: #8B949E; vertical-alignment: center; }
+            }
+
+            // Row 4: Fullscreen
+            HorizontalLayout {
+                alignment: space-between;
+                Rectangle {
+                    background: #161B22;
+                    border-radius: 3px;
+                    border-width: 1px;
+                    border-color: #30363D;
+                    height: 18px;
+
+                    HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        Text { text: "F11"; font-size: 9px; font-weight: 700; color: #FFB300; vertical-alignment: center; }
+                    }
+                }
+                Text { text: "Fullscreen Toggle"; font-size: 10px; color: #8B949E; vertical-alignment: center; }
+            }
+        }
+    }
+}

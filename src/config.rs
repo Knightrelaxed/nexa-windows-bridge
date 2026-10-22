@@ -13,6 +13,11 @@ pub struct BridgeConfig {
     pub low_ram_mode: bool,
     pub auto_connect: bool,
     pub autostart: bool,
+    pub show_card_vision: bool,
+    pub show_card_automation: bool,
+    pub show_card_transcript: bool,
+    pub show_card_telemetry: bool,
+    pub show_card_hotkeys: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +38,11 @@ impl Default for BridgeConfig {
             low_ram_mode: true,
             auto_connect: false,
             autostart: false,
+            show_card_vision: true,
+            show_card_automation: true,
+            show_card_transcript: true,
+            show_card_telemetry: true,
+            show_card_hotkeys: true,
         }
     }
 }
