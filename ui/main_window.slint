@@ -5,6 +5,7 @@
 
 import { Button } from "std-widgets.slint";
 import { ArcReactorOrb } from "components/arc_reactor.slint";
+import { QuantumCore } from "components/quantum_core.slint";
 import { AudioMeter } from "components/audio_meter.slint";
 import { SettingsDialog } from "settings_dialog.slint";
 import { OverlayWindow } from "overlay_window.slint";
@@ -186,10 +187,12 @@ export component MainWindow inherits Window {
                     spacing: 12px;
                     alignment: center;
 
-                    // Left: Compact Holographic Arc Reactor Orb
-                    ArcReactorOrb {
+                    // Left: Compact 3D Holographic Quantum Neural Core
+                    QuantumCore {
                         state: root.avatar_state;
+                        level: root.volume_level;
                         pulse_scale: root.pulse_scale;
+                        is_screen_sharing: root.is_screen_sharing;
                         orb_size: 58px;
                     }
 
@@ -501,9 +504,11 @@ export component MainWindow inherits Window {
 
                                 HorizontalLayout {
                                     alignment: center;
-                                    ArcReactorOrb {
+                                    QuantumCore {
                                         state: root.avatar_state;
+                                        level: root.volume_level;
                                         pulse_scale: root.pulse_scale;
+                                        is_screen_sharing: root.is_screen_sharing;
                                         orb_size: Math.min(220px, Math.max(130px, root.split_center_h * 0.40));
                                     }
                                 }
@@ -573,9 +578,11 @@ export component MainWindow inherits Window {
 
                             HorizontalLayout {
                                 alignment: center;
-                                ArcReactorOrb {
+                                QuantumCore {
                                     state: root.avatar_state;
+                                    level: root.volume_level;
                                     pulse_scale: root.pulse_scale;
+                                    is_screen_sharing: root.is_screen_sharing;
                                     orb_size: 240px;
                                 }
                             }

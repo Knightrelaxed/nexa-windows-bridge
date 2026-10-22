@@ -1,0 +1,316 @@
+// ============================================================
+// QUANTUM NEURAL CORE — N.E.X.A SENTIENT HOLOGRAPHIC AVATAR
+// 3D Spherical Particle Core, Neural Synapses, Plasma Rays & Lightning
+// 10 Cognitive States with WASAPI/TTS Audio Reactivity
+// ============================================================
+
+// ---------- Base Overlay: Full-box Path Canvas ----------
+component Overlay inherits Path {
+    in property <length> box;
+    width: box;
+    height: box;
+    viewbox-width: box / 1px;
+    viewbox-height: box / 1px;
+    stroke-line-cap: round;
+    stroke-line-join: round;
+}
+
+// ---------- Dynamic HUD Orbital Arc ----------
+component Arc inherits Overlay {
+    in property <float> start;     // Degrees
+    in property <float> span: 90;  // Arc span in degrees
+    property <float> c: self.width / 2px;
+    property <float> r: c - 2;
+    commands: "M " + (c + r * Math.cos(start * 1deg)) + " " + (c + r * Math.sin(start * 1deg))
+        + " A " + r + " " + r + " 0 " + (span > 180 ? "1" : "0") + " 1 "
+        + (c + r * Math.cos((start + span) * 1deg)) + " " + (c + r * Math.sin((start + span) * 1deg));
+}
+
+// ---------- Radial Spoke (HUD Ticks & Plasma Rays) ----------
+component Spoke inherits Overlay {
+    in property <float> a;   // Angle in degrees
+    in property <float> r1;  // Inner radius (px)
+    in property <float> r2;  // Outer radius (px)
+    property <float> c: self.width / 2px;
+    commands: "M " + (c + r1 * Math.cos(a * 1deg)) + " " + (c + r1 * Math.sin(a * 1deg))
+        + " L " + (c + r2 * Math.cos(a * 1deg)) + " " + (c + r2 * Math.sin(a * 1deg));
+}
+
+// ============================================================
+// MAIN QUANTUM CORE COMPONENT
+// ============================================================
+export component QuantumCore inherits Rectangle {
+    in property <string> state: "offline";
+    in property <float> level: 0.0;           // Audio volume RMS level 0..1
+    in property <float> pulse_scale: 1.0;
+    in property <bool> is_screen_sharing: false;
+    in property <length> orb_size: 220px;
+
+    width: root.orb_size;
+    height: root.orb_size;
+    clip: false;
+
+    // ── 10 Cognitive States Spectrum Palette ─────────────────
+    property <color> accent:
+        root.state == "listening"          ? #00B4D8 : // Vibrant Cyan-Blue
+        root.state == "transmitting_audio" ? #00E5FF : // Electric Cyan
+        root.state == "thinking"           ? #FFB300 : // Cognitive Gold
+        root.state == "speaking"           ? #00FF88 : // Cyber Emerald
+        root.state == "barge_in"           ? #E0F7FA : // Flash White-Cyan
+        (root.state == "screen_sharing" || root.state == "transmitting_screen") ? #00B0FF : // Holographic Azure
+        root.state == "tool_executing"     ? #7C4DFF : // Quantum Violet
+        (root.state == "connecting" || root.state == "reconnecting") ? #FF9100 : // Amber
+        root.state == "idle"               ? #00E5FF : #37474F; // Cyan / Deep Slate Gray (Offline)
+
+    property <color> gold:
+        root.state == "thinking"           ? #FFE082 :
+        root.state == "speaking"           ? #69F0AE :
+        root.state == "tool_executing"     ? #B388FF :
+        root.state == "barge_in"           ? #FFFFFF : #FFB52E;
+
+    property <bool> is_active: root.state != "offline";
+    property <bool> is_speaking_state: root.state == "speaking";
+    property <bool> is_thinking_state: root.state == "thinking" || root.state == "connecting" || root.state == "reconnecting";
+
+    // ── Internal Physical & Holographic States ────────────────
+    property <float> sz: min(self.width, self.height) / 1px;
+    property <float> clock;
+    property <float> rot;
+
+    // Audio-reactive energy envelope
+    property <float> energy: !root.is_active ? 0.0 :
+        (root.is_speaking_state ? Math.max(root.level, (root.pulse_scale - 1.0) * 2.0) :
+        (root.state == "listening" ? Math.max(root.level, 0.20) :
+        (root.is_thinking_state ? 0.35 : 0.08)));
+    animate energy { duration: 70ms; easing: ease-out; }
+
+    // Breathing pulse during idle
+    property <float> e: !root.is_active ? 0.0 : (root.energy + 0.04 * (0.5 + 0.5 * Math.sin(root.clock * 6deg)));
+
+    property <[string]> tags: ["0xA3F9", "NEURAL.SYNC", "Q-BIT 4096", "VOX.OUT", "FLUX 99.7%", "CORE//AI"];
+
+    // 60 FPS Clock Driver
+    Timer {
+        interval: 16ms;
+        running: root.is_active;
+        triggered => {
+            root.clock = Math.mod(root.clock + 1, 3600);
+            root.rot = Math.mod(root.rot + (root.is_thinking_state ? 1.5 : 0.35) + root.energy * 2.5, 360);
+        }
+    }
+
+    // ── 3D Particle Sphere Geometry (Fibonacci Spiral + Pitch Tilt) ──
+    pure function vy(i: int) -> float { return 1 - 2 * (i + 0.5) / 64; }
+    pure function cr(i: int) -> float { return Math.sqrt(Math.max(0.0, 1 - vy(i) * vy(i))); }
+    pure function ang(i: int) -> angle { return (i * 137.508 + root.rot) * 1deg; }
+    pure function rr(i: int) -> float {
+        return root.sz * 0.34 * (1 + root.e * 0.35 * Math.sin((root.rot * 4 + i * 47) * 1deg));
+    }
+    pure function px(i: int) -> float { return rr(i) * cr(i) * Math.cos(ang(i)); }
+    pure function py(i: int) -> float { return rr(i) * (vy(i) * 0.927 - cr(i) * Math.sin(ang(i)) * 0.375); }
+    pure function pz(i: int) -> float { return cr(i) * Math.sin(ang(i)) * 0.927 + vy(i) * 0.375; }
+
+    // ── Lightning Discharge Geometry ───────────────────────────
+    pure function ba(b: int) -> float {
+        return b * 72 + 30 * Math.sin((root.clock * 3 + b * 65) * 1deg) + root.rot * 2;
+    }
+    pure function bl(b: int) -> float {
+        return root.sz * (0.10 + 0.30 * root.e) * (0.7 + 0.3 * Math.sin((root.clock * 7 + b * 50) * 1deg));
+    }
+    pure function jit(b: int, f: float) -> float {
+        return Math.sin(f * 180deg) * root.sz * 0.03 * (0.5 + 2.5 * root.e)
+            * Math.sin((root.clock * 14 + f * 700 + b * 91) * 1deg);
+    }
+    pure function bx(b: int, f: float) -> float {
+        return root.sz / 2 + Math.cos(ba(b) * 1deg) * bl(b) * f - Math.sin(ba(b) * 1deg) * jit(b, f);
+    }
+    pure function by(b: int, f: float) -> float {
+        return root.sz / 2 + Math.sin(ba(b) * 1deg) * bl(b) * f + Math.cos(ba(b) * 1deg) * jit(b, f);
+    }
+    pure function bolt(b: int) -> string {
+        return "M " + bx(b, 0) + " " + by(b, 0)
+            + " L " + bx(b, 0.2) + " " + by(b, 0.2)
+            + " L " + bx(b, 0.4) + " " + by(b, 0.4)
+            + " L " + bx(b, 0.6) + " " + by(b, 0.6)
+            + " L " + bx(b, 0.8) + " " + by(b, 0.8)
+            + " L " + bx(b, 1) + " " + by(b, 1);
+    }
+
+    stage := Rectangle {
+        width: root.sz * 1px;
+        height: self.width;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+
+        // 1. Outer Holographic Aura (Breathing & audio expanding)
+        Rectangle {
+            width: root.sz * 1px * (0.92 + root.e * 0.14);
+            height: self.width;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            border-radius: self.width / 2;
+            background: @radial-gradient(circle,
+                root.accent.with-alpha(root.is_active ? (0.10 + root.e * 0.30) : 0.03) 0%,
+                root.accent.with-alpha(root.is_active ? 0.05 : 0.01) 55%,
+                #00000000 100%);
+        }
+
+        // 2. HUD Radial Ticks Ring (40 precise ticks)
+        for k in 40: Spoke {
+            box: parent.width;
+            a: k * 9;
+            r1: root.sz * 0.455;
+            r2: root.sz * (Math.mod(k, 5) == 0 ? 0.482 : 0.468);
+            stroke: root.accent.with-alpha(Math.mod(k, 5) == 0 ? (root.is_active ? 0.65 : 0.2) : (root.is_active ? 0.3 : 0.1));
+            stroke-width: 1px;
+        }
+
+        // 3. Counter-Rotating Cybernetic HUD Arcs (Spans dynamically expand on audio energy)
+        Arc {
+            box: parent.width * 0.98;
+            x: (parent.width - self.width) / 2;
+            y: self.x;
+            start: root.rot;
+            span: 60 + root.e * 90;
+            stroke: root.accent.with-alpha(root.is_active ? 0.75 : 0.2);
+            stroke-width: 2px;
+        }
+        Arc {
+            box: parent.width * 0.92;
+            x: (parent.width - self.width) / 2;
+            y: self.x;
+            start: -root.rot * 2 + 140;
+            span: 40 + root.e * 70;
+            stroke: root.gold.with-alpha(root.is_active ? 0.85 : 0.15);
+            stroke-width: 1.5px;
+        }
+        Arc {
+            box: parent.width * 0.86;
+            x: (parent.width - self.width) / 2;
+            y: self.x;
+            start: root.rot * 3 + 250;
+            span: 25 + root.e * 50;
+            stroke: #ffffff;
+            stroke-width: 1px;
+            opacity: root.is_active ? 0.65 : 0.1;
+        }
+        Arc {
+            box: parent.width * 0.40;
+            x: (parent.width - self.width) / 2;
+            y: self.x;
+            start: -root.rot * 3;
+            span: 200;
+            stroke: root.gold.with-alpha(root.is_active ? 0.60 : 0.15);
+            stroke-width: 1.5px;
+        }
+        Arc {
+            box: parent.width * 0.30;
+            x: (parent.width - self.width) / 2;
+            y: self.x;
+            start: root.rot * 2;
+            span: 120 + root.e * 120;
+            stroke: root.accent.with-alpha(root.is_active ? 0.85 : 0.25);
+            stroke-width: 2px;
+        }
+
+        // 4. Neural Network Synapses: Inter-particle connecting paths (Fibonacci +8, +13)
+        for i in 48: Overlay {
+            visible: root.is_active;
+            box: parent.width;
+            stroke: root.accent.with-alpha(0.08 + root.e * 0.35);
+            stroke-width: 0.75px;
+            commands: "M " + (root.sz / 2 + px(i)) + " " + (root.sz / 2 + py(i))
+                + " L " + (root.sz / 2 + px(i + 8)) + " " + (root.sz / 2 + py(i + 8))
+                + " M " + (root.sz / 2 + px(i)) + " " + (root.sz / 2 + py(i))
+                + " L " + (root.sz / 2 + px(i + 13)) + " " + (root.sz / 2 + py(i + 13));
+        }
+
+        // 5. 3D Particles Sphere Nodes (64 nodes with 3D depth-scaling & z-opacity)
+        for i in 64: Rectangle {
+            property <float> dp: pz(i);
+            width: (1.4 + (dp + 1) * 1.6 + root.e * 2.2) * 1px;
+            height: self.width;
+            x: (root.sz / 2 + px(i)) * 1px - self.width / 2;
+            y: (root.sz / 2 + py(i)) * 1px - self.height / 2;
+            border-radius: self.width / 2;
+            background: Math.mod(i, 6) == 0 ? root.gold : (Math.mod(i, 3) == 0 ? #ffffff : root.accent);
+            opacity: root.is_active ? (0.25 + 0.75 * (dp + 1) / 2) : 0.15;
+        }
+
+        // 6. Radial Plasma Energy Rays (36 dynamic rays from nucleus)
+        for k in 36: Spoke {
+            visible: root.is_active;
+            box: parent.width;
+            a: k * 10;
+            r1: root.sz * 0.015;
+            r2: root.sz * (0.035 + 0.16 * root.e * (0.35 + 0.65 * Math.abs(Math.sin((root.clock * 5 + k * 53) * 1deg))));
+            stroke: #ffffff;
+            stroke-width: 1px;
+            opacity: 0.30 + 0.6 * root.e;
+        }
+
+        // 7. Electric Plasma Lightning Bolts: Thick glow + intense core
+        for b in 4: Overlay {
+            visible: root.is_active && (root.energy > 0.08 || root.is_thinking_state);
+            box: parent.width;
+            commands: bolt(b);
+            stroke: root.accent.with-alpha(0.40);
+            stroke-width: 5px;
+            opacity: Math.min(1.0, 0.2 + root.e * 1.5) * (0.6 + 0.4 * Math.abs(Math.sin((root.clock * 11 + b * 70) * 1deg)));
+        }
+        for b in 4: Overlay {
+            visible: root.is_active && (root.energy > 0.08 || root.is_thinking_state);
+            box: parent.width;
+            commands: bolt(b);
+            stroke: #ffffff;
+            stroke-width: 1.3px;
+            opacity: Math.min(1.0, 0.2 + root.e * 1.5) * (0.6 + 0.4 * Math.abs(Math.sin((root.clock * 11 + b * 70) * 1deg)));
+        }
+
+        // 8. Central Luminous Nucleus (White-hot core + radial halo)
+        Rectangle {
+            width: root.sz * 1px * (0.22 + root.e * 0.28);
+            height: self.width;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            border-radius: self.width / 2;
+            background: @radial-gradient(circle,
+                #ffffff 0%,
+                root.accent.with-alpha(root.is_active ? 0.85 : 0.3) 22%,
+                root.accent.with-alpha(root.is_active ? 0.25 : 0.05) 55%,
+                #00000000 100%);
+        }
+        Rectangle {
+            width: root.sz * 1px * (0.04 + root.e * 0.06);
+            height: self.width;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            border-radius: self.width / 2;
+            background: root.is_active ? #ffffff : #546E7A;
+            drop-shadow-blur: 25px + 35px * root.e;
+            drop-shadow-color: root.accent;
+        }
+
+        // 9. D3D11 Laser Scanline (Active when Screen Sharing)
+        if root.is_screen_sharing : Rectangle {
+            width: parent.width * 0.85;
+            height: 2px;
+            x: (parent.width - self.width) / 2;
+            y: parent.height / 2 + Math.sin(root.clock * 4deg) * (parent.height * 0.36);
+            background: #E0F7FA;
+            drop-shadow-blur: 10px;
+            drop-shadow-color: #00E5FF;
+        }
+
+        // 10. Orbiting Holographic Data Tags (Only on HUD scale >= 160px)
+        for k in 6: Text {
+            visible: root.sz >= 160 && root.is_active;
+            text: root.tags[k];
+            font-size: 8.5px;
+            font-weight: 700;
+            color: root.accent.with-alpha(0.70);
+            x: (root.sz / 2 + root.sz * 0.50 * Math.cos((k * 60 + root.rot) * 1deg)) * 1px - self.width / 2;
+            y: (root.sz / 2 + root.sz * 0.50 * Math.sin((k * 60 + root.rot) * 1deg)) * 1px - self.height / 2;
+        }
+    }
+}

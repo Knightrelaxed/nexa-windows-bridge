@@ -76,7 +76,8 @@ Semua berkas markup antarmuka berada di folder `ui/`:
 | `ui/main_window.slint` | `MainWindow` | Jendela utama aplikasi yang menaungi Mode 1 Companion, Mode 2 Flexible Grid Command Center, FocusScope keyboard, dan kontainer modal dialog. |
 | `ui/settings_dialog.slint` | `SettingsDialog` | Modal dialog pengaturan konfigurasi: WebSocket endpoint, Auth token, opsi low-RAM, autostart Windows, dan 5 checkbox modularitas HUD. |
 | `ui/components/splitter.slint` | `ColSplitter`, `RowSplitter` | Komponen garis pembatas interaktif untuk drag-to-resize kolom dan kartu secara halus dengan kursor resize, grip notch, dan hover/active neon glow. |
-| `ui/components/arc_reactor.slint` | `ArcReactorOrb`, `ArcReactor` | Komponen visual reaktor fusi cybernetic konsentris dengan rotasi giroskopik ganda, denyut audio RMS, pemindai laser layar, dan 10 warna kognitif. |
+| `ui/components/quantum_core.slint` | `QuantumCore` | **Avatar Sentient Quantum Neural Core 3D**: Bola partikel Fibonacci 3D dengan sinapsis neural, petir plasma dinamis, sinar energi radial, ring HUD tick, cincin orbital kontra-rotasi, dan 6 tag telemetri melayang. |
+| `ui/components/arc_reactor.slint` | `ArcReactorOrb`, `ArcReactor` | Komponen visual reaktor fusi cybernetic konsentris 2D (arsitektur transisi / perbandingan). |
 | `ui/components/audio_meter.slint` | `AudioMeter` | Visualizer spektrum gelombang suara parametrik multi-bar yang bergerak dinamis mengikuti level RMS audio mikrofon & respon suara AI. |
 | `ui/components/vision_card.slint` | `VisionCard` | Kartu monitor D3D11 capture resolusi 1920x1080@1fps, format DXGI duplication, frame reticle viewport, dan tombol pintas kontrol streaming layar. |
 | `ui/components/automation_card.slint` | `AutomationCard` | Kartu aktivitas otomasi Win32 real-time dengan log terminal console expandable dan badge aksi berwarna (CLICK, TYPE, EXECUTE, HIGHLIGHT). |
@@ -176,24 +177,34 @@ Mode ini aktif saat `root.is_expanded_view == true`. Seluruh tata letak mengguna
 
 ---
 
-## 5. Komponen Inti: Arc Reactor Sentient Core
+## 5. Komponen Avatar Inti: 3D Quantum Neural Core
 
-Berkas `ui/components/arc_reactor.slint` mengimplementasikan reaktor fusi cybernetic:
-* **Ukuran Adaptif:** Mengikuti `split_center_h` secara proporsional (`Math.min(220px, Math.max(130px, root.split_center_h * 0.40))`).
-* **Dual Counter-Rotating Orbital Rings:** Cincin luar berotasi searah jarum jam (`gyro_angle_slow`), cincin tengah berotasi berlawanan arah (`gyro_angle_fast`).
-* **Audio-Reactive Pulse Ring:** Denyut cincin reaktif terhadap level RMS suara mikrofon dan suara asisten.
-* **Laser Scanline:** Garis pemindai sinusoidal saat mode berbagi layar aktif.
+Berkas `ui/components/quantum_core.slint` mengimplementasikan avatar hidup berbasis hologram 3D (*Quantum Neural Core*) menggantikan visual 2D datar:
+* **Ukuran Adaptif & Skalabilitas Ganda:**
+  * **Mode 1 Floating Companion:** Skala mini 58x58px terintegrasi di kartu status ringkas.
+  * **Mode 2 Flexible Command Center:** Skala dinamis 130–220px (`Math.min(220px, Math.max(130px, root.split_center_h * 0.40))`).
+* **Lapisan Visual Holografik (3D Depth Layering):**
+  1. **Holographic Outer Aura:** Gradien radial bernapas perlahan saat idle dan meledak mengembang saat AI berbicara atau mendengar.
+  2. **Radial HUD Ticks Ring:** 40 garis tick presisi dengan penanda mayor setiap kelipatan 5.
+  3. **Counter-Rotating Cybernetic Arcs:** 5 busur orbital konsentris yang berputar bolak-balik dengan rentang sudut (*span*) yang melar dinamis mengikuti gelombang suara audio RMS.
+  4. **3D Fibonacci Particle Sphere:** 64 titik partikel yang diproyeksikan dalam ruang 3D bola spiral Fibonacci (dengan rotasi pitch tilt ~22° dan scaling kedalaman sumbu Z). Titik partikel depan lebih terang dan besar, titik belakang meredup secara transparan. Setiap partikel ke-6 memiliki aksen kilau emas murni (*holographic gold*).
+  5. **Neural Synapses Network:** 48 jalur sambungan garis vektor Slint yang menghubungkan simpul partikel bertetangga (Fibonacci index +8 dan +13) membentuk jaringan syaraf tiruan hidup.
+  6. **Radial Plasma Energy Rays:** 36 sinar plasma tajam yang memancar keluar dari inti nukleus dengan panjang acak yang bergetar dinamis mengikuti frekuensi audio.
+  7. **Electric Plasma Lightning Bolts:** Sambaran petir zig-zag berpasangan (lapisan luar glow 5px dan inti ultra-putih 1.3px) yang aktif saat berpikir (*thinking*) atau suara AI meledak kencang.
+  8. **Luminous Plasma Nucleus:** Inti bola putih panas di tengah dengan efek drop-shadow blur 25–60px berpendar sesuai warna spektrum kognitif aktif.
+  9. **D3D11 Laser Scanline:** Pemindai laser horizontal berosilasi yang otomatis menyala saat mode berbagi layar (*Screen Sharing*) aktif.
+  10. **Orbiting Telemetry Data Tags:** 6 label data cybernetic (`0xA3F9`, `NEURAL.SYNC`, `Q-BIT 4096`, `VOX.OUT`, `FLUX 99.7%`, `CORE//AI`) yang mengorbit mengelilingi inti pada skala HUD Command Center.
 * **10 Warna Spektrum Kognitif:**
   * `idle`: Cyan Lembut (`#00E5FF`)
   * `listening`: Vibrant Cyan-Blue (`#00B4D8`)
   * `transmitting_audio`: Electric Cyan (`#00E5FF`)
-  * `thinking`: Cognitive Gold (`#FFB300`, rotasi cepat)
-  * `speaking`: Cyber Emerald (`#00FF88`, modulasi vokal)
-  * `barge_in`: Flash Cyan (`#E0F7FA`, kilatan interupsi)
-  * `screen_sharing`: Holographic Azure (`#00B0FF`, laser aktif)
+  * `thinking`: Cognitive Gold (`#FFB300`, rotasi akselerasi 4.5x)
+  * `speaking`: Cyber Emerald (`#00FF88`, modulasi vokal & getaran petir)
+  * `barge_in`: Flash White-Cyan (`#E0F7FA`, kilatan interupsi)
+  * `screen_sharing`: Holographic Azure (`#00B0FF`, laser scanline aktif)
   * `tool_executing`: Quantum Violet (`#7C4DFF`, denyut fusi)
   * `connecting`: Amber (`#FF9100`, rotasi turbulen)
-  * `offline`: Deep Slate Gray (`#37474F`, stasioner)
+  * `offline`: Deep Slate Gray (`#37474F`, stasioner dorman)
 
 ---
 
