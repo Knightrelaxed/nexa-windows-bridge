@@ -188,6 +188,34 @@ unsafe extern "system" fn power_wnd_proc(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BatteryStatus {
+    pub level_percent: u8,
+    pub is_charging: bool,
+    pub ac_connected: bool,
+}
+
+/// Retrieve the current laptop battery and power status via Win32 GetSystemPowerStatus
+pub fn get_battery_status() -> Option<BatteryStatus> {
+    unsafe {
+        let mut status = std::mem::zeroed();
+        if windows_sys::Win32::System::Power::GetSystemPowerStatus(&mut status) != 0 {
+            let pct = if status.BatteryLifePercent <= 100 {
+                status.BatteryLifePercent
+            } else {
+                100
+            };
+            Some(BatteryStatus {
+                level_percent: pct,
+                is_charging: (status.BatteryFlag & 8) != 0 || status.ACLineStatus == 1,
+                ac_connected: status.ACLineStatus == 1,
+            })
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +225,14 @@ mod tests {
         let listener = PowerListener::spawn(|_| {});
         assert!(listener.hwnd.is_some());
         drop(listener);
+    }
+
+    #[test]
+    fn test_get_battery_status() {
+        // Querying battery should succeed on a laptop or return None on a desktop without error
+        let status = get_battery_status();
+        if let Some(s) = status {
+            assert!(s.level_percent <= 100);
+        }
     }
 }

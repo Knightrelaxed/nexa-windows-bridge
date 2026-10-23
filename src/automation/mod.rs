@@ -42,6 +42,80 @@ pub fn redact_params(action: &str, params: &serde_json::Value) -> String {
     }
 }
 
+/// Helper to launch desktop applications, URLs, or system targets safely.
+pub fn launch_desktop_app(
+    app_name: &str,
+    path: Option<&str>,
+    url: Option<&str>,
+) -> Result<String, String> {
+    let target = if let Some(u) = url {
+        if !u.trim().is_empty() {
+            u.trim()
+        } else {
+            app_name.trim()
+        }
+    } else if let Some(p) = path {
+        if !p.trim().is_empty() {
+            p.trim()
+        } else {
+            app_name.trim()
+        }
+    } else {
+        app_name.trim()
+    };
+
+    if target.is_empty() {
+        return Err("Nama aplikasi atau target tidak boleh kosong.".to_string());
+    }
+
+    let lower = target.to_lowercase();
+
+    // Security guard: disallow arbitrary dangerous script files
+    if lower.ends_with(".bat")
+        || lower.ends_with(".cmd")
+        || lower.ends_with(".vbs")
+        || lower.ends_with(".ps1")
+        || lower.ends_with(".reg")
+    {
+        return Err("Eksekusi file skrip ditolak oleh kebijakan keamanan sistem.".to_string());
+    }
+
+    // URL handling
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        let spawn_res = std::process::Command::new("cmd")
+            .args(["/c", "start", "", target])
+            .spawn();
+        return match spawn_res {
+            Ok(_) => Ok(format!("URL '{}' berhasil dibuka di browser.", target)),
+            Err(e) => Err(format!("Gagal membuka URL di browser: {}", e)),
+        };
+    }
+
+    // Known Desktop Applications Mapping
+    let (prog, args): (&str, Vec<&str>) = match lower.as_str() {
+        "chrome" | "google chrome" | "google-chrome" | "browser" => {
+            ("cmd", vec!["/c", "start", "chrome"])
+        }
+        "notepad" | "catatan" | "editor" => ("notepad.exe", vec![]),
+        "calc" | "calculator" | "kalkulator" => ("calc.exe", vec![]),
+        "spotify" | "musik" => ("cmd", vec!["/c", "start", "spotify:"]),
+        "vscode" | "vs code" | "visual studio code" | "code" => ("cmd", vec!["/c", "code"]),
+        "explorer" | "file explorer" | "file_explorer" | "berkas" => ("explorer.exe", vec![]),
+        "cmd" | "command prompt" => ("cmd.exe", vec![]),
+        "powershell" | "terminal" => ("powershell.exe", vec![]),
+        "settings" | "pengaturan" => ("cmd", vec!["/c", "start", "ms-settings:"]),
+        "taskmgr" | "task manager" | "task_manager" => ("taskmgr.exe", vec![]),
+        _ => ("cmd", vec!["/c", "start", "", target]),
+    };
+
+    let spawn_res = std::process::Command::new(prog).args(args).spawn();
+
+    match spawn_res {
+        Ok(_) => Ok(format!("Aplikasi '{}' berhasil dibuka di desktop.", target)),
+        Err(e) => Err(format!("Gagal membuka aplikasi '{}': {}", target, e)),
+    }
+}
+
 /// Central command dispatcher for ServerMessage::ExecuteCommand.
 /// Maps standard actions to native Windows automation, UI Automation snapping,
 /// and DirectComposition/Slint overlays, returning strongly-typed CommandResult messages.
@@ -550,6 +624,268 @@ pub async fn handle_execute_command(
         }
 
         // ─────────────────────────────────────────────────────────────
+        // 9. LAUNCH_APP / OPEN_APP (Milestone 6.5 Voice Intent Parity)
+        // ─────────────────────────────────────────────────────────────
+        "LAUNCH_APP" | "LAUNCHAPP" | "OPEN_APP" | "OPENAPP" | "OPEN_APPLICATION" => {
+            let app_name = params
+                .get("app_name")
+                .or_else(|| params.get("appName"))
+                .or_else(|| params.get("target"))
+                .or_else(|| params.get("package_name"))
+                .or_else(|| params.get("packageName"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let path_opt = params.get("path").and_then(|v| v.as_str());
+            let url_opt = params.get("url").and_then(|v| v.as_str());
+
+            let app_name_owned = app_name.to_string();
+            let path_owned = path_opt.map(|s| s.to_string());
+            let url_owned = url_opt.map(|s| s.to_string());
+
+            let launch_res = tokio::task::spawn_blocking(move || {
+                launch_desktop_app(
+                    &app_name_owned,
+                    path_owned.as_deref(),
+                    url_owned.as_deref(),
+                )
+            })
+            .await
+            .map_err(|e| format!("Join error: {}", e))
+            .and_then(|r| r);
+
+            match launch_res {
+                Ok(msg) => ClientMessage::CommandResult {
+                    command_id,
+                    success: true,
+                    message: msg,
+                    data: serde_json::json!({
+                        "action": "launchApp",
+                        "app_name": app_name
+                    }),
+                },
+                Err(err) => {
+                    warn!("[AUTOMATION] launch_app failed: {}", err);
+                    ClientMessage::CommandResult {
+                        command_id,
+                        success: false,
+                        message: err.clone(),
+                        data: serde_json::json!({ "error": err }),
+                    }
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // 10. SET_VOLUME
+        // ─────────────────────────────────────────────────────────────
+        "SET_VOLUME" | "SETVOLUME" | "SET-VOLUME" => {
+            let volume_level = params
+                .get("volume_level")
+                .or_else(|| params.get("volumeLevel"))
+                .or_else(|| params.get("level"))
+                .and_then(|v| v.as_f64());
+
+            let res = tokio::task::spawn_blocking(move || {
+                if let Some(lvl) = volume_level {
+                    if lvl <= 0.0 {
+                        desktop_press_key("VOLUME_MUTE")
+                    } else {
+                        desktop_press_key("VOLUME_UP")
+                    }
+                } else {
+                    desktop_press_key("VOLUME_UP")
+                }
+            })
+            .await
+            .map_err(|e| format!("Join error: {}", e))
+            .and_then(|r| r);
+
+            match res {
+                Ok(vk) => ClientMessage::CommandResult {
+                    command_id,
+                    success: true,
+                    message: "Volume laptop berhasil disesuaikan.".to_string(),
+                    data: serde_json::json!({
+                        "action": "setVolume",
+                        "vk": vk,
+                        "volume_level": volume_level
+                    }),
+                },
+                Err(err) => ClientMessage::CommandResult {
+                    command_id,
+                    success: false,
+                    message: format!("Gagal mengatur volume laptop: {}", err),
+                    data: serde_json::json!({ "error": err }),
+                },
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // 11. MUTE / UNMUTE / TOGGLE_MUTE
+        // ─────────────────────────────────────────────────────────────
+        "MUTE" | "UNMUTE" | "TOGGLE_MUTE" | "TOGGLEMUTE" => {
+            let res = tokio::task::spawn_blocking(|| {
+                desktop_press_key("VOLUME_MUTE")
+            })
+            .await
+            .map_err(|e| format!("Join error: {}", e))
+            .and_then(|r| r);
+
+            match res {
+                Ok(vk) => ClientMessage::CommandResult {
+                    command_id,
+                    success: true,
+                    message: "Status audio/mute laptop berhasil diubah.".to_string(),
+                    data: serde_json::json!({ "action": "mute", "vk": vk }),
+                },
+                Err(err) => ClientMessage::CommandResult {
+                    command_id,
+                    success: false,
+                    message: format!("Gagal mengubah status audio laptop: {}", err),
+                    data: serde_json::json!({ "error": err }),
+                },
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // 12. LOCK_SCREEN
+        // ─────────────────────────────────────────────────────────────
+        "LOCK_SCREEN" | "LOCKSCREEN" | "LOCK-SCREEN" => {
+            let res = tokio::task::spawn_blocking(|| {
+                std::process::Command::new("rundll32.exe")
+                    .args(["user32.dll,LockWorkStation"])
+                    .spawn()
+                    .map_err(|e| format!("Gagal mengunci laptop: {}", e))
+            })
+            .await
+            .map_err(|e| format!("Join error: {}", e))
+            .and_then(|r| r);
+
+            match res {
+                Ok(_) => ClientMessage::CommandResult {
+                    command_id,
+                    success: true,
+                    message: "Layar laptop Windows berhasil dikunci.".to_string(),
+                    data: serde_json::json!({ "action": "lockScreen" }),
+                },
+                Err(err) => ClientMessage::CommandResult {
+                    command_id,
+                    success: false,
+                    message: format!("Gagal mengunci layar laptop: {}", err),
+                    data: serde_json::json!({ "error": err }),
+                },
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // 13. GET_BATTERY_STATUS
+        // ─────────────────────────────────────────────────────────────
+        "GET_BATTERY_STATUS" | "BATTERY_STATUS" | "GETBATTERYSTATUS" => {
+            let battery = crate::platform::power::get_battery_status();
+            match battery {
+                Some(b) => ClientMessage::CommandResult {
+                    command_id,
+                    success: true,
+                    message: format!(
+                        "Baterai laptop saat ini {}%{}.",
+                        b.level_percent,
+                        if b.is_charging { " (sedang diisi daya)" } else { "" }
+                    ),
+                    data: serde_json::json!({
+                        "action": "getBatteryStatus",
+                        "level_percent": b.level_percent,
+                        "is_charging": b.is_charging,
+                        "ac_connected": b.ac_connected
+                    }),
+                },
+                None => ClientMessage::CommandResult {
+                    command_id,
+                    success: false,
+                    message: "Gagal membaca status baterai laptop.".to_string(),
+                    data: serde_json::json!({ "error": "BATTERY_STATUS_UNAVAILABLE" }),
+                },
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // 14. SYSTEM_METRICS / GET_SYSTEM_METRICS
+        // ─────────────────────────────────────────────────────────────
+        "SYSTEM_METRICS" | "GET_SYSTEM_METRICS" | "GETSYSTEMMETRICS" => {
+            let mut telemetry = crate::platform::telemetry::SystemTelemetry::default();
+            std::thread::sleep(std::time::Duration::from_millis(15));
+            let cpu = telemetry.sample_cpu_percent();
+            let ram = crate::platform::telemetry::SystemTelemetry::sample_ram_percent();
+
+            ClientMessage::CommandResult {
+                command_id,
+                success: true,
+                message: format!("Status sistem laptop: CPU {}%, RAM {}% terpakai.", cpu, ram),
+                data: serde_json::json!({
+                    "action": "systemMetrics",
+                    "cpu_percent": cpu,
+                    "ram_percent": ram
+                }),
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // 15. SHOW_DESKTOP / MINIMIZE_ALL / GO_HOME_SCREEN
+        // ─────────────────────────────────────────────────────────────
+        "SHOW_DESKTOP" | "SHOWDESKTOP" | "MINIMIZE_ALL" | "MINIMIZEALL" | "GO_HOME_SCREEN" => {
+            let res = tokio::task::spawn_blocking(|| {
+                std::process::Command::new("powershell")
+                    .args(["-NoProfile", "-Command", "(New-Object -ComObject Shell.Application).MinimizeAll()"])
+                    .spawn()
+                    .map_err(|e| format!("Gagal meminimalkan jendela: {}", e))
+            })
+            .await
+            .map_err(|e| format!("Join error: {}", e))
+            .and_then(|r| r);
+
+            match res {
+                Ok(_) => ClientMessage::CommandResult {
+                    command_id,
+                    success: true,
+                    message: "Tampilan desktop berhasil dibuka (semua jendela diminimalkan).".to_string(),
+                    data: serde_json::json!({ "action": "showDesktop" }),
+                },
+                Err(err) => ClientMessage::CommandResult {
+                    command_id,
+                    success: false,
+                    message: format!("Gagal membuka tampilan desktop: {}", err),
+                    data: serde_json::json!({ "error": err }),
+                },
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // 16. TAKE_SCREENSHOT
+        // ─────────────────────────────────────────────────────────────
+        "TAKE_SCREENSHOT" | "TAKESCREENSHOT" | "CAPTURE_SCREEN" | "SCREENSHOT" => {
+            let res = tokio::task::spawn_blocking(|| {
+                desktop_press_key("PRINTSCREEN")
+            })
+            .await
+            .map_err(|e| format!("Join error: {}", e))
+            .and_then(|r| r);
+
+            match res {
+                Ok(_) => ClientMessage::CommandResult {
+                    command_id,
+                    success: true,
+                    message: "Tangkapan layar desktop berhasil diambil (disimpan ke clipboard).".to_string(),
+                    data: serde_json::json!({ "action": "takeScreenshot" }),
+                },
+                Err(err) => ClientMessage::CommandResult {
+                    command_id,
+                    success: false,
+                    message: format!("Gagal mengambil tangkapan layar: {}", err),
+                    data: serde_json::json!({ "error": err }),
+                },
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────
         // UNKNOWN ACTION
         // ─────────────────────────────────────────────────────────────
         _ => {
@@ -981,5 +1317,73 @@ mod tests {
         let click_params = serde_json::json!({ "x": 500.0, "y": 600.0 });
         let non_sensitive = redact_params("DESKTOP_CLICK", &click_params);
         assert!(non_sensitive.contains("500"));
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_launch_app_security_and_validation() {
+        // Empty app name fails
+        let res_empty = handle_execute_command(
+            "cmd_empty_app".to_string(),
+            "LAUNCH_APP".to_string(),
+            serde_json::json!({ "app_name": "" }),
+            None,
+        )
+        .await;
+        match res_empty {
+            ClientMessage::CommandResult { success, .. } => assert!(!success),
+            _ => panic!("Expected CommandResult"),
+        }
+
+        // Dangerous script extension is blocked by security guard
+        let res_bat = handle_execute_command(
+            "cmd_bat".to_string(),
+            "LAUNCH_APP".to_string(),
+            serde_json::json!({ "app_name": "malicious.bat" }),
+            None,
+        )
+        .await;
+        match res_bat {
+            ClientMessage::CommandResult { success, message, .. } => {
+                assert!(!success);
+                assert!(message.contains("kebijakan keamanan"));
+            }
+            _ => panic!("Expected CommandResult"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_system_metrics_execution() {
+        let res = handle_execute_command(
+            "cmd_metrics".to_string(),
+            "SYSTEM_METRICS".to_string(),
+            serde_json::json!({}),
+            None,
+        )
+        .await;
+        match res {
+            ClientMessage::CommandResult { success, data, .. } => {
+                assert!(success);
+                assert!(data["cpu_percent"].as_u64().is_some());
+                assert!(data["ram_percent"].as_u64().is_some());
+            }
+            _ => panic!("Expected CommandResult"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_get_battery_status_execution() {
+        let res = handle_execute_command(
+            "cmd_bat_stat".to_string(),
+            "GET_BATTERY_STATUS".to_string(),
+            serde_json::json!({}),
+            None,
+        )
+        .await;
+        match res {
+            ClientMessage::CommandResult { command_id, .. } => {
+                assert_eq!(command_id, "cmd_bat_stat");
+            }
+            _ => panic!("Expected CommandResult"),
+        }
     }
 }
