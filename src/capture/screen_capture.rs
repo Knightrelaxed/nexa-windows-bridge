@@ -111,7 +111,7 @@ impl ScreenCaptureController {
 
         let settings = Settings::new(
             primary_monitor,
-            CursorCaptureSettings::WithCursor,
+            CursorCaptureSettings::WithoutCursor,
             DrawBorderSettings::WithoutBorder,
             SecondaryWindowSettings::Default,
             MinimumUpdateIntervalSettings::Custom(std::time::Duration::from_millis(1000)),
@@ -123,7 +123,7 @@ impl ScreenCaptureController {
         let control = ScreenCaptureHandler::start_free_threaded(settings)
             .map_err(|e| format!("Failed to start screen capture: {}", e))?;
 
-        info!("[CAPTURE] ✅ Direct3D 11 screen capture active (1 FPS, Borderless, WithCursor).");
+        info!("[CAPTURE] ✅ Direct3D 11 screen capture active (1 FPS, Borderless, WithoutCursor).");
 
         Ok(Self {
             is_active,

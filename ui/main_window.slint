@@ -274,22 +274,22 @@ export component MainWindow inherits Window {
 
                     // Window Controls Cluster: Minimize [-], Restore [🗗], Close [✕]
                     HorizontalLayout {
-                        spacing: 3px;
-                        padding-left: 4px;
+                        spacing: 2px;
+                        padding-left: 6px;
 
                         // Minimize Button [-]
                         Rectangle {
-                            width: 32px;
-                            height: 28px;
+                            width: 36px;
+                            height: 30px;
                             border-radius: 4px;
                             background: min_touch.has-hover ? #FFFFFF1A : transparent;
                             animate background { duration: 100ms; }
                             y: (parent.height - self.height) / 2;
 
                             Rectangle {
-                                width: 12px;
+                                width: 10px;
                                 height: 1.5px;
-                                background: #C9D1D9;
+                                background: min_touch.has-hover ? #FFFFFF : #C9D1D9;
                                 x: (parent.width - self.width) / 2;
                                 y: (parent.height - self.height) / 2;
                             }
@@ -302,21 +302,26 @@ export component MainWindow inherits Window {
                             }
                         }
 
-                        // Restore / Pill Mode Button [🗗]
+                        // Restore / Pill Mode Button (Standard Windows Dual Overlapping Rectangles)
                         Rectangle {
-                            width: 32px;
-                            height: 28px;
+                            width: 36px;
+                            height: 30px;
                             border-radius: 4px;
                             background: rest_touch.has-hover ? #FFFFFF1A : transparent;
                             animate background { duration: 100ms; }
                             y: (parent.height - self.height) / 2;
 
-                            Text {
-                                text: "🗗";
-                                font-size: 13px;
-                                color: #C9D1D9;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
+                            Path {
+                                width: 10px;
+                                height: 10px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                viewbox-width: 10;
+                                viewbox-height: 10;
+                                stroke: rest_touch.has-hover ? #FFFFFF : #C9D1D9;
+                                stroke-width: 1px;
+                                fill: transparent;
+                                commands: "M 0 2 L 8 2 L 8 10 L 0 10 Z M 2 2 L 2 0 L 10 0 L 10 8 L 8 8";
                             }
 
                             rest_touch := TouchArea {
@@ -330,22 +335,27 @@ export component MainWindow inherits Window {
                             }
                         }
 
-                        // Close Button [✕]
+                        // Close Button (Standard Windows Red Hover Cross)
                         Rectangle {
-                            width: 36px;
-                            height: 28px;
+                            width: 40px;
+                            height: 30px;
                             border-radius: 4px;
                             background: close_touch.has-hover ? #E81123 : transparent;
                             animate background { duration: 100ms; }
                             y: (parent.height - self.height) / 2;
 
-                            Text {
-                                text: "✕";
-                                font-size: 13px;
-                                font-weight: 700;
-                                color: close_touch.has-hover ? #FFFFFF : #C9D1D9;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
+                            Path {
+                                width: 10px;
+                                height: 10px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                viewbox-width: 10;
+                                viewbox-height: 10;
+                                stroke: close_touch.has-hover ? #FFFFFF : #C9D1D9;
+                                stroke-width: 1.2px;
+                                stroke-line-cap: round;
+                                fill: transparent;
+                                commands: "M 1 1 L 9 9 M 9 1 L 1 9";
                             }
 
                             close_touch := TouchArea {

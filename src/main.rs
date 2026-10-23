@@ -225,6 +225,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     win.set_is_screen_sharing(new_state);
                     info!("[MAIN] 👁️ Screen Sharing toggled to: {}", new_state);
 
+                    unsafe {
+                        let hwnd = get_main_window_hwnd();
+                        enforce_system_cursor_visible(hwnd);
+                    }
+
                     let mut ctrl = capture_ctrl.lock().unwrap();
 
                     if new_state {
@@ -272,6 +277,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                     let _ = slint::invoke_from_event_loop(move || {
                                         if let Some(win) = window_weak_bg.upgrade() {
+                                            unsafe {
+                                                let hwnd = get_main_window_hwnd();
+                                                enforce_system_cursor_visible(hwnd);
+                                            }
                                             win.set_avatar_state(
                                                 ui::CognitiveState::ScreenSharing.as_str().into(),
                                             );
@@ -297,6 +306,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         if let Some(mut c) = ctrl.take() {
                             c.stop();
+                        }
+                        unsafe {
+                            let hwnd = get_main_window_hwnd();
+                            enforce_system_cursor_visible(hwnd);
                         }
                         platform::compact_memory_if_low_ram(true);
                         win.set_avatar_state(ui::CognitiveState::Idle.as_str().into());
