@@ -15,6 +15,8 @@ pub const DEFAULT_SAMPLE_RATE: u32 = 16000;
 
 pub struct EchoCancellerEngine {
     apm: AudioProcessing,
+    hardware_sample_rate: u32,
+    hardware_channels: u16,
     render_accumulator: Vec<f32>,
     capture_accumulator: Vec<f32>,
     processed_queue: VecDeque<f32>,
@@ -27,38 +29,73 @@ pub struct EchoCancellerEngine {
 
 impl EchoCancellerEngine {
     pub fn new() -> Result<Self, sonora::Error> {
+        Self::new_with_format(DEFAULT_SAMPLE_RATE, 1)
+    }
+
+    pub fn new_with_format(hardware_sample_rate: u32, hardware_channels: u16) -> Result<Self, sonora::Error> {
         let config = Config {
             echo_canceller: Some(EchoCanceller::default()),
             noise_suppression: Some(NoiseSuppression {
                 level: NoiseSuppressionLevel::High,
                 analyze_linear_aec_output_when_available: true,
             }),
-            gain_controller2: Some(GainController2::default()),
+            gain_controller2: Some(GainController2 {
+                adaptive_digital: Some(sonora::config::AdaptiveDigital {
+                    headroom_db: 5.0,
+                    max_gain_db: 30.0,
+                    initial_gain_db: 12.0,
+                    max_gain_change_db_per_second: 15.0,
+                    max_output_noise_level_dbfs: -45.0,
+                }),
+                fixed_digital: sonora::config::FixedDigital::default(),
+                input_volume_controller: false,
+            }),
             high_pass_filter: Some(HighPassFilter {
                 apply_in_full_band: true,
             }),
             pre_amplifier: Some(PreAmplifier {
                 fixed_gain_factor: 2.5, // +8dB clean analog-style pre-amp for ThinkPad mic array
             }),
+            pipeline: sonora::config::Pipeline {
+                multi_channel_render: true,
+                multi_channel_capture: hardware_channels > 1,
+                ..Default::default()
+            },
             ..Default::default()
         };
 
         let apm = AudioProcessing::builder()
             .config(config)
-            .capture_config(StreamConfig::new(DEFAULT_SAMPLE_RATE, 1))
-            .render_config(StreamConfig::new(DEFAULT_SAMPLE_RATE, 1))
+            .capture_config(StreamConfig::new(hardware_sample_rate, hardware_channels))
+            .render_config(StreamConfig::new(hardware_sample_rate, 1))
             .build();
+
+        let frame_frames = (hardware_sample_rate / 100) as usize;
+        let channels = hardware_channels.max(1) as usize;
 
         Ok(Self {
             apm,
-            render_accumulator: Vec::with_capacity(CHUNK_SIZE_10MS * 2),
-            capture_accumulator: Vec::with_capacity(CHUNK_SIZE_10MS * 2),
+            hardware_sample_rate,
+            hardware_channels,
+            render_accumulator: Vec::with_capacity(frame_frames * 4),
+            capture_accumulator: Vec::with_capacity(frame_frames * channels * 4),
             processed_queue: VecDeque::with_capacity(3200),
             is_speaking: false,
             ducking_factor: 0.125, // -18dB attenuation
-            barge_in_threshold: 0.15, // Voice barge-in RMS threshold after AEC (distinguishes intentional speech from speaker bleed)
+            barge_in_threshold: 0.12, // Voice barge-in RMS threshold after AEC
             barge_in_detected: false,
         })
+    }
+
+    /// Set or update the hardware audio format (sample rate and channels).
+    pub fn set_hardware_format(&mut self, sample_rate: u32, channels: u16) {
+        if self.hardware_sample_rate != sample_rate || self.hardware_channels != channels {
+            self.hardware_sample_rate = sample_rate;
+            self.hardware_channels = channels;
+            self.render_accumulator.clear();
+            self.capture_accumulator.clear();
+            self.processed_queue.clear();
+        }
     }
 
     /// Set whether N.E.X.A is currently speaking out of the laptop speakers.
@@ -82,28 +119,66 @@ impl EchoCancellerEngine {
         detected
     }
 
-    /// Feed reference speaker audio (16kHz mono f32) played by the speakers.
+    /// Feed reference speaker audio (mono f32 at hardware_sample_rate) played by the speakers.
     /// Immediately processes 10ms chunks into WebRTC AEC3 internal delay buffer.
     pub fn feed_render_samples(&mut self, samples: &[f32]) {
         self.render_accumulator.extend_from_slice(samples);
 
-        while self.render_accumulator.len() >= CHUNK_SIZE_10MS {
-            let chunk: Vec<f32> = self.render_accumulator.drain(..CHUNK_SIZE_10MS).collect();
-            let mut render_out = vec![0.0f32; CHUNK_SIZE_10MS];
-            let _ = self.apm.process_render_f32(&[&chunk], &mut [&mut render_out]);
+        let frame_frames = (self.hardware_sample_rate / 100) as usize;
+        while self.render_accumulator.len() >= frame_frames {
+            let chunk: Vec<f32> = self.render_accumulator.drain(..frame_frames).collect();
+            let render_cfg = StreamConfig::new(self.hardware_sample_rate, 1);
+            let mut render_out = vec![0.0f32; frame_frames];
+            let render_src: &[&[f32]] = &[&chunk];
+            let render_dest: &mut [&mut [f32]] = &mut [&mut render_out];
+            let _ = self.apm.process_render_f32_with_config(render_src, &render_cfg, &render_cfg, render_dest);
         }
     }
 
-    /// Feed captured microphone audio (16kHz mono f32). Processes full 10ms chunks.
+    /// Feed captured microphone audio (interleaved f32 at hardware_sample_rate).
+    /// WebRTC APM handles deinterleaving, beamforming, AEC3, NS, AGC2, and band-limited resampling to 16kHz mono.
     pub fn feed_capture_samples(&mut self, samples: &[f32]) {
         self.capture_accumulator.extend_from_slice(samples);
 
-        while self.capture_accumulator.len() >= CHUNK_SIZE_10MS {
-            let chunk: Vec<f32> = self.capture_accumulator.drain(..CHUNK_SIZE_10MS).collect();
+        let frame_frames = (self.hardware_sample_rate / 100) as usize;
+        let channels = self.hardware_channels.max(1) as usize;
+        let required_samples = frame_frames * channels;
 
-            // Process capture frame through WebRTC AEC3 + NS + AGC + HPF
-            let mut capture_out = vec![0.0f32; CHUNK_SIZE_10MS];
-            if self.apm.process_capture_f32(&[&chunk], &mut [&mut capture_out]).is_ok() {
+        while self.capture_accumulator.len() >= required_samples {
+            let chunk: Vec<f32> = self.capture_accumulator.drain(..required_samples).collect();
+
+            let mut left = Vec::with_capacity(frame_frames);
+            let mut right = if channels > 1 { Vec::with_capacity(frame_frames) } else { Vec::new() };
+
+            if channels == 1 {
+                left.extend_from_slice(&chunk);
+            } else if channels == 2 {
+                for frame in chunk.chunks_exact(2) {
+                    left.push(frame[0]);
+                    right.push(frame[1]);
+                }
+            } else {
+                for frame in chunk.chunks_exact(channels) {
+                    left.push(frame[0]);
+                    right.push(frame[1]);
+                }
+            }
+
+            let in_cfg = StreamConfig::new(self.hardware_sample_rate, self.hardware_channels);
+            let out_cfg = StreamConfig::new(DEFAULT_SAMPLE_RATE, 1);
+            let mut capture_out = vec![0.0f32; CHUNK_SIZE_10MS]; // 160 samples at 16kHz
+
+            let process_result = if channels > 1 {
+                let cap_src: &[&[f32]] = &[&left, &right];
+                let cap_dest: &mut [&mut [f32]] = &mut [&mut capture_out];
+                self.apm.process_capture_f32_with_config(cap_src, &in_cfg, &out_cfg, cap_dest)
+            } else {
+                let cap_src: &[&[f32]] = &[&left];
+                let cap_dest: &mut [&mut [f32]] = &mut [&mut capture_out];
+                self.apm.process_capture_f32_with_config(cap_src, &in_cfg, &out_cfg, cap_dest)
+            };
+
+            if process_result.is_ok() {
                 // If speaker is actively playing, check if user is intentionally speaking (barge-in)
                 if self.is_speaking {
                     let mut sum_sq = 0.0f32;
@@ -123,7 +198,7 @@ impl EchoCancellerEngine {
                 if self.is_speaking {
                     self.processed_queue.extend(vec![0.0f32; CHUNK_SIZE_10MS]);
                 } else {
-                    self.processed_queue.extend(chunk);
+                    self.processed_queue.extend(vec![0.0f32; CHUNK_SIZE_10MS]);
                 }
             }
         }
@@ -206,5 +281,64 @@ mod tests {
         assert_eq!(read, 160);
         // Captured speaker sound must be completely muted (0.0) to prevent self-interruption
         assert!(out.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn test_sonora_native_resampling_and_downmix() {
+        let config = Config {
+            echo_canceller: Some(EchoCanceller::default()),
+            noise_suppression: Some(NoiseSuppression {
+                level: NoiseSuppressionLevel::High,
+                analyze_linear_aec_output_when_available: true,
+            }),
+            gain_controller2: Some(GainController2 {
+                adaptive_digital: Some(sonora::config::AdaptiveDigital {
+                    headroom_db: 5.0,
+                    max_gain_db: 30.0,
+                    initial_gain_db: 12.0,
+                    max_gain_change_db_per_second: 15.0,
+                    max_output_noise_level_dbfs: -45.0,
+                }),
+                fixed_digital: sonora::config::FixedDigital::default(),
+                input_volume_controller: false,
+            }),
+            high_pass_filter: Some(HighPassFilter {
+                apply_in_full_band: true,
+            }),
+            pre_amplifier: Some(PreAmplifier {
+                fixed_gain_factor: 2.0,
+            }),
+            pipeline: sonora::config::Pipeline {
+                multi_channel_render: true,
+                multi_channel_capture: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut apm = AudioProcessing::builder().config(config).build();
+
+        // 1. Process 10ms render reference at 48kHz mono (480 samples)
+        let render_cfg = StreamConfig::new(48000, 1);
+        let render_src_data = vec![0.1f32; 480];
+        let mut render_dest_data = vec![0.0f32; 480];
+        let render_src: &[&[f32]] = &[&render_src_data];
+        let render_dest: &mut [&mut [f32]] = &mut [&mut render_dest_data];
+
+        let r_res = apm.process_render_f32_with_config(render_src, &render_cfg, &render_cfg, render_dest);
+        assert!(r_res.is_ok(), "process_render_f32_with_config failed: {:?}", r_res.err());
+
+        // 2. Process 10ms capture at 48kHz stereo (2x480 samples) -> 16kHz mono (160 samples)
+        let cap_in_cfg = StreamConfig::new(48000, 2);
+        let cap_out_cfg = StreamConfig::new(16000, 1);
+        let left = vec![0.05f32; 480];
+        let right = vec![0.05f32; 480];
+        let cap_src: &[&[f32]] = &[&left, &right];
+        let mut out_16k = vec![0.0f32; 160];
+        let cap_dest: &mut [&mut [f32]] = &mut [&mut out_16k];
+
+        let c_res = apm.process_capture_f32_with_config(cap_src, &cap_in_cfg, &cap_out_cfg, cap_dest);
+        assert!(c_res.is_ok(), "process_capture_f32_with_config failed: {:?}", c_res.err());
+        assert_eq!(out_16k.len(), 160);
     }
 }

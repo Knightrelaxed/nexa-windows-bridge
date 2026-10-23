@@ -5,7 +5,7 @@
 
 use super::audio_buffer::{create_audio_ring_buffer, AudioConsumer};
 use super::echo_canceller::EchoCancellerEngine;
-use super::resampler::{downmix_to_mono, f32_to_i16, i16_to_pcm_bytes, resample_linear};
+use super::resampler::{f32_to_i16, i16_to_pcm_bytes};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -115,6 +115,11 @@ impl MicrophoneCapture {
 
         info!("[MIC] Capture stream started successfully.");
 
+        // Synchronize AEC engine with exact hardware format
+        if let Ok(mut aec) = aec_engine.lock() {
+            aec.set_hardware_format(hardware_sample_rate, hardware_channels);
+        }
+
         // Spawn async background processing worker
         let is_running = Arc::clone(&is_capturing);
         tokio::spawn(run_mic_processing_worker(
@@ -154,7 +159,7 @@ impl MicrophoneCapture {
 #[allow(clippy::too_many_arguments)]
 async fn run_mic_processing_worker(
     mut consumer: AudioConsumer<f32>,
-    hardware_sample_rate: u32,
+    _hardware_sample_rate: u32,
     hardware_channels: u16,
     outbound_pcm_tx: mpsc::Sender<Vec<u8>>,
     mut echo_ref_consumer: AudioConsumer<f32>,
@@ -183,13 +188,8 @@ async fn run_mic_processing_worker(
         let mut ref_scratch = [0.0f32; 1024];
         let ref_read = echo_ref_consumer.pop_slice(&mut ref_scratch);
         if ref_read > 0 {
-            let ref_16k = if hardware_sample_rate != 16000 {
-                resample_linear(&ref_scratch[..ref_read], hardware_sample_rate, 16000)
-            } else {
-                ref_scratch[..ref_read].to_vec()
-            };
             if let Ok(mut aec) = aec_engine.lock() {
-                aec.feed_render_samples(&ref_16k);
+                aec.feed_render_samples(&ref_scratch[..ref_read]);
             }
         }
 
@@ -206,27 +206,20 @@ async fn run_mic_processing_worker(
             let read = consumer.pop_slice(&mut raw_chunk[..to_read]);
             let captured_slice = &raw_chunk[..read];
 
-            // Downmix to mono if multi-channel (stereo, quad, etc.)
-            let mono_slice = downmix_to_mono(captured_slice, hardware_channels);
-
-            // Resample to 16,000 Hz if needed
-            let samples_16k = if hardware_sample_rate != 16000 {
-                resample_linear(&mono_slice, hardware_sample_rate, 16000)
-            } else {
-                mono_slice
-            };
-
-            // Process through WebRTC AEC3 + Acoustic Suppression Engine
-            let mut processed_16k = Vec::with_capacity(samples_16k.len());
+            // Process through WebRTC AEC3 + Beamforming + Acoustic Suppression + AGC2 Engine
+            let mut processed_16k = Vec::new();
             let mut barge_in_fired = false;
 
             {
                 if let Ok(mut aec) = aec_engine.lock() {
-                    aec.feed_capture_samples(&samples_16k);
+                    aec.feed_capture_samples(captured_slice);
 
-                    let mut temp = vec![0.0f32; aec.available_samples()];
-                    let count = aec.read_processed_samples(&mut temp);
-                    processed_16k.extend_from_slice(&temp[..count]);
+                    let avail = aec.available_samples();
+                    if avail > 0 {
+                        let mut temp = vec![0.0f32; avail];
+                        let count = aec.read_processed_samples(&mut temp);
+                        processed_16k.extend_from_slice(&temp[..count]);
+                    }
 
                     if aec.take_barge_in() {
                         barge_in_fired = true;
