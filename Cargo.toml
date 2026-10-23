@@ -52,6 +52,14 @@ windows-sys = { version = "0.59", features = [
 slint-build = "1.18.1"
 winres = "0.1"
 
+[profile.dev]
+debug = 1
+incremental = false
+
+[profile.test]
+debug = 1
+incremental = false
+
 [profile.release]
 opt-level = 3
 lto = "fat"
