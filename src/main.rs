@@ -76,7 +76,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .join("logs");
     let _ = std::fs::create_dir_all(&log_dir);
 
-    let file_appender = tracing_appender::rolling::daily(&log_dir, "nexa-bridge.log");
+    let file_appender = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("nexa-bridge")
+        .filename_suffix("log")
+        .max_log_files(7)
+        .build(&log_dir)?;
     let (non_blocking_file, _log_guard) = tracing_appender::non_blocking(file_appender);
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -216,6 +221,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let is_capture_desired = Arc::new(AtomicBool::new(false));
     let capture_generation = Arc::new(AtomicU64::new(0));
 
+    // Session generation epoch & automation armed guard for security isolation (Audit K1, K2)
+    let session_generation = Arc::new(AtomicU64::new(0));
+    let is_automation_armed = Arc::new(AtomicBool::new(true));
+
     let toggle_screen_share: Arc<dyn Fn(Option<bool>) + Send + Sync> = {
         let capture_ctrl = Arc::clone(&capture_controller);
         let is_capture_desired = Arc::clone(&is_capture_desired);
@@ -248,6 +257,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if new_state {
                         let gen = capture_generation.fetch_add(1, Ordering::SeqCst) + 1;
                         is_capture_desired.store(true, Ordering::SeqCst);
+
+                        // If any previous controller is lingering, stop it in spawn_blocking immediately (Audit K3)
+                        {
+                            let mut ctrl = capture_ctrl.lock().unwrap();
+                            if let Some(mut old_c) = ctrl.take() {
+                                tokio::task::spawn_blocking(move || {
+                                    old_c.stop();
+                                });
+                            }
+                        }
 
                         let fps = {
                             let cfg = config_clone.lock().unwrap();
@@ -342,11 +361,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         capture_generation.fetch_add(1, Ordering::SeqCst);
                         is_capture_desired.store(false, Ordering::SeqCst);
-                        {
+                        // Cleanly stop capture controller in background thread to avoid freezing UI (Audit K3)
+                        let old_controller = {
                             let mut ctrl = capture_ctrl.lock().unwrap();
-                            if let Some(mut c) = ctrl.take() {
+                            ctrl.take()
+                        };
+                        if let Some(mut c) = old_controller {
+                            tokio::task::spawn_blocking(move || {
                                 c.stop();
-                            }
+                            });
                         }
                         unsafe {
                             let hwnd = get_main_window_hwnd();
@@ -435,6 +458,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let net_client_audio = network_client.clone();
     let toggle_share_conn = Arc::clone(&toggle_screen_share);
     let is_speaker_playing_mic = is_speaker_playing.clone();
+    let session_gen_conn = Arc::clone(&session_generation);
+    let armed_conn = Arc::clone(&is_automation_armed);
 
     tokio::spawn(async move {
         let (mic_pcm_tx, mut mic_pcm_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
@@ -571,10 +596,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
 
-            // Start or stop WASAPI duplex audio engine asynchronously in background task (Claude Bug #5 & #8)
+            // Start or stop WASAPI duplex audio engine asynchronously in background task (Claude Bug #5 & #8, Audit K4)
             match &state {
                 ConnectionState::Connected => {
                     info!("[MAIN] 🎙️ Connection active: Starting WASAPI Duplex Audio Engine...");
+                    automation::reset_automation_abort();
+                    armed_conn.store(true, Ordering::SeqCst);
+
                     if let Some(audio_clone) = audio_engine_conn.as_ref().map(Arc::clone) {
                         let mic_tx = mic_pcm_tx.clone();
                         tokio::spawn(async move {
@@ -599,8 +627,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let _ = net_client_handshake.send_message(call_start_msg).await;
                     });
                 }
-                ConnectionState::Disconnected | ConnectionState::Suspended => {
-                    info!("[MAIN] Connection inactive: Stopping WASAPI Duplex Audio Engine...");
+                ConnectionState::Disconnected
+                | ConnectionState::Suspended
+                | ConnectionState::AuthRejected => {
+                    info!("[MAIN] Connection inactive: Stopping WASAPI Duplex & Invalidating Session...");
+                    session_gen_conn.fetch_add(1, Ordering::SeqCst);
+                    automation::request_automation_abort();
+                    armed_conn.store(false, Ordering::SeqCst);
+
+                    if let Some(audio_clone) = audio_engine_conn.as_ref().map(Arc::clone) {
+                        tokio::spawn(async move {
+                            let mut engine = audio_clone.lock().await;
+                            engine.stop_duplex();
+                        });
+                    }
+                }
+                ConnectionState::Reconnecting { attempt, .. } if *attempt >= 6 => {
+                    info!("[MAIN] Extended reconnection (#{}): Stopping WASAPI Duplex Audio Engine...", attempt);
+                    session_gen_conn.fetch_add(1, Ordering::SeqCst);
+                    automation::request_automation_abort();
+
                     if let Some(audio_clone) = audio_engine_conn.as_ref().map(Arc::clone) {
                         tokio::spawn(async move {
                             let mut engine = audio_clone.lock().await;
@@ -620,24 +666,76 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let window_weak_cmd = main_window.as_weak();
     let highlighter_cmd = Arc::clone(&highlighter_controller);
     let is_speaker_playing_cmd = is_speaker_playing.clone();
+    let session_gen_cmd = Arc::clone(&session_generation);
 
-    // Dedicated sequential FIFO queue for EXECUTE_COMMAND to guarantee strict ordering (Audit H10)
+    // Dedicated sequential FIFO queue for EXECUTE_COMMAND with generation & panic isolation (Audit H10, K1, K2, K9)
     let (fifo_cmd_tx, mut fifo_cmd_rx) =
-        tokio::sync::mpsc::channel::<(String, String, serde_json::Value)>(32);
+        tokio::sync::mpsc::channel::<(u64, String, String, serde_json::Value)>(32);
     let hl_worker = Arc::clone(&highlighter_cmd);
     let net_tx_worker = net_client_cmd.clone();
+    let session_gen_worker = Arc::clone(&session_generation);
+    let armed_worker = Arc::clone(&is_automation_armed);
 
     tokio::spawn(async move {
-        while let Some((cmd_id, action_name, action_params)) = fifo_cmd_rx.recv().await {
-            let result = automation::handle_execute_command(
-                cmd_id,
-                action_name,
-                action_params,
-                Some(&hl_worker),
-            )
-            .await;
+        while let Some((gen, cmd_id, action_name, action_params)) = fifo_cmd_rx.recv().await {
+            let current_gen = session_gen_worker.load(Ordering::SeqCst);
+            if gen != current_gen {
+                info!(
+                    "[MAIN] ⏭️ Stale command [{}] from generation {} dropped (current: {})",
+                    cmd_id, gen, current_gen
+                );
+                continue;
+            }
 
-            let _ = net_tx_worker.send_message(result).await;
+            // Check armed guard for physical input actions (clicks, typing, keys, scrolling) (Audit K1)
+            let action_upper = action_name.trim().to_uppercase();
+            let is_physical_input = action_upper.contains("CLICK")
+                || action_upper.contains("TYPE")
+                || action_upper.contains("PRESS")
+                || action_upper.contains("SCROLL");
+
+            if is_physical_input && !armed_worker.load(Ordering::SeqCst) {
+                warn!("[MAIN] 🛡️ Command [{}] rejected: Desktop automation is DISARMED", cmd_id);
+                let disarm_msg = ClientMessage::CommandResult {
+                    command_id: cmd_id,
+                    success: false,
+                    message: "Otomatisasi desktop sedang dinonaktifkan (Disarmed). Buka kembali izin atau matikan Boss Mode.".to_string(),
+                    data: serde_json::json!({ "error": "AUTOMATION_DISARMED" }),
+                };
+                let _ = net_tx_worker.send_message(disarm_msg).await;
+                continue;
+            }
+
+            // Panic isolation: wrap execution in task so unexpected panics never kill the worker (Audit K9)
+            let hl_task = Arc::clone(&hl_worker);
+            let cmd_id_task = cmd_id.clone();
+            let action_task = action_name.clone();
+            let handle = tokio::spawn(async move {
+                automation::handle_execute_command(
+                    cmd_id_task,
+                    action_task,
+                    action_params,
+                    Some(&hl_task),
+                )
+                .await
+            });
+
+            let result = match handle.await {
+                Ok(res) => res,
+                Err(join_err) => {
+                    error!("[MAIN] 💥 Panic/Join error executing command [{}]: {}", cmd_id, join_err);
+                    ClientMessage::CommandResult {
+                        command_id: cmd_id,
+                        success: false,
+                        message: "Internal panic occurred during command execution".to_string(),
+                        data: serde_json::json!({ "error": "INTERNAL_PANIC" }),
+                    }
+                }
+            };
+
+            if session_gen_worker.load(Ordering::SeqCst) == gen {
+                let _ = net_tx_worker.send_message(result).await;
+            }
         }
         info!("[MAIN] FIFO command executor loop terminated.");
     });
@@ -748,7 +846,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     params,
                     ..
                 } => {
-                    info!("[MAIN] 🛠️ Executing command '{}' [{}]", action, command_id);
+                    info!(
+                        "[MAIN] 🛠️ Executing command '{}' [{}] params: {}",
+                        action,
+                        command_id,
+                        automation::redact_params(&action, &params)
+                    );
 
                     let window_weak_auto = window_weak_cmd.clone();
                     // Safe UTF-8 substring extraction to prevent character boundary panics (Claude Bug #12)
@@ -764,9 +867,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
 
-                    // Enqueue to serial FIFO queue to preserve strict sequence order (Audit H10)
-                    if let Err(e) = fifo_cmd_tx.send((command_id, action, params)).await {
-                        warn!("[MAIN] Failed to enqueue command to FIFO worker: {}", e);
+                    // Enqueue to serial FIFO queue with session epoch non-blockingly (Audit H10, K2, K6)
+                    let current_gen = session_gen_cmd.load(Ordering::SeqCst);
+                    if let Err(_) = fifo_cmd_tx.try_send((current_gen, command_id.clone(), action, params)) {
+                        warn!("[MAIN] FIFO command queue full! Dropping command [{}]", command_id);
+                        let net_drop_tx = net_client_cmd.clone();
+                        tokio::spawn(async move {
+                            let drop_msg = ClientMessage::CommandResult {
+                                command_id,
+                                success: false,
+                                message: "Antrean perintah bridge penuh (Queue full). Perintah dibatalkan.".to_string(),
+                                data: serde_json::json!({ "error": "QUEUE_FULL" }),
+                            };
+                            let _ = net_drop_tx.send_message(drop_msg).await;
+                        });
                     }
                 }
                 _ => {}
@@ -892,10 +1006,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let window_weak_hotkey = main_window.as_weak();
     let audio_engine_hotkey = audio_engine.clone();
     let toggle_share_hotkey = Arc::clone(&toggle_screen_share);
+    let highlighter_hotkey = Arc::clone(&highlighter_controller);
+    let armed_hotkey = Arc::clone(&is_automation_armed);
     let _hotkey_listener = HotkeyListener::spawn(move |action| {
         let window_weak = window_weak_hotkey.clone();
         let audio_engine = audio_engine_hotkey.clone();
         let toggle_share = Arc::clone(&toggle_share_hotkey);
+        let highlighter = Arc::clone(&highlighter_hotkey);
+        let armed = Arc::clone(&armed_hotkey);
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(win) = window_weak.upgrade() {
                 match action {
@@ -907,8 +1025,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             win.window().set_minimized(false);
                             let _ = win.window().show();
                         } else if is_vis {
+                            // Emergency disarm and silence everything on Boss Key hide (Audit K1)
                             let _ = win.window().hide();
+                            automation::request_automation_abort();
+                            highlighter.clear_all();
+                            armed.store(false, Ordering::SeqCst);
+                            toggle_share(Some(false));
+                            win.set_is_mic_muted(true);
+                            if let Some(audio_clone) = audio_engine.as_ref() {
+                                let audio_clone = Arc::clone(audio_clone);
+                                tokio::spawn(async move {
+                                    let engine = audio_clone.lock().await;
+                                    engine.set_mic_muted(true);
+                                });
+                            }
                         } else {
+                            win.window().set_minimized(false);
                             let _ = win.window().show();
                         }
                     }
@@ -1353,14 +1485,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     slint::run_event_loop_until_quit()?;
 
-    info!("[MAIN] Application event loop ended. Cleaning up resources...");
+    info!("[MAIN] Application event loop ended. Performing clean and graceful shutdown (Audit K7)...");
+    highlighter_controller.clear_all();
     network_client.disconnect();
+    if let Some(a) = &audio_engine {
+        let mut engine = a.lock().await;
+        engine.stop_duplex();
+    }
     if let Ok(mut ctrl) = capture_controller.lock() {
         if let Some(mut c) = ctrl.take() {
             c.stop();
         }
     }
-    std::process::exit(0);
+    drop(_system_tray);
+    drop(_hotkey_listener);
+    drop(_power_listener);
+    drop(_overlay_guard);
+    drop(_log_guard);
+
+    info!("[MAIN] Graceful shutdown complete. Exiting cleanly.");
+    Ok(())
 }
 
 /// Helper function to perform a test WebSocket connection with Bearer auth
@@ -1466,11 +1610,11 @@ unsafe fn get_main_window_hwnd() -> windows_sys::Win32::Foundation::HWND {
     ctx.found
 }
 
-/// Helper to configure the pill window geometry and position (top-center, DPI-scaled)
+/// Helper to configure the pill window geometry and position (top-center, DPI-scaled, non-activating)
 unsafe fn position_floating_pill_window(hwnd: windows_sys::Win32::Foundation::HWND) {
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetSystemMetrics, SetWindowPos, HWND_TOPMOST, SM_CXSCREEN, SWP_SHOWWINDOW,
+        GetSystemMetrics, SetWindowPos, HWND_TOPMOST, SM_CXSCREEN, SWP_NOACTIVATE, SWP_SHOWWINDOW,
     };
 
     let dpi = GetDpiForWindow(hwnd);
@@ -1486,7 +1630,16 @@ unsafe fn position_floating_pill_window(hwnd: windows_sys::Win32::Foundation::HW
     let pos_x = (screen_w - pill_w) / 2;
     let pos_y = (16.0 * scale).round() as i32;
 
-    SetWindowPos(hwnd, HWND_TOPMOST, pos_x, pos_y, pill_w, pill_h, SWP_SHOWWINDOW);
+    // Use SWP_SHOWWINDOW | SWP_NOACTIVATE so positioning pill never steals keyboard focus from active apps (Audit K8)
+    SetWindowPos(
+        hwnd,
+        HWND_TOPMOST,
+        pos_x,
+        pos_y,
+        pill_w,
+        pill_h,
+        SWP_SHOWWINDOW | SWP_NOACTIVATE,
+    );
 }
 
 /// Helper to configure the settings dialog window geometry and position (DPI-scaled)

@@ -18,8 +18,32 @@ pub use input::*;
 use crate::network::ClientMessage;
 use tracing::{info, warn};
 
+/// Helper to sanitize sensitive parameters (e.g. passwords/text in DESKTOP_TYPE_TEXT) from disk logs (Audit K5)
+pub fn redact_params(action: &str, params: &serde_json::Value) -> String {
+    let a = action.trim().to_uppercase();
+    if a.contains("TYPE_TEXT") || a.contains("TYPETEXT") {
+        let text_len = params
+            .get("text")
+            .or_else(|| params.get("content"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.chars().count())
+            .unwrap_or(0);
+        let press_enter = params
+            .get("press_enter")
+            .or_else(|| params.get("pressEnter"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        format!(
+            r#"{{"text":"<redacted len={}>","press_enter":{}}}"#,
+            text_len, press_enter
+        )
+    } else {
+        params.to_string()
+    }
+}
+
 /// Central command dispatcher for ServerMessage::ExecuteCommand.
-/// Maps 7 standard actions to native Windows automation, UI Automation snapping,
+/// Maps standard actions to native Windows automation, UI Automation snapping,
 /// and DirectComposition/Slint overlays, returning strongly-typed CommandResult messages.
 pub async fn handle_execute_command(
     command_id: String,
@@ -30,7 +54,9 @@ pub async fn handle_execute_command(
     let action_clean = action.trim().to_uppercase();
     info!(
         "[AUTOMATION] ⚡ Dispatching command '{}' [{}] with params: {}",
-        action_clean, command_id, params
+        action_clean,
+        command_id,
+        redact_params(&action_clean, &params)
     );
 
     match action_clean.as_str() {
@@ -939,5 +965,21 @@ mod tests {
             }
             _ => panic!("Expected CommandResult"),
         }
+    }
+
+    #[test]
+    fn test_redact_params() {
+        let sensitive = serde_json::json!({
+            "text": "MySecretPassword123!",
+            "press_enter": true
+        });
+        let redacted = redact_params("DESKTOP_TYPE_TEXT", &sensitive);
+        assert!(!redacted.contains("MySecretPassword123!"));
+        assert!(redacted.contains("<redacted len=20>"));
+        assert!(redacted.contains("press_enter"));
+
+        let click_params = serde_json::json!({ "x": 500.0, "y": 600.0 });
+        let non_sensitive = redact_params("DESKTOP_CLICK", &click_params);
+        assert!(non_sensitive.contains("500"));
     }
 }
