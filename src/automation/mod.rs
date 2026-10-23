@@ -83,32 +83,40 @@ pub async fn handle_execute_command(
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            // Trigger visual click ripple indicator and auto-dissolve active highlight (Pilar 4.5)
-            let screen = get_primary_screen_dimensions();
-            let (px, py) = denormalize_to_pixels(x, y, screen.width, screen.height);
-            if let Some(hl) = highlighter {
-                hl.show_click_ripple(px, py);
-                hl.dissolve_active_highlight();
-            }
+            // Execute physical click via spawn_blocking FIRST so overlay window never intercepts it (Audit C2)
+            let click_res = tokio::task::spawn_blocking(move || {
+                desktop_click(x, y, button, double_click)
+            })
+            .await
+            .map_err(|e| format!("Join error: {}", e))
+            .and_then(|r| r);
 
-            match desktop_click(x, y, button, double_click) {
-                Ok((res_px, res_py)) => ClientMessage::CommandResult {
-                    command_id,
-                    success: true,
-                    message: format!(
-                        "Titik ({:.1}, {:.1}) [pixel: {}, {}] berhasil diklik di layar desktop.",
-                        x, y, res_px, res_py
-                    ),
-                    data: serde_json::json!({
-                        "action": "desktopClick",
-                        "x": x,
-                        "y": y,
-                        "pixel_x": res_px,
-                        "pixel_y": res_py,
-                        "button": format!("{:?}", button),
-                        "double_click": double_click
-                    }),
-                },
+            match click_res {
+                Ok((res_px, res_py)) => {
+                    // Trigger visual click ripple indicator and auto-dissolve active highlight ONLY after click succeeds
+                    if let Some(hl) = highlighter {
+                        hl.dissolve_active_highlight();
+                        hl.show_click_ripple(res_px, res_py);
+                    }
+
+                    ClientMessage::CommandResult {
+                        command_id,
+                        success: true,
+                        message: format!(
+                            "Titik ({:.1}, {:.1}) [pixel: {}, {}] berhasil diklik di layar desktop.",
+                            x, y, res_px, res_py
+                        ),
+                        data: serde_json::json!({
+                            "action": "desktopClick",
+                            "x": x,
+                            "y": y,
+                            "pixel_x": res_px,
+                            "pixel_y": res_py,
+                            "button": format!("{:?}", button),
+                            "double_click": double_click
+                        }),
+                    }
+                }
                 Err(err) => {
                     warn!("[AUTOMATION] desktop_click failed: {}", err);
                     ClientMessage::CommandResult {
@@ -128,7 +136,8 @@ pub async fn handle_execute_command(
             let direction = params
                 .get("direction")
                 .and_then(|v| v.as_str())
-                .unwrap_or("DOWN");
+                .unwrap_or("DOWN")
+                .to_string();
             let amount = params
                 .get("amount")
                 .or_else(|| params.get("lines"))
@@ -136,7 +145,15 @@ pub async fn handle_execute_command(
                 .and_then(|v| v.as_i64())
                 .unwrap_or(3) as i32;
 
-            match desktop_scroll(direction, amount) {
+            let dir_clone = direction.clone();
+            let scroll_res = tokio::task::spawn_blocking(move || {
+                desktop_scroll(&dir_clone, amount)
+            })
+            .await
+            .map_err(|e| format!("Join error: {}", e))
+            .and_then(|r| r);
+
+            match scroll_res {
                 Ok(delta) => ClientMessage::CommandResult {
                     command_id,
                     success: true,
@@ -184,13 +201,32 @@ pub async fn handle_execute_command(
                 }
             };
 
+            // Security Policy Guard: Limit maximum text length per command (Claude 2 & 3 Audit)
+            if text.chars().count() > 1000 {
+                warn!("[AUTOMATION] ⛔ desktopTypeText blocked: text too long ({} chars)", text.chars().count());
+                return ClientMessage::CommandResult {
+                    command_id,
+                    success: false,
+                    message: "Teks yang akan diketik melebihi batas keamanan (maksimal 1000 karakter).".to_string(),
+                    data: serde_json::json!({ "error": "TEXT_TOO_LONG" }),
+                };
+            }
+
             let press_enter = params
                 .get("press_enter")
                 .or_else(|| params.get("pressEnter"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            match desktop_type_text(text, press_enter) {
+            let text_owned = text.to_string();
+            let type_res = tokio::task::spawn_blocking(move || {
+                desktop_type_text(&text_owned, press_enter)
+            })
+            .await
+            .map_err(|e| format!("Join error: {}", e))
+            .and_then(|r| r);
+
+            match type_res {
                 Ok(chars_typed) => ClientMessage::CommandResult {
                     command_id,
                     success: true,
@@ -234,7 +270,34 @@ pub async fn handle_execute_command(
                 }
             };
 
-            match desktop_press_key(key) {
+            // Security Policy Guard: Disallow dangerous system keys/combinations (Claude 2 & 3 Audit)
+            let key_upper = key.to_uppercase();
+            let is_blocked = key_upper.split('+').any(|p| {
+                let p = p.trim();
+                p == "WIN" || p == "WINDOWS" || p == "SUPER" || p == "LWIN" || p == "RWIN"
+            }) || key_upper.contains("ALT+F4")
+               || (key_upper.contains("CTRL") && key_upper.contains("ALT") && (key_upper.contains("DEL") || key_upper.contains("DELETE")))
+               || (key_upper.contains("CTRL") && key_upper.contains("SHIFT") && (key_upper.contains("ESC") || key_upper.contains("ESCAPE")));
+
+            if is_blocked {
+                warn!("[AUTOMATION] ⛔ Key press '{}' BLOCKED by security policy", key);
+                return ClientMessage::CommandResult {
+                    command_id,
+                    success: false,
+                    message: format!("Penekanan tombol '{}' diblokir oleh kebijakan keamanan sistem.", key),
+                    data: serde_json::json!({ "error": "SECURITY_POLICY_VIOLATION", "key": key }),
+                };
+            }
+
+            let key_owned = key.to_string();
+            let press_res = tokio::task::spawn_blocking(move || {
+                desktop_press_key(&key_owned)
+            })
+            .await
+            .map_err(|e| format!("Join error: {}", e))
+            .and_then(|r| r);
+
+            match press_res {
                 Ok(vk) => ClientMessage::CommandResult {
                     command_id,
                     success: true,

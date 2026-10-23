@@ -167,6 +167,26 @@ pub fn map_key_name_to_vk(key_name: &str) -> Option<u16> {
 // Win32 SendInput Execution Layer
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Helper to send an array of Win32 INPUT events and verify full transmission.
+/// Returns an error if SendInput blocked or failed (e.g. UIPI / elevated target).
+pub(crate) unsafe fn send_inputs(inputs: &[INPUT]) -> Result<(), String> {
+    if inputs.is_empty() {
+        return Ok(());
+    }
+    let count = inputs.len() as u32;
+    let sent = SendInput(count, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+    if sent as usize != inputs.len() {
+        let err = GetLastError();
+        return Err(format!(
+            "SendInput failed: sent {}/{} events (error code {}). Target window may be elevated (UIPI) or secure desktop",
+            sent,
+            inputs.len(),
+            err
+        ));
+    }
+    Ok(())
+}
+
 /// Perform a mouse click at normalized coordinates (0..=1000).
 /// Returns the physical screen pixel (x, y) clicked.
 pub fn desktop_click(
@@ -207,15 +227,11 @@ pub fn desktop_click(
                 },
             },
         };
-        let sent_move = SendInput(1, &move_input, std::mem::size_of::<INPUT>() as i32);
-        if sent_move == 0 {
-            let err = GetLastError();
-            warn!("[AUTOMATION] SendInput for mouse move returned 0 (error code: {})", err);
-        }
+        send_inputs(&[move_input])?;
         sleep(Duration::from_millis(15));
 
         // Helper closure to trigger a single down/up sequence with position lock
-        let trigger_click = || {
+        let mut trigger_click = || -> Result<(), String> {
             let down_input = INPUT {
                 r#type: INPUT_MOUSE,
                 Anonymous: INPUT_0 {
@@ -229,7 +245,7 @@ pub fn desktop_click(
                     },
                 },
             };
-            SendInput(1, &down_input, std::mem::size_of::<INPUT>() as i32);
+            send_inputs(&[down_input])?;
             sleep(Duration::from_millis(20));
 
             let up_input = INPUT {
@@ -245,16 +261,17 @@ pub fn desktop_click(
                     },
                 },
             };
-            SendInput(1, &up_input, std::mem::size_of::<INPUT>() as i32);
+            send_inputs(&[up_input])?;
+            Ok(())
         };
 
         // First click
-        trigger_click();
+        trigger_click()?;
 
         // Optional double-click
         if double_click {
             sleep(Duration::from_millis(70));
-            trigger_click();
+            trigger_click()?;
         }
     }
 
@@ -285,12 +302,7 @@ pub fn desktop_scroll(direction: &str, amount: i32) -> Result<i32, String> {
                 },
             },
         };
-
-        let sent = SendInput(1, &scroll_input, std::mem::size_of::<INPUT>() as i32);
-        if sent == 0 {
-            let err = GetLastError();
-            warn!("[AUTOMATION] SendInput for mouse scroll returned 0 (error code: {})", err);
-        }
+        send_inputs(&[scroll_input])?;
     }
 
     info!(
@@ -331,7 +343,7 @@ pub fn desktop_type_text(text: &str, press_enter: bool) -> Result<usize, String>
                         },
                     },
                 };
-                SendInput(1, &enter_down, std::mem::size_of::<INPUT>() as i32);
+                send_inputs(&[enter_down])?;
                 sleep(Duration::from_millis(10));
 
                 let enter_up = INPUT {
@@ -346,7 +358,7 @@ pub fn desktop_type_text(text: &str, press_enter: bool) -> Result<usize, String>
                         },
                     },
                 };
-                SendInput(1, &enter_up, std::mem::size_of::<INPUT>() as i32);
+                send_inputs(&[enter_up])?;
                 char_count += 1;
                 sleep(Duration::from_millis(10));
                 continue;
@@ -370,7 +382,7 @@ pub fn desktop_type_text(text: &str, press_enter: bool) -> Result<usize, String>
                         },
                     },
                 };
-                SendInput(1, &key_down, std::mem::size_of::<INPUT>() as i32);
+                send_inputs(&[key_down])?;
 
                 // Key up
                 let key_up = INPUT {
@@ -385,7 +397,7 @@ pub fn desktop_type_text(text: &str, press_enter: bool) -> Result<usize, String>
                         },
                     },
                 };
-                SendInput(1, &key_up, std::mem::size_of::<INPUT>() as i32);
+                send_inputs(&[key_up])?;
             }
 
             char_count += 1;
@@ -409,7 +421,7 @@ pub fn desktop_type_text(text: &str, press_enter: bool) -> Result<usize, String>
                     },
                 },
             };
-            SendInput(1, &enter_down, std::mem::size_of::<INPUT>() as i32);
+            send_inputs(&[enter_down])?;
             sleep(Duration::from_millis(15));
 
             let enter_up = INPUT {
@@ -424,7 +436,7 @@ pub fn desktop_type_text(text: &str, press_enter: bool) -> Result<usize, String>
                     },
                 },
             };
-            SendInput(1, &enter_up, std::mem::size_of::<INPUT>() as i32);
+            send_inputs(&[enter_up])?;
         }
     }
 
@@ -481,14 +493,7 @@ pub fn desktop_press_key(key: &str) -> Result<u16, String> {
                         },
                     },
                 };
-                let sent = SendInput(1, &key_down, std::mem::size_of::<INPUT>() as i32);
-                if sent == 0 {
-                    let err = GetLastError();
-                    warn!(
-                        "[AUTOMATION] SendInput for combo key down (0x{:04X}) returned 0 (error code: {})",
-                        vk, err
-                    );
-                }
+                send_inputs(&[key_down])?;
                 sleep(Duration::from_millis(10));
             }
 
@@ -508,14 +513,7 @@ pub fn desktop_press_key(key: &str) -> Result<u16, String> {
                         },
                     },
                 };
-                let sent = SendInput(1, &key_up, std::mem::size_of::<INPUT>() as i32);
-                if sent == 0 {
-                    let err = GetLastError();
-                    warn!(
-                        "[AUTOMATION] SendInput for combo key up (0x{:04X}) returned 0 (error code: {})",
-                        vk, err
-                    );
-                }
+                send_inputs(&[key_up])?;
                 sleep(Duration::from_millis(10));
             }
         }
@@ -549,11 +547,7 @@ pub fn desktop_press_key(key: &str) -> Result<u16, String> {
                 },
             },
         };
-        let sent_down = SendInput(1, &key_down, std::mem::size_of::<INPUT>() as i32);
-        if sent_down == 0 {
-            let err = GetLastError();
-            warn!("[AUTOMATION] SendInput for key down returned 0 (error code: {})", err);
-        }
+        send_inputs(&[key_down])?;
         sleep(Duration::from_millis(20));
 
         // Key up
@@ -569,11 +563,7 @@ pub fn desktop_press_key(key: &str) -> Result<u16, String> {
                 },
             },
         };
-        let sent_up = SendInput(1, &key_up, std::mem::size_of::<INPUT>() as i32);
-        if sent_up == 0 {
-            let err = GetLastError();
-            warn!("[AUTOMATION] SendInput for key up returned 0 (error code: {})", err);
-        }
+        send_inputs(&[key_up])?;
     }
 
     info!(

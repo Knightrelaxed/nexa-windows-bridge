@@ -112,7 +112,7 @@ fn apply_stealth_window_styles_with_retry(max_retries: u32, retry_delay_ms: u64)
     false
 }
 
-static STEALTH_STYLES_APPLIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static LAST_STYLED_HWND: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 fn try_apply_stealth_styles() -> bool {
     unsafe {
@@ -123,8 +123,10 @@ fn try_apply_stealth_styles() -> bool {
             return false;
         }
 
-        // If styles were already applied, skip heavy DWM recomputation to avoid black flashes
-        if STEALTH_STYLES_APPLIED.load(Ordering::Relaxed) {
+        let hwnd_val = hwnd as usize;
+
+        // If styles were already applied to this exact HWND, skip heavy DWM recomputation (Audit C1)
+        if LAST_STYLED_HWND.load(Ordering::Relaxed) == hwnd_val {
             SetWindowPos(
                 hwnd,
                 HWND_TOPMOST,
@@ -157,7 +159,11 @@ fn try_apply_stealth_styles() -> bool {
         };
         DwmExtendFrameIntoClientArea(hwnd, &margins);
 
-        // 3. Position window to cover full primary screen, topmost, no activation
+        // 3. Exclude overlay from screen capture so Gemini Vision never captures its own overlays! (Audit #8)
+        const WDA_EXCLUDEFROMCAPTURE: u32 = 0x00000011;
+        SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+
+        // 4. Position window to cover full primary screen, topmost, no activation
         let screen = get_primary_screen_dimensions();
         SetWindowPos(
             hwnd,
@@ -169,10 +175,10 @@ fn try_apply_stealth_styles() -> bool {
             SWP_NOACTIVATE | SWP_FRAMECHANGED,
         );
 
-        STEALTH_STYLES_APPLIED.store(true, Ordering::SeqCst);
+        LAST_STYLED_HWND.store(hwnd_val, Ordering::SeqCst);
         debug!(
-            "[HIGHLIGHTER] Applied stealth styles (WS_EX_TRANSPARENT + WS_EX_TOOLWINDOW + DWM Glass) to HWND 0x{:X}",
-            hwnd as usize
+            "[HIGHLIGHTER] Applied stealth styles (WS_EX_TRANSPARENT + WS_EX_TOOLWINDOW + WDA_EXCLUDEFROMCAPTURE + DWM Glass) to HWND 0x{:X}",
+            hwnd_val
         );
         true
     }

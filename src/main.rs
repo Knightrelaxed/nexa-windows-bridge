@@ -503,6 +503,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let window_weak_cmd = main_window.as_weak();
     let highlighter_cmd = Arc::clone(&highlighter_controller);
 
+    // Dedicated sequential FIFO queue for EXECUTE_COMMAND to guarantee strict ordering (Audit H10)
+    let (fifo_cmd_tx, mut fifo_cmd_rx) =
+        tokio::sync::mpsc::channel::<(String, String, serde_json::Value)>(32);
+    let hl_worker = Arc::clone(&highlighter_cmd);
+    let net_tx_worker = net_client_cmd.clone();
+
+    tokio::spawn(async move {
+        while let Some((cmd_id, action_name, action_params)) = fifo_cmd_rx.recv().await {
+            let result = automation::handle_execute_command(
+                cmd_id,
+                action_name,
+                action_params,
+                Some(&hl_worker),
+            )
+            .await;
+
+            let _ = net_tx_worker.send_message(result).await;
+        }
+        info!("[MAIN] FIFO command executor loop terminated.");
+    });
+
     tokio::spawn(async move {
         let mut last_ui_audio_tick = std::time::Instant::now();
         loop {
@@ -640,19 +661,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
 
-                    let hl = Arc::clone(&highlighter_cmd);
-                    let net_tx = net_client_cmd.clone();
-                    tokio::spawn(async move {
-                        let result = automation::handle_execute_command(
-                            command_id,
-                            action,
-                            params,
-                            Some(&hl),
-                        )
-                        .await;
-
-                        let _ = net_tx.send_message(result).await;
-                    });
+                    // Enqueue to serial FIFO queue to preserve strict sequence order (Audit H10)
+                    if let Err(e) = fifo_cmd_tx.send((command_id, action, params)).await {
+                        warn!("[MAIN] Failed to enqueue command to FIFO worker: {}", e);
+                    }
                 }
                 _ => {}
             }
