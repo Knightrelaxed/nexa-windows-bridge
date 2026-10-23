@@ -5,14 +5,33 @@
 
 #![allow(dead_code)]
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::Duration;
-use tracing::info;
+use tracing::{info, warn};
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN,
 };
+
+/// Global cancellation flag to immediately halt long-running input actions (e.g. typing)
+static AUTOMATION_ABORT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Signal an abort to any running automation loops
+pub fn request_automation_abort() {
+    AUTOMATION_ABORT_REQUESTED.store(true, Ordering::SeqCst);
+}
+
+/// Reset the abort signal before starting new automation actions
+pub fn reset_automation_abort() {
+    AUTOMATION_ABORT_REQUESTED.store(false, Ordering::SeqCst);
+}
+
+/// Check if an abort has been requested
+pub fn is_automation_abort_requested() -> bool {
+    AUTOMATION_ABORT_REQUESTED.load(Ordering::SeqCst)
+}
 
 /// Mouse buttons supported by desktop automation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,6 +186,164 @@ pub fn map_key_name_to_vk(key_name: &str) -> Option<u16> {
 // Win32 SendInput Execution Layer
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Check whether a Virtual Key is an extended key requiring KEYEVENTF_EXTENDEDKEY (Audit N10)
+pub fn is_extended_key(vk: u16) -> bool {
+    matches!(
+        vk,
+        VK_UP
+            | VK_DOWN
+            | VK_LEFT
+            | VK_RIGHT
+            | VK_INSERT
+            | VK_DELETE
+            | VK_HOME
+            | VK_END
+            | VK_PRIOR
+            | VK_NEXT
+            | VK_NUMLOCK
+            | VK_RCONTROL
+            | VK_RMENU
+            | VK_LWIN
+            | VK_RWIN
+            | VK_DIVIDE
+    )
+}
+
+/// Helper to construct a Win32 KEYBDINPUT event with proper KEYEVENTF_EXTENDEDKEY handling (Audit N10)
+pub fn make_keyboard_input(vk: u16, key_up: bool) -> INPUT {
+    let mut flags = if key_up { KEYEVENTF_KEYUP } else { 0 };
+    if is_extended_key(vk) {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+    }
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: vk,
+                wScan: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    }
+}
+
+/// Verify whether a parsed sequence of Virtual Keys violates security policy (Audit N3)
+pub fn is_forbidden_key_combo(vks: &[u16]) -> bool {
+    // 1. Any Windows key (LWIN / RWIN) is forbidden for autonomous execution
+    let has_win = vks.iter().any(|&k| k == VK_LWIN || k == VK_RWIN);
+    if has_win {
+        return true;
+    }
+
+    // 2. ALT + F4 (App force close)
+    let has_alt = vks.iter().any(|&k| k == VK_MENU);
+    let has_f4 = vks.iter().any(|&k| k == VK_F4);
+    if has_alt && has_f4 {
+        return true;
+    }
+
+    // 3. CTRL + ALT + DEL / DECIMAL / ESC
+    let has_ctrl = vks.iter().any(|&k| k == VK_CONTROL);
+    let has_shift = vks.iter().any(|&k| k == VK_SHIFT);
+    let has_esc = vks.iter().any(|&k| k == VK_ESCAPE);
+    let has_del = vks.iter().any(|&k| k == VK_DELETE || k == VK_DECIMAL);
+
+    if has_ctrl && has_alt && (has_del || has_esc) {
+        return true;
+    }
+
+    // 4. CTRL + SHIFT + ESC (Task Manager)
+    if has_ctrl && has_shift && has_esc {
+        return true;
+    }
+
+    false
+}
+
+/// RAII guard to guarantee all pressed keys are released even if an error occurs midway (Audit N2)
+pub struct HeldKeysGuard {
+    held: Vec<u16>,
+}
+
+impl HeldKeysGuard {
+    pub fn new() -> Self {
+        Self { held: Vec::new() }
+    }
+
+    pub fn record_down(&mut self, vk: u16) {
+        self.held.push(vk);
+    }
+
+    pub fn release_all(&mut self) -> Result<(), String> {
+        let mut last_err = Ok(());
+        while let Some(vk) = self.held.pop() {
+            let up_input = make_keyboard_input(vk, true);
+            unsafe {
+                if let Err(e) = send_inputs(&[up_input]) {
+                    last_err = Err(e);
+                }
+            }
+        }
+        last_err
+    }
+}
+
+impl Drop for HeldKeysGuard {
+    fn drop(&mut self) {
+        // Release any remaining held keys in reverse order
+        while let Some(vk) = self.held.pop() {
+            let up_input = make_keyboard_input(vk, true);
+            unsafe {
+                let _ = send_inputs(&[up_input]);
+            }
+        }
+    }
+}
+
+/// RAII guard to guarantee pressed mouse button is released if an error occurs midway (Audit N2)
+pub struct HeldMouseGuard {
+    active: Option<(i32, i32, u32)>,
+}
+
+impl HeldMouseGuard {
+    pub fn new() -> Self {
+        Self { active: None }
+    }
+
+    pub fn record_down(&mut self, abs_x: i32, abs_y: i32, up_flag: u32) {
+        self.active = Some((abs_x, abs_y, up_flag));
+    }
+
+    pub fn defuse(&mut self) {
+        self.active = None;
+    }
+}
+
+impl Drop for HeldMouseGuard {
+    fn drop(&mut self) {
+        if let Some((abs_x, abs_y, up_flag)) = self.active.take() {
+            let up_input = INPUT {
+                r#type: INPUT_MOUSE,
+                Anonymous: INPUT_0 {
+                    mi: MOUSEINPUT {
+                        dx: abs_x,
+                        dy: abs_y,
+                        mouseData: 0,
+                        dwFlags: MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE | up_flag,
+                        time: 0,
+                        dwExtraInfo: 0,
+                    },
+                },
+            };
+            unsafe {
+                let _ = send_inputs(&[up_input]);
+            }
+        }
+    }
+}
+
 /// Helper to send an array of Win32 INPUT events and verify full transmission.
 /// Returns an error if SendInput blocked or failed (e.g. UIPI / elevated target).
 pub(crate) unsafe fn send_inputs(inputs: &[INPUT]) -> Result<(), String> {
@@ -212,6 +389,7 @@ pub fn desktop_click(
         MouseButton::Middle => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
     };
 
+    let mut mouse_guard = HeldMouseGuard::new();
     unsafe {
         // Step 1: Move mouse to target position
         let move_input = INPUT {
@@ -230,8 +408,8 @@ pub fn desktop_click(
         send_inputs(&[move_input])?;
         sleep(Duration::from_millis(15));
 
-        // Helper closure to trigger a single down/up sequence with position lock
-        let trigger_click = || -> Result<(), String> {
+        // Helper closure to trigger a single down/up sequence with position lock & RAII guard (Audit N2)
+        let trigger_click = |guard: &mut HeldMouseGuard| -> Result<(), String> {
             let down_input = INPUT {
                 r#type: INPUT_MOUSE,
                 Anonymous: INPUT_0 {
@@ -246,6 +424,7 @@ pub fn desktop_click(
                 },
             };
             send_inputs(&[down_input])?;
+            guard.record_down(abs_x, abs_y, up_flag);
             sleep(Duration::from_millis(20));
 
             let up_input = INPUT {
@@ -262,16 +441,17 @@ pub fn desktop_click(
                 },
             };
             send_inputs(&[up_input])?;
+            guard.defuse();
             Ok(())
         };
 
         // First click
-        trigger_click()?;
+        trigger_click(&mut mouse_guard)?;
 
         // Optional double-click
         if double_click {
             sleep(Duration::from_millis(70));
-            trigger_click()?;
+            trigger_click(&mut mouse_guard)?;
         }
     }
 
@@ -315,49 +495,40 @@ pub fn desktop_scroll(direction: &str, amount: i32) -> Result<i32, String> {
 
 /// Type Unicode text using KEYEVENTF_UNICODE to ensure 100% layout-independent character entry.
 /// Correctly handles surrogate pairs and maps newlines ('\n') to VK_RETURN for universal compatibility.
+/// Supports immediate cancellation if an abort signal is received (Audit N13).
 /// Returns the number of characters typed.
 pub fn desktop_type_text(text: &str, press_enter: bool) -> Result<usize, String> {
     if text.is_empty() {
         return Err("Text to type cannot be empty".to_string());
     }
 
+    if is_automation_abort_requested() {
+        return Err("Automation execution was cancelled before typing began".to_string());
+    }
+
     let mut char_count = 0;
 
     unsafe {
         for ch in text.chars() {
+            if is_automation_abort_requested() {
+                warn!(
+                    "[AUTOMATION] 🛑 desktop_type_text aborted by cancel signal (typed {} characters)",
+                    char_count
+                );
+                return Err("Automation aborted during text typing".to_string());
+            }
+
             if ch == '\r' {
                 continue; // Skip standalone CR; LF handles Enter
             }
 
             if ch == '\n' {
                 // Send Enter key sequence for genuine newline across text boxes
-                let enter_down = INPUT {
-                    r#type: INPUT_KEYBOARD,
-                    Anonymous: INPUT_0 {
-                        ki: KEYBDINPUT {
-                            wVk: VK_RETURN,
-                            wScan: 0,
-                            dwFlags: 0,
-                            time: 0,
-                            dwExtraInfo: 0,
-                        },
-                    },
-                };
+                let enter_down = make_keyboard_input(VK_RETURN, false);
                 send_inputs(&[enter_down])?;
                 sleep(Duration::from_millis(10));
 
-                let enter_up = INPUT {
-                    r#type: INPUT_KEYBOARD,
-                    Anonymous: INPUT_0 {
-                        ki: KEYBDINPUT {
-                            wVk: VK_RETURN,
-                            wScan: 0,
-                            dwFlags: KEYEVENTF_KEYUP,
-                            time: 0,
-                            dwExtraInfo: 0,
-                        },
-                    },
-                };
+                let enter_up = make_keyboard_input(VK_RETURN, true);
                 send_inputs(&[enter_up])?;
                 char_count += 1;
                 sleep(Duration::from_millis(10));
@@ -409,33 +580,11 @@ pub fn desktop_type_text(text: &str, press_enter: bool) -> Result<usize, String>
         // If explicitly requested, follow with a trailing Enter key
         if press_enter {
             sleep(Duration::from_millis(20));
-            let enter_down = INPUT {
-                r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 {
-                    ki: KEYBDINPUT {
-                        wVk: VK_RETURN,
-                        wScan: 0,
-                        dwFlags: 0,
-                        time: 0,
-                        dwExtraInfo: 0,
-                    },
-                },
-            };
+            let enter_down = make_keyboard_input(VK_RETURN, false);
             send_inputs(&[enter_down])?;
             sleep(Duration::from_millis(15));
 
-            let enter_up = INPUT {
-                r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 {
-                    ki: KEYBDINPUT {
-                        wVk: VK_RETURN,
-                        wScan: 0,
-                        dwFlags: KEYEVENTF_KEYUP,
-                        time: 0,
-                        dwExtraInfo: 0,
-                    },
-                },
-            };
+            let enter_up = make_keyboard_input(VK_RETURN, true);
             send_inputs(&[enter_up])?;
         }
     }
@@ -448,7 +597,10 @@ pub fn desktop_type_text(text: &str, press_enter: bool) -> Result<usize, String>
     Ok(char_count)
 }
 
-/// Press a specific keyboard virtual key or key combination (e.g. "ENTER", "SPACE", "CTRL+C", "ALT+F4", "WIN+D").
+/// Press a specific keyboard virtual key or key combination (e.g. "ENTER", "SPACE", "CTRL+C", "ALT+TAB").
+/// Uses RAII guards to guarantee keys are released even if SendInput errors midway (Audit N2).
+/// Properly attaches KEYEVENTF_EXTENDEDKEY to navigation/system keys (Audit N10).
+/// Verifies parsed VK sequences against security policies (Audit N3).
 /// Returns the primary/last VK code pressed.
 pub fn desktop_press_key(key: &str) -> Result<u16, String> {
     let trimmed = key.trim();
@@ -456,8 +608,7 @@ pub fn desktop_press_key(key: &str) -> Result<u16, String> {
         return Err("Key name cannot be empty".to_string());
     }
 
-    // Support key combinations (e.g. "CTRL+C", "ALT+TAB", "WIN+D", "CTRL+SHIFT+ESC")
-    if trimmed.contains('+') {
+    let vks = if trimmed.contains('+') {
         let parts: Vec<&str> = trimmed
             .split('+')
             .map(|s| s.trim())
@@ -467,7 +618,7 @@ pub fn desktop_press_key(key: &str) -> Result<u16, String> {
             return Err("Invalid key combination: empty parts".to_string());
         }
 
-        let mut vks = Vec::with_capacity(parts.len());
+        let mut list = Vec::with_capacity(parts.len());
         for part in &parts {
             let vk = map_key_name_to_vk(part).ok_or_else(|| {
                 format!(
@@ -475,103 +626,50 @@ pub fn desktop_press_key(key: &str) -> Result<u16, String> {
                     part
                 )
             })?;
-            vks.push(vk);
+            list.push(vk);
         }
+        list
+    } else {
+        let vk = map_key_name_to_vk(trimmed).ok_or_else(|| {
+            format!(
+                "Unsupported or unknown key name: '{}'. Supported: ENTER, SPACE, ESCAPE, TAB, BACKSPACE, UP, DOWN, LEFT, RIGHT, etc.",
+                trimmed
+            )
+        })?;
+        vec![vk]
+    };
 
-        unsafe {
-            // Press all keys down in forward order
-            for &vk in &vks {
-                let key_down = INPUT {
-                    r#type: INPUT_KEYBOARD,
-                    Anonymous: INPUT_0 {
-                        ki: KEYBDINPUT {
-                            wVk: vk,
-                            wScan: 0,
-                            dwFlags: 0,
-                            time: 0,
-                            dwExtraInfo: 0,
-                        },
-                    },
-                };
-                send_inputs(&[key_down])?;
-                sleep(Duration::from_millis(10));
-            }
-
-            sleep(Duration::from_millis(20));
-
-            // Release all keys in reverse order
-            for &vk in vks.iter().rev() {
-                let key_up = INPUT {
-                    r#type: INPUT_KEYBOARD,
-                    Anonymous: INPUT_0 {
-                        ki: KEYBDINPUT {
-                            wVk: vk,
-                            wScan: 0,
-                            dwFlags: KEYEVENTF_KEYUP,
-                            time: 0,
-                            dwExtraInfo: 0,
-                        },
-                    },
-                };
-                send_inputs(&[key_up])?;
-                sleep(Duration::from_millis(10));
-            }
-        }
-
-        let last_vk = *vks.last().unwrap();
-        info!(
-            "[AUTOMATION] 🔘 desktop_press_key: pressed combination '{}' (VKs: {:?})",
-            trimmed, vks
-        );
-        return Ok(last_vk);
+    // Security Policy Check on actual parsed Virtual Keys (Audit N3)
+    if is_forbidden_key_combo(&vks) {
+        return Err(format!(
+            "Penekanan kombinasi tombol '{}' diblokir oleh kebijakan keamanan sistem.",
+            trimmed
+        ));
     }
 
-    let vk = map_key_name_to_vk(trimmed).ok_or_else(|| {
-        format!(
-            "Unsupported or unknown key name: '{}'. Supported: ENTER, SPACE, ESCAPE, TAB, BACKSPACE, UP, DOWN, LEFT, RIGHT, etc.",
-            trimmed
-        )
-    })?;
-
+    let mut guard = HeldKeysGuard::new();
     unsafe {
-        // Key down
-        let key_down = INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 {
-                ki: KEYBDINPUT {
-                    wVk: vk,
-                    wScan: 0,
-                    dwFlags: 0,
-                    time: 0,
-                    dwExtraInfo: 0,
-                },
-            },
-        };
-        send_inputs(&[key_down])?;
+        // Press all keys down in forward order
+        for &vk in &vks {
+            let key_down = make_keyboard_input(vk, false);
+            send_inputs(&[key_down])?;
+            guard.record_down(vk);
+            sleep(Duration::from_millis(10));
+        }
+
         sleep(Duration::from_millis(20));
 
-        // Key up
-        let key_up = INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 {
-                ki: KEYBDINPUT {
-                    wVk: vk,
-                    wScan: 0,
-                    dwFlags: KEYEVENTF_KEYUP,
-                    time: 0,
-                    dwExtraInfo: 0,
-                },
-            },
-        };
-        send_inputs(&[key_up])?;
+        // Release all keys in reverse order safely via RAII guard
+        guard.release_all()?;
     }
 
+    let last_vk = *vks.last().unwrap();
     info!(
-        "[AUTOMATION] 🔘 desktop_press_key: pressed '{}' (VK=0x{:04X})",
-        key, vk
+        "[AUTOMATION] 🔘 desktop_press_key: successfully pressed '{}' (VKs: {:?})",
+        trimmed, vks
     );
 
-    Ok(vk)
+    Ok(last_vk)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -676,5 +774,68 @@ mod tests {
     fn test_desktop_type_text_empty() {
         let res = desktop_type_text("", false);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_is_extended_key() {
+        assert!(is_extended_key(VK_UP));
+        assert!(is_extended_key(VK_DOWN));
+        assert!(is_extended_key(VK_LEFT));
+        assert!(is_extended_key(VK_RIGHT));
+        assert!(is_extended_key(VK_INSERT));
+        assert!(is_extended_key(VK_DELETE));
+        assert!(is_extended_key(VK_HOME));
+        assert!(is_extended_key(VK_END));
+        assert!(is_extended_key(VK_PRIOR));
+        assert!(is_extended_key(VK_NEXT));
+        assert!(is_extended_key(VK_NUMLOCK));
+        assert!(is_extended_key(VK_LWIN));
+        assert!(is_extended_key(VK_RWIN));
+
+        // Standard non-extended keys
+        assert!(!is_extended_key(VK_RETURN));
+        assert!(!is_extended_key(VK_SPACE));
+        assert!(!is_extended_key(b'A' as u16));
+        assert!(!is_extended_key(VK_TAB));
+    }
+
+    #[test]
+    fn test_is_forbidden_key_combo() {
+        // Windows keys
+        assert!(is_forbidden_key_combo(&[VK_LWIN]));
+        assert!(is_forbidden_key_combo(&[VK_RWIN]));
+        assert!(is_forbidden_key_combo(&[VK_LWIN, b'R' as u16]));
+
+        // ALT + F4
+        assert!(is_forbidden_key_combo(&[VK_MENU, VK_F4]));
+        assert!(is_forbidden_key_combo(&[VK_F4, VK_MENU]));
+
+        // CTRL + ALT + DEL
+        assert!(is_forbidden_key_combo(&[VK_CONTROL, VK_MENU, VK_DELETE]));
+        assert!(is_forbidden_key_combo(&[VK_CONTROL, VK_MENU, VK_DECIMAL]));
+
+        // CTRL + SHIFT + ESC
+        assert!(is_forbidden_key_combo(&[VK_CONTROL, VK_SHIFT, VK_ESCAPE]));
+
+        // Allowed combos
+        assert!(!is_forbidden_key_combo(&[VK_CONTROL, b'C' as u16]));
+        assert!(!is_forbidden_key_combo(&[VK_CONTROL, b'V' as u16]));
+        assert!(!is_forbidden_key_combo(&[VK_MENU, VK_TAB]));
+        assert!(!is_forbidden_key_combo(&[VK_RETURN]));
+    }
+
+    #[test]
+    fn test_automation_abort_flag() {
+        reset_automation_abort();
+        assert!(!is_automation_abort_requested());
+
+        request_automation_abort();
+        assert!(is_automation_abort_requested());
+
+        let res = desktop_type_text("Hello", false);
+        assert!(res.is_err());
+
+        reset_automation_abort();
+        assert!(!is_automation_abort_requested());
     }
 }

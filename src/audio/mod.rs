@@ -13,6 +13,7 @@ pub mod speaker;
 use echo_canceller::EchoCancellerEngine;
 use microphone::MicrophoneCapture;
 use speaker::SpeakerPlayer;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, Notify};
 use tracing::info;
@@ -22,6 +23,8 @@ pub struct AudioEngine {
     microphone: Option<MicrophoneCapture>,
     aec_engine: Arc<Mutex<EchoCancellerEngine>>,
     barge_in_notify: Arc<Notify>,
+    is_speaker_playing: Arc<AtomicBool>,
+    speaker_playback_rms: Arc<AtomicU32>,
     is_active: bool,
 }
 
@@ -31,12 +34,16 @@ impl AudioEngine {
             EchoCancellerEngine::new().map_err(|e| format!("Failed to create AEC3 engine: {}", e))?,
         ));
         let barge_in_notify = Arc::new(Notify::new());
+        let is_speaker_playing = Arc::new(AtomicBool::new(false));
+        let speaker_playback_rms = Arc::new(AtomicU32::new(0));
 
         Ok(Self {
             speaker: None,
             microphone: None,
             aec_engine,
             barge_in_notify,
+            is_speaker_playing,
+            speaker_playback_rms,
             is_active: false,
         })
     }
@@ -59,9 +66,13 @@ impl AudioEngine {
         let ref_buffer_capacity = 48000 * 4;
         let (echo_ref_prod, echo_ref_cons) = audio_buffer::create_audio_ring_buffer::<f32>(ref_buffer_capacity);
 
-        // 1. Initialize Speaker (Playback with real-time DAC reference capture)
-        let speaker = SpeakerPlayer::new(Some(echo_ref_prod))
-            .map_err(|e| format!("Failed to initialize speaker: {}", e))?;
+        // 1. Initialize Speaker (Playback with real-time DAC reference capture and live RMS metering)
+        let speaker = SpeakerPlayer::new_with_handles(
+            Some(echo_ref_prod),
+            Arc::clone(&self.is_speaker_playing),
+            Arc::clone(&self.speaker_playback_rms),
+        )
+        .map_err(|e| format!("Failed to initialize speaker: {}", e))?;
 
         let is_speaker_playing = speaker.is_playing_handle();
 
@@ -110,11 +121,29 @@ impl AudioEngine {
         }
     }
 
+    /// Cloneable atomic handle to monitor active speaker playback in real-time.
+    pub fn is_speaker_playing_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.is_speaker_playing)
+    }
+
+    /// Cloneable atomic handle to monitor instantaneous playback RMS in real-time.
+    pub fn speaker_playback_rms_handle(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.speaker_playback_rms)
+    }
+
+    /// Read current instantaneous playback RMS.
+    #[allow(dead_code)]
+    pub fn current_playback_rms(&self) -> f32 {
+        f32::from_bits(self.speaker_playback_rms.load(Ordering::Relaxed))
+    }
+
     /// Stop playback immediately (on barge-in / interrupt).
     pub fn stop_speaking(&mut self) {
         if let Some(ref mut spk) = self.speaker {
             spk.stop();
         }
+        self.is_speaker_playing.store(false, Ordering::SeqCst);
+        self.speaker_playback_rms.store(0, Ordering::Relaxed);
         if let Ok(mut aec) = self.aec_engine.lock() {
             aec.set_speaking(false);
         }

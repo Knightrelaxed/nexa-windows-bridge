@@ -73,8 +73,8 @@ impl PixelRect {
         let max_w = ((screen_w as f64) * 0.95).round() as i32;
         let max_h = ((screen_h as f64) * 0.95).round() as i32;
 
-        if w > max_w && h > max_h {
-            // Likely root desktop or full display window, not an individual button/element
+        if w > max_w || h > max_h {
+            // Likely root desktop, taskbar, or full display window, not an individual button/element (Audit N7)
             return false;
         }
 
@@ -164,6 +164,14 @@ pub fn find_element_bounds_at_point(px: i32, py: i32, screen_w: i32, screen_h: i
             }
         };
 
+        // Filter out Nexa Bridge's own process to never snap to own overlay or pill (Audit N7)
+        if let Ok(pid) = elem.CurrentProcessId() {
+            if pid as u32 == std::process::id() {
+                debug!("[UIA] Element belongs to Nexa Bridge itself (PID {}), ignoring", pid);
+                return None;
+            }
+        }
+
         let rect = match elem.CurrentBoundingRectangle() {
             Ok(r) => r,
             Err(err) => {
@@ -181,6 +189,8 @@ pub fn find_element_bounds_at_point(px: i32, py: i32, screen_w: i32, screen_h: i
     }
 }
 
+static UIA_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Smart-snap a bounding box with an explicit timeout guard (Claude Bug H8).
 /// If UIA or cross-process COM hangs or exceeds `timeout`, immediately falls back
 /// to the AI vision bounding box to prevent UI freezing.
@@ -191,6 +201,12 @@ pub fn smart_snap_bounding_box_timeout(
     xmax: f64,
     timeout: std::time::Duration,
 ) -> SnappedRect {
+    // Prevent unbounded thread leaks if target application COM hangs (Audit N7)
+    if UIA_BUSY.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        debug!("[UIA] Previous query still in flight, immediately using Vision fallback to prevent thread leaks");
+        return SnappedRect::new(ymin, xmin, ymax, xmax, false);
+    }
+
     let screen = get_primary_screen_dimensions();
     let center_x = (xmin + xmax) / 2.0;
     let center_y = (ymin + ymax) / 2.0;
@@ -202,6 +218,7 @@ pub fn smart_snap_bounding_box_timeout(
     std::thread::spawn(move || {
         let res = find_element_bounds_at_point(px, py, sw, sh);
         let _ = tx.send(res);
+        UIA_BUSY.store(false, std::sync::atomic::Ordering::SeqCst);
     });
 
     match rx.recv_timeout(timeout) {

@@ -7,7 +7,7 @@ use super::audio_buffer::{create_audio_ring_buffer, AudioConsumer, AudioProducer
 use super::resampler::{i16_to_f32, pcm_bytes_to_i16, resample_linear, upmix_mono_to_channels};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
@@ -21,13 +21,25 @@ pub struct SpeakerPlayer {
     _stream: Option<SendStream>,
     producer: Option<AudioProducer<f32>>,
     is_playing: Arc<AtomicBool>,
+    playback_rms: Arc<AtomicU32>,
     flush_requested: Arc<AtomicBool>,
     hardware_sample_rate: u32,
     hardware_channels: u16,
 }
 
 impl SpeakerPlayer {
-    pub fn new(mut echo_ref_producer: Option<AudioProducer<f32>>) -> Result<Self, String> {
+    #[allow(dead_code)]
+    pub fn new(echo_ref_producer: Option<AudioProducer<f32>>) -> Result<Self, String> {
+        let is_playing = Arc::new(AtomicBool::new(false));
+        let playback_rms = Arc::new(AtomicU32::new(0));
+        Self::new_with_handles(echo_ref_producer, is_playing, playback_rms)
+    }
+
+    pub fn new_with_handles(
+        mut echo_ref_producer: Option<AudioProducer<f32>>,
+        is_playing: Arc<AtomicBool>,
+        playback_rms: Arc<AtomicU32>,
+    ) -> Result<Self, String> {
         let host = cpal::default_host();
         let device = host
             .default_output_device()
@@ -53,10 +65,10 @@ impl SpeakerPlayer {
         let buffer_capacity = (hardware_sample_rate as usize) * (hardware_channels as usize) * PLAYBACK_BUFFER_SECONDS;
         let (producer, mut consumer) = create_audio_ring_buffer::<f32>(buffer_capacity);
 
-        let is_playing = Arc::new(AtomicBool::new(false));
         let flush_requested = Arc::new(AtomicBool::new(false));
 
         let is_playing_clone = Arc::clone(&is_playing);
+        let playback_rms_clone = Arc::clone(&playback_rms);
         let flush_requested_clone = Arc::clone(&flush_requested);
 
         let config: StreamConfig = default_config.into();
@@ -69,6 +81,7 @@ impl SpeakerPlayer {
                             data,
                             &mut consumer,
                             &is_playing_clone,
+                            &playback_rms_clone,
                             &flush_requested_clone,
                             echo_ref_producer.as_mut(),
                             hardware_channels,
@@ -88,6 +101,7 @@ impl SpeakerPlayer {
                             data,
                             &mut consumer,
                             &is_playing_clone,
+                            &playback_rms_clone,
                             &flush_requested_clone,
                             echo_ref_producer.as_mut(),
                             hardware_channels,
@@ -112,6 +126,7 @@ impl SpeakerPlayer {
             _stream: Some(SendStream(stream)),
             producer: Some(producer),
             is_playing,
+            playback_rms,
             flush_requested,
             hardware_sample_rate,
             hardware_channels,
@@ -157,10 +172,23 @@ impl SpeakerPlayer {
         Arc::clone(&self.is_playing)
     }
 
+    /// Cloneable atomic handle to monitor instantaneous playback RMS in real-time.
+    #[allow(dead_code)]
+    pub fn playback_rms_handle(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.playback_rms)
+    }
+
+    /// Read current instantaneous playback RMS.
+    #[allow(dead_code)]
+    pub fn current_playback_rms(&self) -> f32 {
+        f32::from_bits(self.playback_rms.load(Ordering::Relaxed))
+    }
+
     /// Stop playback immediately (used on barge-in / interrupt).
     pub fn stop(&mut self) {
         self.flush_requested.store(true, Ordering::SeqCst);
         self.is_playing.store(false, Ordering::SeqCst);
+        self.playback_rms.store(0, Ordering::Relaxed);
     }
 }
 
@@ -168,6 +196,7 @@ fn playback_callback_f32(
     data: &mut [f32],
     consumer: &mut AudioConsumer<f32>,
     is_playing: &Arc<AtomicBool>,
+    playback_rms: &Arc<AtomicU32>,
     flush_requested: &Arc<AtomicBool>,
     mut echo_ref_producer: Option<&mut AudioProducer<f32>>,
     hardware_channels: u16,
@@ -176,6 +205,7 @@ fn playback_callback_f32(
         consumer.clear();
         data.fill(0.0);
         is_playing.store(false, Ordering::SeqCst);
+        playback_rms.store(0, Ordering::Relaxed);
         return;
     }
 
@@ -185,6 +215,18 @@ fn playback_callback_f32(
         let read = consumer.pop_slice(data);
         if read < data.len() {
             data[read..].fill(0.0);
+        }
+
+        // Compute real-time instantaneous RMS of active DAC audio output
+        if read > 0 {
+            let mut sum_sq = 0.0f32;
+            for &s in &data[..read] {
+                sum_sq += s * s;
+            }
+            let rms = (sum_sq / (read as f32)).sqrt();
+            playback_rms.store(rms.to_bits(), Ordering::Relaxed);
+        } else {
+            playback_rms.store(0, Ordering::Relaxed);
         }
 
         // C1: Capture exact hardware playback samples as AEC render reference at DAC delivery time
@@ -213,6 +255,7 @@ fn playback_callback_f32(
         }
     } else {
         is_playing.store(false, Ordering::SeqCst);
+        playback_rms.store(0, Ordering::Relaxed);
         data.fill(0.0);
     }
 }
@@ -221,6 +264,7 @@ fn playback_callback_i16(
     data: &mut [i16],
     consumer: &mut AudioConsumer<f32>,
     is_playing: &Arc<AtomicBool>,
+    playback_rms: &Arc<AtomicU32>,
     flush_requested: &Arc<AtomicBool>,
     mut echo_ref_producer: Option<&mut AudioProducer<f32>>,
     hardware_channels: u16,
@@ -229,6 +273,7 @@ fn playback_callback_i16(
         consumer.clear();
         data.fill(0);
         is_playing.store(false, Ordering::SeqCst);
+        playback_rms.store(0, Ordering::Relaxed);
         return;
     }
 
@@ -240,6 +285,18 @@ fn playback_callback_i16(
         let mut temp = [0.0f32; 2048];
         let n = data.len().min(temp.len());
         let read = consumer.pop_slice(&mut temp[..n]);
+
+        // Compute real-time instantaneous RMS of active DAC audio output
+        if read > 0 {
+            let mut sum_sq = 0.0f32;
+            for &s in &temp[..read] {
+                sum_sq += s * s;
+            }
+            let rms = (sum_sq / (read as f32)).sqrt();
+            playback_rms.store(rms.to_bits(), Ordering::Relaxed);
+        } else {
+            playback_rms.store(0, Ordering::Relaxed);
+        }
 
         for i in 0..read {
             let s = temp[i].clamp(-1.0, 1.0);
@@ -279,6 +336,7 @@ fn playback_callback_i16(
         }
     } else {
         is_playing.store(false, Ordering::SeqCst);
+        playback_rms.store(0, Ordering::Relaxed);
         data.fill(0);
     }
 }
@@ -292,6 +350,7 @@ mod tests {
         let (mut prod, mut cons) = create_audio_ring_buffer::<f32>(64);
         let (mut ref_prod, mut ref_cons) = create_audio_ring_buffer::<f32>(64);
         let is_playing = Arc::new(AtomicBool::new(false));
+        let playback_rms = Arc::new(AtomicU32::new(0));
         let flush_requested = Arc::new(AtomicBool::new(false));
 
         // 1. Normal playback with AEC reference capture
@@ -301,12 +360,15 @@ mod tests {
             &mut buffer,
             &mut cons,
             &is_playing,
+            &playback_rms,
             &flush_requested,
             Some(&mut ref_prod),
             1,
         );
         assert_eq!(buffer, [0.5, 0.5, 0.5, 0.5]);
         assert!(is_playing.load(Ordering::SeqCst));
+        let rms = f32::from_bits(playback_rms.load(Ordering::Relaxed));
+        assert!((rms - 0.5).abs() < 1e-4);
 
         // Verify that echo reference buffer received the played samples in real-time
         let mut ref_out = [0.0f32; 4];
@@ -323,13 +385,56 @@ mod tests {
             &mut buffer2,
             &mut cons,
             &is_playing,
+            &playback_rms,
             &flush_requested,
             Some(&mut ref_prod),
             1,
         );
         assert_eq!(buffer2, [0.0, 0.0, 0.0, 0.0]); // Silenced
         assert!(!is_playing.load(Ordering::SeqCst));
+        assert_eq!(f32::from_bits(playback_rms.load(Ordering::Relaxed)), 0.0);
         assert!(cons.is_empty()); // Ring buffer drained
+    }
+
+    #[test]
+    fn test_playback_callback_computes_realtime_rms() {
+        let (mut prod, mut cons) = create_audio_ring_buffer::<f32>(64);
+        let is_playing = Arc::new(AtomicBool::new(false));
+        let playback_rms = Arc::new(AtomicU32::new(0));
+        let flush_requested = Arc::new(AtomicBool::new(false));
+
+        // Push test signal with amplitude 0.4
+        prod.push_slice(&[0.4, 0.4, 0.4, 0.4]);
+        let mut buffer = [0.0f32; 4];
+        playback_callback_f32(
+            &mut buffer,
+            &mut cons,
+            &is_playing,
+            &playback_rms,
+            &flush_requested,
+            None,
+            1,
+        );
+
+        assert!(is_playing.load(Ordering::SeqCst));
+        let rms = f32::from_bits(playback_rms.load(Ordering::Relaxed));
+        assert!((rms - 0.4).abs() < 1e-4, "Playback RMS must be ~0.4, got {}", rms);
+
+        // Next callback with empty ring buffer -> RMS drops to 0.0 and is_playing is false
+        let mut buffer2 = [0.0f32; 4];
+        playback_callback_f32(
+            &mut buffer2,
+            &mut cons,
+            &is_playing,
+            &playback_rms,
+            &flush_requested,
+            None,
+            1,
+        );
+
+        assert!(!is_playing.load(Ordering::SeqCst));
+        let rms_idle = f32::from_bits(playback_rms.load(Ordering::Relaxed));
+        assert_eq!(rms_idle, 0.0);
     }
 
     #[test]

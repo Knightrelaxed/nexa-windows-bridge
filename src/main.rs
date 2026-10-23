@@ -20,6 +20,7 @@ use platform::{
     TrayEvent,
 };
 use slint::ComponentHandle;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::{error, info, warn};
 use tracing_subscriber::layer::SubscriberExt;
@@ -191,22 +192,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let network_client = NetworkClient::new(Arc::clone(&config));
 
     // 5. Initialize WASAPI Duplex Audio Engine (Option-wrapped: Claude Bug #5)
-    let audio_engine: Option<Arc<tokio::sync::Mutex<audio::AudioEngine>>> =
+    let (audio_engine, is_speaker_playing, speaker_playback_rms) =
         match audio::AudioEngine::new() {
-            Ok(e) => Some(Arc::new(tokio::sync::Mutex::new(e))),
+            Ok(e) => {
+                let playing_h = e.is_speaker_playing_handle();
+                let rms_h = e.speaker_playback_rms_handle();
+                (
+                    Some(Arc::new(tokio::sync::Mutex::new(e))),
+                    Some(playing_h),
+                    Some(rms_h),
+                )
+            }
             Err(e) => {
                 error!("[MAIN] WASAPI Audio Engine initialization failed: {}", e);
                 main_window.set_status_message(format!("Audio unavailable: {}", e).into());
-                None
+                (None, None, None)
             }
         };
 
     // 5.1 Initialize Direct3D 11 GPU Screen Capture Controller
     let capture_controller: Arc<Mutex<Option<capture::ScreenCaptureController>>> =
         Arc::new(Mutex::new(None));
+    let is_capture_desired = Arc::new(AtomicBool::new(false));
+    let capture_generation = Arc::new(AtomicU64::new(0));
 
     let toggle_screen_share: Arc<dyn Fn(Option<bool>) + Send + Sync> = {
         let capture_ctrl = Arc::clone(&capture_controller);
+        let is_capture_desired = Arc::clone(&is_capture_desired);
+        let capture_generation = Arc::clone(&capture_generation);
         let net_client = network_client.clone();
         let window_weak = main_window.as_weak();
         let config_clone = Arc::clone(&config);
@@ -214,6 +227,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(move |target_state: Option<bool>| {
             let window_weak = window_weak.clone();
             let capture_ctrl = Arc::clone(&capture_ctrl);
+            let is_capture_desired = Arc::clone(&is_capture_desired);
+            let capture_generation = Arc::clone(&capture_generation);
             let net_client = net_client.clone();
             let config_clone = Arc::clone(&config_clone);
 
@@ -230,9 +245,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         enforce_system_cursor_visible(hwnd);
                     }
 
-                    let mut ctrl = capture_ctrl.lock().unwrap();
-
                     if new_state {
+                        let gen = capture_generation.fetch_add(1, Ordering::SeqCst) + 1;
+                        is_capture_desired.store(true, Ordering::SeqCst);
+
                         let fps = {
                             let cfg = config_clone.lock().unwrap();
                             cfg.capture_fps.max(1)
@@ -242,6 +258,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let (frame_tx, mut frame_rx) =
                             tokio::sync::mpsc::channel::<String>(1);
                         let net_client_frame = net_client.clone();
+                        let is_capture_desired_tx = Arc::clone(&is_capture_desired);
+                        let capture_gen_tx = Arc::clone(&capture_generation);
 
                         // Stable session_id per screen sharing session (Claude Bug #9)
                         let session_id = format!(
@@ -254,6 +272,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         tokio::spawn(async move {
                             while let Some(image_base64) = frame_rx.recv().await {
+                                if !is_capture_desired_tx.load(Ordering::SeqCst)
+                                    || capture_gen_tx.load(Ordering::SeqCst) != gen
+                                {
+                                    info!("[MAIN] Screen capture gen {} stopped, terminating frame transmitter loop.", gen);
+                                    break;
+                                }
                                 if net_client_frame.is_connected() {
                                     let frame_msg = ClientMessage::VideoFrame {
                                         command_id: session_id.clone(),
@@ -262,33 +286,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let _ = net_client_frame.send_message(frame_msg).await;
                                 }
                             }
-                            info!("[MAIN] Screen capture frame transmitter loop ended.");
+                            info!("[MAIN] Screen capture frame transmitter loop ended for gen {}.", gen);
                         });
 
                         // Run capture initialization in spawn_blocking so UI thread doesn't freeze (Claude Bug #7)
                         let capture_ctrl_bg = Arc::clone(&capture_ctrl);
+                        let is_capture_desired_bg = Arc::clone(&is_capture_desired);
+                        let capture_gen_bg = Arc::clone(&capture_generation);
                         let window_weak_bg = window_weak.clone();
                         tokio::task::spawn_blocking(move || {
                             match capture::ScreenCaptureController::start(frame_tx, fps) {
                                 Ok(c) => {
-                                    {
+                                    let still_desired = is_capture_desired_bg.load(Ordering::SeqCst)
+                                        && capture_gen_bg.load(Ordering::SeqCst) == gen;
+                                    if still_desired {
                                         let mut ctrl = capture_ctrl_bg.lock().unwrap();
-                                        *ctrl = Some(c);
-                                    }
-                                    let _ = slint::invoke_from_event_loop(move || {
-                                        if let Some(win) = window_weak_bg.upgrade() {
-                                            unsafe {
-                                                let hwnd = get_main_window_hwnd();
-                                                enforce_system_cursor_visible(hwnd);
-                                            }
-                                            win.set_avatar_state(
-                                                ui::CognitiveState::ScreenSharing.as_str().into(),
-                                            );
-                                            win.set_status_message(
-                                                ui::CognitiveState::ScreenSharing.status_text().into(),
-                                            );
+                                        if is_capture_desired_bg.load(Ordering::SeqCst)
+                                            && capture_gen_bg.load(Ordering::SeqCst) == gen
+                                        {
+                                            *ctrl = Some(c);
+                                            let _ = slint::invoke_from_event_loop(move || {
+                                                if let Some(win) = window_weak_bg.upgrade() {
+                                                    unsafe {
+                                                        let hwnd = get_main_window_hwnd();
+                                                        enforce_system_cursor_visible(hwnd);
+                                                    }
+                                                    win.set_avatar_state(
+                                                        ui::CognitiveState::ScreenSharing.as_str().into(),
+                                                    );
+                                                    win.set_status_message(
+                                                        ui::CognitiveState::ScreenSharing.status_text().into(),
+                                                    );
+                                                }
+                                            });
+                                            return;
                                         }
-                                    });
+                                    }
+                                    info!("[MAIN] Screen capture gen {} was cancelled before activation, stopping immediately.", gen);
+                                    let mut stopped_c = c;
+                                    stopped_c.stop();
                                 }
                                 Err(e) => {
                                     error!("[MAIN] Failed to start screen capture: {}", e);
@@ -304,8 +340,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         });
                     } else {
-                        if let Some(mut c) = ctrl.take() {
-                            c.stop();
+                        capture_generation.fetch_add(1, Ordering::SeqCst);
+                        is_capture_desired.store(false, Ordering::SeqCst);
+                        {
+                            let mut ctrl = capture_ctrl.lock().unwrap();
+                            if let Some(mut c) = ctrl.take() {
+                                c.stop();
+                            }
                         }
                         unsafe {
                             let hwnd = get_main_window_hwnd();
@@ -314,11 +355,78 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         platform::compact_memory_if_low_ram(true);
                         win.set_avatar_state(ui::CognitiveState::Idle.as_str().into());
                         win.set_status_message(ui::CognitiveState::Idle.status_text().into());
+
+                        // Send explicit SCREEN_SHARE_STOPPED CallEvent to server
+                        let net_client_stop = net_client.clone();
+                        tokio::spawn(async move {
+                            if net_client_stop.is_connected() {
+                                let stop_msg = ClientMessage::CallEvent {
+                                    event: "SCREEN_SHARE_STOPPED".to_string(),
+                                    command_id: String::new(),
+                                };
+                                let _ = net_client_stop.send_message(stop_msg).await;
+                                info!("[MAIN] Sent SCREEN_SHARE_STOPPED CallEvent to server.");
+                            }
+                        });
                     }
                 }
             });
         })
     };
+
+    // 5.2 Spawn Real-Time Speaker Playback Rhythm & UI Equalizer Driver
+    // Driven directly by CPAL hardware DAC callbacks (ThinkPad X380 Yoga audio rhythm)
+    if let (Some(is_playing_h), Some(rms_h)) =
+        (is_speaker_playing.clone(), speaker_playback_rms.clone())
+    {
+        let window_weak_playback = main_window.as_weak();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(30));
+            let mut was_speaking = false;
+            let mut last_ui_tick = std::time::Instant::now();
+
+            loop {
+                interval.tick().await;
+                let is_playing = is_playing_h.load(Ordering::Relaxed);
+                let rms_bits = rms_h.load(Ordering::Relaxed);
+                let rms = f32::from_bits(rms_bits);
+
+                if is_playing {
+                    was_speaking = true;
+                    let vol = (rms * 3.5).min(1.0);
+                    let pulse = 1.0 + vol * 0.35;
+                    let now = std::time::Instant::now();
+                    if now.duration_since(last_ui_tick) >= std::time::Duration::from_millis(30) {
+                        last_ui_tick = now;
+                        let window_weak = window_weak_playback.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(win) = window_weak.upgrade() {
+                                if win.get_avatar_state() != "speaking" && win.get_avatar_state() != "barge_in" {
+                                    win.set_avatar_state(ui::CognitiveState::Speaking.as_str().into());
+                                    win.set_status_message(ui::CognitiveState::Speaking.status_text().into());
+                                }
+                                win.set_volume_level(vol);
+                                win.set_pulse_scale(pulse);
+                            }
+                        });
+                    }
+                } else if was_speaking {
+                    was_speaking = false;
+                    let window_weak = window_weak_playback.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(win) = window_weak.upgrade() {
+                            if win.get_avatar_state() == "speaking" {
+                                win.set_avatar_state(ui::CognitiveState::Listening.as_str().into());
+                                win.set_status_message(ui::CognitiveState::Listening.status_text().into());
+                            }
+                            win.set_volume_level(0.0);
+                            win.set_pulse_scale(1.0);
+                        }
+                    });
+                }
+            }
+        });
+    }
 
     // 6. Hook Connection State Watcher & Duplex Audio Engine Lifecycle
     let window_weak = main_window.as_weak();
@@ -326,6 +434,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let audio_engine_conn = audio_engine.clone();
     let net_client_audio = network_client.clone();
     let toggle_share_conn = Arc::clone(&toggle_screen_share);
+    let is_speaker_playing_mic = is_speaker_playing.clone();
 
     tokio::spawn(async move {
         let (mic_pcm_tx, mut mic_pcm_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
@@ -333,52 +442,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Forward captured 16kHz PCM chunks from ThinkPad microphone to WebSocket & Drive Slint UI
         let net_client_mic = net_client_audio.clone();
         let window_weak_mic = window_weak.clone();
+        let is_speaker_playing_mic_loop = is_speaker_playing_mic.clone();
         tokio::spawn(async move {
             let mut prev_had_voice = false;
             let mut last_ui_mic_tick = std::time::Instant::now();
             while let Some(pcm_chunk) = mic_pcm_rx.recv().await {
                 if net_client_mic.is_connected() {
-                    // Compute Mic RMS for user voice reactivity when listening
-                    let pcm_i16 = audio::resampler::pcm_bytes_to_i16(&pcm_chunk);
-                    let mut sum_sq: f64 = 0.0;
-                    for &sample in &pcm_i16 {
-                        let s = sample as f64 / 32768.0;
-                        sum_sq += s * s;
-                    }
-                    let rms = if !pcm_i16.is_empty() {
-                        (sum_sq / pcm_i16.len() as f64).sqrt() as f32
-                    } else {
-                        0.0
-                    };
+                    let is_currently_playing = is_speaker_playing_mic_loop
+                        .as_ref()
+                        .map(|h| h.load(Ordering::Relaxed))
+                        .unwrap_or(false);
 
-                    if rms > 0.015 {
-                        let vol = (rms * 3.5).min(1.0);
-                        let pulse = 1.0 + vol * 0.25;
-                        prev_had_voice = true;
-                        let now = std::time::Instant::now();
-                        if now.duration_since(last_ui_mic_tick) >= std::time::Duration::from_millis(60) {
-                            last_ui_mic_tick = now;
+                    if !is_currently_playing {
+                        // Compute Mic RMS for user voice reactivity when listening
+                        let pcm_i16 = audio::resampler::pcm_bytes_to_i16(&pcm_chunk);
+                        let mut sum_sq: f64 = 0.0;
+                        for &sample in &pcm_i16 {
+                            let s = sample as f64 / 32768.0;
+                            sum_sq += s * s;
+                        }
+                        let rms = if !pcm_i16.is_empty() {
+                            (sum_sq / pcm_i16.len() as f64).sqrt() as f32
+                        } else {
+                            0.0
+                        };
+
+                        if rms > 0.015 {
+                            let vol = (rms * 3.5).min(1.0);
+                            let pulse = 1.0 + vol * 0.25;
+                            prev_had_voice = true;
+                            let now = std::time::Instant::now();
+                            if now.duration_since(last_ui_mic_tick) >= std::time::Duration::from_millis(60) {
+                                last_ui_mic_tick = now;
+                                let window_weak = window_weak_mic.clone();
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    if let Some(win) = window_weak.upgrade() {
+                                        if win.get_avatar_state() == "listening" {
+                                            win.set_volume_level(vol);
+                                            win.set_pulse_scale(pulse);
+                                        }
+                                    }
+                                });
+                            }
+                        } else if prev_had_voice {
+                            prev_had_voice = false;
                             let window_weak = window_weak_mic.clone();
                             let _ = slint::invoke_from_event_loop(move || {
                                 if let Some(win) = window_weak.upgrade() {
                                     if win.get_avatar_state() == "listening" {
-                                        win.set_volume_level(vol);
-                                        win.set_pulse_scale(pulse);
+                                        win.set_volume_level(0.0);
+                                        win.set_pulse_scale(1.0);
                                     }
                                 }
                             });
                         }
-                    } else if prev_had_voice {
-                        prev_had_voice = false;
-                        let window_weak = window_weak_mic.clone();
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(win) = window_weak.upgrade() {
-                                if win.get_avatar_state() == "listening" {
-                                    win.set_volume_level(0.0);
-                                    win.set_pulse_scale(1.0);
-                                }
-                            }
-                        });
                     }
 
                     let _ = net_client_mic.send_binary(pcm_chunk).await;
@@ -502,6 +619,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let audio_engine_cmd = audio_engine.clone();
     let window_weak_cmd = main_window.as_weak();
     let highlighter_cmd = Arc::clone(&highlighter_controller);
+    let is_speaker_playing_cmd = is_speaker_playing.clone();
 
     // Dedicated sequential FIFO queue for EXECUTE_COMMAND to guarantee strict ordering (Audit H10)
     let (fifo_cmd_tx, mut fifo_cmd_rx) =
@@ -525,7 +643,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     tokio::spawn(async move {
-        let mut last_ui_audio_tick = std::time::Instant::now();
         loop {
             let msg = match command_rx.recv().await {
                 Ok(m) => m,
@@ -542,33 +659,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ServerMessage::AudioPlay { pcm_chunk } => {
                     use base64::prelude::*;
                     if let Ok(bytes) = BASE64_STANDARD.decode(&pcm_chunk) {
-                        let pcm_i16 = audio::resampler::pcm_bytes_to_i16(&bytes);
-                        let mut sum_sq: f64 = 0.0;
-                        for &sample in &pcm_i16 {
-                            let s = sample as f64 / 32768.0;
-                            sum_sq += s * s;
-                        }
-                        let rms = if !pcm_i16.is_empty() {
-                            (sum_sq / pcm_i16.len() as f64).sqrt() as f32
-                        } else {
-                            0.0
-                        };
-                        let vol = (rms * 3.5).min(1.0);
-                        let pulse = 1.0 + vol * 0.35;
-
-                        // Throttle Slint UI event loop dispatch to ~16 updates/sec (60ms) to prevent UI thread lockup during burst streaming
-                        let now = std::time::Instant::now();
-                        if now.duration_since(last_ui_audio_tick) >= std::time::Duration::from_millis(60) {
-                            last_ui_audio_tick = now;
-                            let window_weak = window_weak_cmd.clone();
-                            let _ = slint::invoke_from_event_loop(move || {
-                                if let Some(win) = window_weak.upgrade() {
-                                    win.set_volume_level(vol);
-                                    win.set_pulse_scale(pulse);
-                                }
-                            });
-                        }
-
                         if let Some(audio_clone) = audio_engine_cmd.as_ref() {
                             let mut engine = audio_clone.lock().await;
                             engine.play_response_pcm(&bytes);
@@ -597,13 +687,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } => {
                     let maybe_cog = ui::CognitiveState::try_from_status(&status);
                     let window_weak = window_weak_cmd.clone();
+                    let is_speaker_playing_status = is_speaker_playing_cmd.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(win) = window_weak.upgrade() {
+                            let is_spk_active = is_speaker_playing_status
+                                .as_ref()
+                                .map(|h| h.load(Ordering::Relaxed))
+                                .unwrap_or(false);
+
                             if let Some(cog) = maybe_cog {
-                                win.set_avatar_state(cog.as_str().into());
-                                if !cog.is_vocal() {
-                                    win.set_volume_level(0.0);
-                                    win.set_pulse_scale(1.0);
+                                if cog == ui::CognitiveState::Listening && is_spk_active {
+                                    // Hardware speaker buffer still has active speech playing.
+                                    // Preserve Speaking avatar state until physical playback finishes!
+                                } else {
+                                    win.set_avatar_state(cog.as_str().into());
+                                    if !cog.is_vocal() {
+                                        win.set_volume_level(0.0);
+                                        win.set_pulse_scale(1.0);
+                                    }
                                 }
                             }
                             if let Some(ref ut) = user_transcript {
@@ -613,7 +714,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 win.set_transcript_assistant_text(t.clone().into());
                                 win.set_status_message(t.clone().into());
                             } else if let Some(cog) = maybe_cog {
-                                win.set_status_message(cog.status_text().into());
+                                if !(cog == ui::CognitiveState::Listening && is_spk_active) {
+                                    win.set_status_message(cog.status_text().into());
+                                }
                             }
                         }
                     });
@@ -1181,8 +1284,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Window Close Button [X]: Terminate application cleanly, stopping all audio and network sessions
     let net_client_close_req = network_client.clone();
     let capture_ctrl_close_req = Arc::clone(&capture_controller);
+    let is_capture_desired_close_req = Arc::clone(&is_capture_desired);
+    let capture_gen_close_req = Arc::clone(&capture_generation);
     main_window.window().on_close_requested(move || {
         info!("[MAIN] Window close [X] requested. Terminating application gracefully.");
+        is_capture_desired_close_req.store(false, Ordering::SeqCst);
+        capture_gen_close_req.fetch_add(1, Ordering::SeqCst);
         net_client_close_req.disconnect();
         if let Ok(mut ctrl) = capture_ctrl_close_req.lock() {
             if let Some(mut c) = ctrl.take() {
@@ -1205,8 +1312,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Hook Application Close [✕] Button (From Pill Mode or Fullscreen HUD)
     let net_client_close = network_client.clone();
     let capture_ctrl_close_app = Arc::clone(&capture_controller);
+    let is_capture_desired_close_app = Arc::clone(&is_capture_desired);
+    let capture_gen_close_app = Arc::clone(&capture_generation);
     main_window.on_close_app(move || {
         info!("[MAIN] ✕ Application Close requested by user. Disconnecting and quitting.");
+        is_capture_desired_close_app.store(false, Ordering::SeqCst);
+        capture_gen_close_app.fetch_add(1, Ordering::SeqCst);
         net_client_close.disconnect();
         if let Ok(mut ctrl) = capture_ctrl_close_app.lock() {
             if let Some(mut c) = ctrl.take() {

@@ -125,29 +125,18 @@ fn try_apply_stealth_styles() -> bool {
 
         let hwnd_val = hwnd as usize;
 
-        // If styles were already applied to this exact HWND, skip heavy DWM recomputation (Audit C1)
-        if LAST_STYLED_HWND.load(Ordering::Relaxed) == hwnd_val {
-            SetWindowPos(
-                hwnd,
-                HWND_TOPMOST,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
-            );
-            return true;
-        }
-
         // 1. Configure stealth extended window styles:
+        // - WS_EX_LAYERED: Required by Windows for reliable cross-process WS_EX_TRANSPARENT click-through (Audit N4)
         // - WS_EX_TOPMOST: Stays above all regular windows
         // - WS_EX_TRANSPARENT: Mouse clicks pass straight through without intercepting
         // - WS_EX_NOACTIVATE: Does not steal focus or keyboard input
         // - WS_EX_TOOLWINDOW: Prevents overlay from appearing in Alt-Tab task switcher (Claude Bug M5)
         let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
-        let required_flags = (WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW) as i32;
+        let required_flags = (WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW) as i32;
         if (ex_style & required_flags) != required_flags {
             SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style | required_flags);
+            // Configure full alpha transparency for layered click-through
+            SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
         }
 
         // 2. Extend DWM frame into client area (-1 margins) to guarantee hardware alpha glass transparency
@@ -163,7 +152,7 @@ fn try_apply_stealth_styles() -> bool {
         const WDA_EXCLUDEFROMCAPTURE: u32 = 0x00000011;
         SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
 
-        // 4. Position window to cover full primary screen, topmost, no activation
+        // 4. Always dynamically resize to current screen dimensions (supports ThinkPad Yoga hinge rotation/docking, Audit N12)
         let screen = get_primary_screen_dimensions();
         SetWindowPos(
             hwnd,
@@ -177,7 +166,7 @@ fn try_apply_stealth_styles() -> bool {
 
         LAST_STYLED_HWND.store(hwnd_val, Ordering::SeqCst);
         debug!(
-            "[HIGHLIGHTER] Applied stealth styles (WS_EX_TRANSPARENT + WS_EX_TOOLWINDOW + WDA_EXCLUDEFROMCAPTURE + DWM Glass) to HWND 0x{:X}",
+            "[HIGHLIGHTER] Applied stealth styles (WS_EX_LAYERED + WS_EX_TRANSPARENT + WS_EX_TOOLWINDOW + WDA_EXCLUDEFROMCAPTURE + DWM Glass) to HWND 0x{:X}",
             hwnd_val
         );
         true

@@ -219,6 +219,7 @@ pub async fn handle_execute_command(
                 .unwrap_or(false);
 
             let text_owned = text.to_string();
+            reset_automation_abort();
             let type_res = tokio::task::spawn_blocking(move || {
                 desktop_type_text(&text_owned, press_enter)
             })
@@ -270,16 +271,17 @@ pub async fn handle_execute_command(
                 }
             };
 
-            // Security Policy Guard: Disallow dangerous system keys/combinations (Claude 2 & 3 Audit)
+            // Security Policy Guard: Disallow dangerous system keys/combinations (Claude 2, 3 & 4 Audit)
+            // Initial fast-path check on normalized string + strict VK-level check inside desktop_press_key
             let key_upper = key.to_uppercase();
-            let is_blocked = key_upper.split('+').any(|p| {
+            let is_blocked_str = key_upper.split('+').any(|p| {
                 let p = p.trim();
                 p == "WIN" || p == "WINDOWS" || p == "SUPER" || p == "LWIN" || p == "RWIN"
-            }) || key_upper.contains("ALT+F4")
+            }) || key_upper.replace(' ', "").contains("ALT+F4")
                || (key_upper.contains("CTRL") && key_upper.contains("ALT") && (key_upper.contains("DEL") || key_upper.contains("DELETE")))
                || (key_upper.contains("CTRL") && key_upper.contains("SHIFT") && (key_upper.contains("ESC") || key_upper.contains("ESCAPE")));
 
-            if is_blocked {
+            if is_blocked_str {
                 warn!("[AUTOMATION] ⛔ Key press '{}' BLOCKED by security policy", key);
                 return ClientMessage::CommandResult {
                     command_id,
@@ -310,11 +312,16 @@ pub async fn handle_execute_command(
                 },
                 Err(err) => {
                     warn!("[AUTOMATION] desktop_press_key failed: {}", err);
+                    let err_code = if err.contains("kebijakan keamanan") || err.contains("diblokir") {
+                        "SECURITY_POLICY_VIOLATION"
+                    } else {
+                        "PRESS_KEY_FAILED"
+                    };
                     ClientMessage::CommandResult {
                         command_id,
                         success: false,
                         message: format!("Gagal menekan tombol di desktop: {}", err),
-                        data: serde_json::json!({ "error": err }),
+                        data: serde_json::json!({ "error": err_code, "key": key }),
                     }
                 }
             }
@@ -325,35 +332,55 @@ pub async fn handle_execute_command(
         // ─────────────────────────────────────────────────────────────
         "HIGHLIGHT_ELEMENT" | "HIGHLIGHTELEMENT" | "HIGHLIGHT-ELEMENT" => {
             // Support both flat bounds (ymin, xmin, ymax, xmax) and box_2d array: [ymin, xmin, ymax, xmax]
-            let (ymin, xmin, ymax, xmax) = if let Some(arr) = params.get("box_2d").and_then(|v| v.as_array()) {
+            // Strictly validate coordinates to prevent silent 0..1000 whole-screen false-positives (Audit N11)
+            let parsed_coords = if let Some(arr) = params.get("box_2d").and_then(|v| v.as_array()) {
                 if arr.len() == 4 {
-                    (
-                        arr[0].as_f64().unwrap_or(0.0),
-                        arr[1].as_f64().unwrap_or(0.0),
-                        arr[2].as_f64().unwrap_or(1000.0),
-                        arr[3].as_f64().unwrap_or(1000.0),
-                    )
+                    let ymin = arr[0].as_f64();
+                    let xmin = arr[1].as_f64();
+                    let ymax = arr[2].as_f64();
+                    let xmax = arr[3].as_f64();
+                    match (ymin, xmin, ymax, xmax) {
+                        (Some(y0), Some(x0), Some(y1), Some(x1))
+                            if (0.0..=1000.0).contains(&y0)
+                                && (0.0..=1000.0).contains(&x0)
+                                && (0.0..=1000.0).contains(&y1)
+                                && (0.0..=1000.0).contains(&x1) =>
+                        {
+                            Some((y0.min(y1), x0.min(x1), y0.max(y1), x0.max(x1)))
+                        }
+                        _ => None,
+                    }
                 } else {
-                    (0.0, 0.0, 1000.0, 1000.0)
+                    None
                 }
             } else {
-                let ymin = match params.get("ymin").and_then(|v| v.as_f64()) {
-                    Some(v) if (0.0..=1000.0).contains(&v) => v,
-                    _ => 0.0,
-                };
-                let xmin = match params.get("xmin").and_then(|v| v.as_f64()) {
-                    Some(v) if (0.0..=1000.0).contains(&v) => v,
-                    _ => 0.0,
-                };
-                let ymax = match params.get("ymax").and_then(|v| v.as_f64()) {
-                    Some(v) if (0.0..=1000.0).contains(&v) => v,
-                    _ => 1000.0,
-                };
-                let xmax = match params.get("xmax").and_then(|v| v.as_f64()) {
-                    Some(v) if (0.0..=1000.0).contains(&v) => v,
-                    _ => 1000.0,
-                };
-                (ymin, xmin, ymax, xmax)
+                let ymin = params.get("ymin").and_then(|v| v.as_f64());
+                let xmin = params.get("xmin").and_then(|v| v.as_f64());
+                let ymax = params.get("ymax").and_then(|v| v.as_f64());
+                let xmax = params.get("xmax").and_then(|v| v.as_f64());
+                match (ymin, xmin, ymax, xmax) {
+                    (Some(y0), Some(x0), Some(y1), Some(x1))
+                        if (0.0..=1000.0).contains(&y0)
+                            && (0.0..=1000.0).contains(&x0)
+                            && (0.0..=1000.0).contains(&y1)
+                            && (0.0..=1000.0).contains(&x1) =>
+                    {
+                        Some((y0.min(y1), x0.min(x1), y0.max(y1), x0.max(x1)))
+                    }
+                    _ => None,
+                }
+            };
+
+            let (ymin, xmin, ymax, xmax) = match parsed_coords {
+                Some(coords) => coords,
+                None => {
+                    return ClientMessage::CommandResult {
+                        command_id,
+                        success: false,
+                        message: "Parameter koordinat sorotan (ymin, xmin, ymax, xmax atau box_2d) harus berupa angka valid dalam rentang 0-1000.".to_string(),
+                        data: serde_json::json!({ "error": "INVALID_COORDINATES" }),
+                    };
+                }
             };
 
             let style_str = params
@@ -476,6 +503,22 @@ pub async fn handle_execute_command(
                 message: "Semua sorotan layar berhasil dibersihkan.".to_string(),
                 data: serde_json::json!({
                     "action": "clearHighlights"
+                }),
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // 8. ABORT_AUTOMATION (Audit N1, N13)
+        // ─────────────────────────────────────────────────────────────
+        "ABORT_AUTOMATION" | "ABORTAUTOMATION" | "ABORT-AUTOMATION" | "ABORT" | "CANCEL_AUTOMATION" | "CANCELAUTOMATION" | "CANCEL-AUTOMATION" => {
+            request_automation_abort();
+            info!("[AUTOMATION] 🛑 Abort signal triggered via command {}", command_id);
+            ClientMessage::CommandResult {
+                command_id,
+                success: true,
+                message: "Sinyal pembatalan otomatisasi berhasil dikirim.".to_string(),
+                data: serde_json::json!({
+                    "action": "abortAutomation"
                 }),
             }
         }
@@ -789,6 +832,91 @@ mod tests {
             ClientMessage::CommandResult { success, data, .. } => {
                 assert!(!success);
                 assert_eq!(data["error"], "SECURITY_POLICY_VIOLATION");
+            }
+            _ => panic!("Expected CommandResult"),
+        }
+
+        // Block "ALT + F4" with spaces (Audit N3)
+        let res_alt_space_f4 = handle_execute_command(
+            "cmd_sec3".to_string(),
+            "desktopPressKey".to_string(),
+            serde_json::json!({ "key": "ALT + F4" }),
+            None,
+        )
+        .await;
+        match res_alt_space_f4 {
+            ClientMessage::CommandResult { success, data, .. } => {
+                assert!(!success);
+                assert_eq!(data["error"], "SECURITY_POLICY_VIOLATION");
+            }
+            _ => panic!("Expected CommandResult"),
+        }
+
+        // Block "CONTROL + SHIFT + ESC" (Task Manager) (Audit N3)
+        let res_taskmgr = handle_execute_command(
+            "cmd_sec4".to_string(),
+            "desktopPressKey".to_string(),
+            serde_json::json!({ "key": "CONTROL + SHIFT + ESC" }),
+            None,
+        )
+        .await;
+        match res_taskmgr {
+            ClientMessage::CommandResult { success, data, .. } => {
+                assert!(!success);
+                assert_eq!(data["error"], "SECURITY_POLICY_VIOLATION");
+            }
+            _ => panic!("Expected CommandResult"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_highlight_element_invalid_coordinates_rejected() {
+        // Missing ymax, xmax
+        let res_invalid = handle_execute_command(
+            "cmd_hl_bad".to_string(),
+            "highlightElement".to_string(),
+            serde_json::json!({ "ymin": 100.0, "xmin": 200.0 }),
+            None,
+        )
+        .await;
+        match res_invalid {
+            ClientMessage::CommandResult { success, data, .. } => {
+                assert!(!success);
+                assert_eq!(data["error"], "INVALID_COORDINATES");
+            }
+            _ => panic!("Expected CommandResult"),
+        }
+
+        // Malformed box_2d with only 3 elements
+        let res_box_short = handle_execute_command(
+            "cmd_box_short".to_string(),
+            "highlightElement".to_string(),
+            serde_json::json!({ "box_2d": [100.0, 200.0, 300.0] }),
+            None,
+        )
+        .await;
+        match res_box_short {
+            ClientMessage::CommandResult { success, data, .. } => {
+                assert!(!success);
+                assert_eq!(data["error"], "INVALID_COORDINATES");
+            }
+            _ => panic!("Expected CommandResult"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_abort_automation() {
+        let res_abort = handle_execute_command(
+            "cmd_abort".to_string(),
+            "abortAutomation".to_string(),
+            serde_json::json!({}),
+            None,
+        )
+        .await;
+        match res_abort {
+            ClientMessage::CommandResult { success, data, .. } => {
+                assert!(success);
+                assert_eq!(data["action"], "abortAutomation");
             }
             _ => panic!("Expected CommandResult"),
         }
