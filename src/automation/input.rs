@@ -7,7 +7,7 @@
 
 use std::thread::sleep;
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::info;
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -231,7 +231,7 @@ pub fn desktop_click(
         sleep(Duration::from_millis(15));
 
         // Helper closure to trigger a single down/up sequence with position lock
-        let mut trigger_click = || -> Result<(), String> {
+        let trigger_click = || -> Result<(), String> {
             let down_input = INPUT {
                 r#type: INPUT_MOUSE,
                 Anonymous: INPUT_0 {

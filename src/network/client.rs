@@ -260,6 +260,8 @@ async fn run_client_worker(
                 // Drain any stale outbound items from previous sessions
                 while outbound_rx.try_recv().is_ok() {}
 
+                let mut ping_sent_instant: Option<std::time::Instant> = None;
+
                 // Send immediate initial ping to measure initial RTT right away
                 {
                     let now = std::time::SystemTime::now()
@@ -267,6 +269,7 @@ async fn run_client_worker(
                         .unwrap_or_default()
                         .as_millis() as u64;
                     if let Ok(json) = (ClientMessage::Ping { timestamp: now }).to_json() {
+                        ping_sent_instant = Some(std::time::Instant::now());
                         let _ = ws_write.send(Message::Text(json.into())).await;
                     }
                 }
@@ -303,6 +306,7 @@ async fn run_client_worker(
                                 .as_millis() as u64;
                             let ping_msg = ClientMessage::Ping { timestamp: now };
                             if let Ok(json) = ping_msg.to_json() {
+                                ping_sent_instant = Some(std::time::Instant::now());
                                 if let Err(e) = ws_write.send(Message::Text(json.into())).await {
                                     warn!("[NETWORK] Failed to send ping: {}", e);
                                     session_active = false;
@@ -330,13 +334,12 @@ async fn run_client_worker(
                             match msg_opt {
                                 Some(Ok(Message::Text(text))) => {
                                     match ServerMessage::from_json(&text) {
-                                        Ok(ServerMessage::Pong { timestamp }) => {
-                                            let now = std::time::SystemTime::now()
-                                                .duration_since(std::time::UNIX_EPOCH)
-                                                .unwrap_or_default()
-                                                .as_millis() as u64;
-                                            let rtt = if now >= timestamp { (now - timestamp) as u32 } else { 0 };
-                                            last_rtt_ms.store(rtt, Ordering::Relaxed);
+                                        Ok(ServerMessage::Pong { timestamp: _ }) => {
+                                            // Measure true RTT from local stopwatch, immune to server clock drift (Audit H9)
+                                            if let Some(sent) = ping_sent_instant.take() {
+                                                let rtt = sent.elapsed().as_millis() as u32;
+                                                last_rtt_ms.store(rtt, Ordering::Relaxed);
+                                            }
                                         }
                                         Ok(ServerMessage::Unknown) => {
                                             // Silently ignore future extension types

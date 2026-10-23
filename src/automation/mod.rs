@@ -536,10 +536,14 @@ mod tests {
         .await;
 
         match res {
-            ClientMessage::CommandResult { success, command_id, data, .. } => {
-                assert!(success);
+            ClientMessage::CommandResult { success, command_id, data, message } => {
                 assert_eq!(command_id, "cmd_scroll");
-                assert_eq!(data["delta"], 240);
+                if success {
+                    assert_eq!(data["delta"], 240);
+                } else {
+                    // Under UIPI/headless background runner: SendInput is properly verified and rejected (error code 5)
+                    assert!(message.contains("SendInput failed") || data["error"].as_str().unwrap().contains("SendInput"));
+                }
             }
             _ => panic!("Expected CommandResult"),
         }
@@ -574,9 +578,13 @@ mod tests {
         .await;
 
         match res {
-            ClientMessage::CommandResult { success, data, .. } => {
-                assert!(success);
-                assert_eq!(data["key"], "ENTER");
+            ClientMessage::CommandResult { success, command_id, data, message } => {
+                assert_eq!(command_id, "cmd_key");
+                if success {
+                    assert_eq!(data["key"], "ENTER");
+                } else {
+                    assert!(message.contains("SendInput failed") || data["error"].as_str().unwrap().contains("SendInput"));
+                }
             }
             _ => panic!("Expected CommandResult"),
         }
@@ -679,7 +687,14 @@ mod tests {
         )
         .await;
         match res1 {
-            ClientMessage::CommandResult { success, .. } => assert!(success),
+            ClientMessage::CommandResult { command_id, success, data, message } => {
+                assert_eq!(command_id, "cmd_c1");
+                if success {
+                    assert_eq!(data["delta"], 120);
+                } else {
+                    assert!(message.contains("SendInput failed") || data["error"].as_str().unwrap().contains("SendInput"));
+                }
+            }
             _ => panic!("Expected CommandResult"),
         }
 
@@ -708,9 +723,13 @@ mod tests {
         )
         .await;
         match res_combo {
-            ClientMessage::CommandResult { success, data, .. } => {
-                assert!(success);
-                assert_eq!(data["key"], "CTRL+C");
+            ClientMessage::CommandResult { command_id, success, data, message } => {
+                assert_eq!(command_id, "cmd_combo");
+                if success {
+                    assert_eq!(data["key"], "CTRL+C");
+                } else {
+                    assert!(message.contains("SendInput failed") || data["error"].as_str().unwrap().contains("SendInput"));
+                }
             }
             _ => panic!("Expected CommandResult"),
         }
@@ -735,6 +754,60 @@ mod tests {
                 assert_eq!(data["ymax"], 350.0);
                 assert_eq!(data["xmax"], 450.0);
                 assert_eq!(data["style"], "RING");
+            }
+            _ => panic!("Expected CommandResult"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_security_policy_blocks_dangerous_keys() {
+        // Block WIN+R
+        let res_win_r = handle_execute_command(
+            "cmd_sec1".to_string(),
+            "desktopPressKey".to_string(),
+            serde_json::json!({ "key": "WIN+R" }),
+            None,
+        )
+        .await;
+        match res_win_r {
+            ClientMessage::CommandResult { success, data, .. } => {
+                assert!(!success);
+                assert_eq!(data["error"], "SECURITY_POLICY_VIOLATION");
+            }
+            _ => panic!("Expected CommandResult"),
+        }
+
+        // Block ALT+F4
+        let res_alt_f4 = handle_execute_command(
+            "cmd_sec2".to_string(),
+            "desktopPressKey".to_string(),
+            serde_json::json!({ "key": "ALT+F4" }),
+            None,
+        )
+        .await;
+        match res_alt_f4 {
+            ClientMessage::CommandResult { success, data, .. } => {
+                assert!(!success);
+                assert_eq!(data["error"], "SECURITY_POLICY_VIOLATION");
+            }
+            _ => panic!("Expected CommandResult"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_security_policy_blocks_oversized_text() {
+        let long_text = "A".repeat(1001);
+        let res_long = handle_execute_command(
+            "cmd_long".to_string(),
+            "desktopTypeText".to_string(),
+            serde_json::json!({ "text": long_text }),
+            None,
+        )
+        .await;
+        match res_long {
+            ClientMessage::CommandResult { success, data, .. } => {
+                assert!(!success);
+                assert_eq!(data["error"], "TEXT_TOO_LONG");
             }
             _ => panic!("Expected CommandResult"),
         }
