@@ -221,9 +221,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let is_capture_desired = Arc::new(AtomicBool::new(false));
     let capture_generation = Arc::new(AtomicU64::new(0));
 
-    // Session generation epoch & automation armed guard for security isolation (Audit K1, K2)
+    // Session generation epoch & automation armed guard for security isolation (Audit K1, K2, N2)
+    // Default-deny policy: automation starts DISARMED and requires explicit user enablement
     let session_generation = Arc::new(AtomicU64::new(0));
-    let is_automation_armed = Arc::new(AtomicBool::new(true));
+    let is_automation_armed = Arc::new(AtomicBool::new(false));
 
     let toggle_screen_share: Arc<dyn Fn(Option<bool>) + Send + Sync> = {
         let capture_ctrl = Arc::clone(&capture_controller);
@@ -601,7 +602,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ConnectionState::Connected => {
                     info!("[MAIN] 🎙️ Connection active: Starting WASAPI Duplex Audio Engine...");
                     automation::reset_automation_abort();
-                    armed_conn.store(true, Ordering::SeqCst);
+                    // Audit N2: Do NOT auto-rearm on connection! Armed status is strictly user-controlled.
 
                     if let Some(audio_clone) = audio_engine_conn.as_ref().map(Arc::clone) {
                         let mic_tx = mic_pcm_tx.clone();
@@ -668,6 +669,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let is_speaker_playing_cmd = is_speaker_playing.clone();
     let session_gen_cmd = Arc::clone(&session_generation);
 
+    // Dedicated background audio stream playback worker (Audit N6: isolates audio bursts from control queue)
+    let mut audio_rx = network_client.subscribe_audio();
+    let audio_engine_playback = audio_engine.clone();
+    tokio::spawn(async move {
+        loop {
+            match audio_rx.recv().await {
+                Ok(pcm_bytes) => {
+                    if let Some(audio_clone) = audio_engine_playback.as_ref() {
+                        let mut engine = audio_clone.lock().await;
+                        engine.play_response_pcm(&pcm_bytes);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                    warn!("[MAIN] Audio playback stream lagged by {} chunks; dropping stale frames", missed);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    info!("[MAIN] Audio playback stream closed.");
+                    break;
+                }
+            }
+        }
+    });
+
     // Dedicated sequential FIFO queue for EXECUTE_COMMAND with generation & panic isolation (Audit H10, K1, K2, K9)
     let (fifo_cmd_tx, mut fifo_cmd_rx) =
         tokio::sync::mpsc::channel::<(u64, String, String, serde_json::Value)>(32);
@@ -687,19 +711,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
 
-            // Check armed guard for physical input actions (clicks, typing, keys, scrolling) (Audit K1)
-            let action_upper = action_name.trim().to_uppercase();
-            let is_physical_input = action_upper.contains("CLICK")
-                || action_upper.contains("TYPE")
-                || action_upper.contains("PRESS")
-                || action_upper.contains("SCROLL");
-
-            if is_physical_input && !armed_worker.load(Ordering::SeqCst) {
+            // Check armed guard for all physical inputs, app launching, lock screen, and system modifications (Audit N2)
+            if automation::requires_arm(&action_name) && !armed_worker.load(Ordering::SeqCst) {
                 warn!("[MAIN] 🛡️ Command [{}] rejected: Desktop automation is DISARMED", cmd_id);
                 let disarm_msg = ClientMessage::CommandResult {
                     command_id: cmd_id,
                     success: false,
-                    message: "Otomatisasi desktop sedang dinonaktifkan (Disarmed). Buka kembali izin atau matikan Boss Mode.".to_string(),
+                    message: "Otomatisasi desktop sedang dinonaktifkan (Disarmed). Izinkan otomasi melalui UI atau System Tray sebelum mengeksekusi aksi.".to_string(),
                     data: serde_json::json!({ "error": "AUTOMATION_DISARMED" }),
                 };
                 let _ = net_tx_worker.send_message(disarm_msg).await;
@@ -867,6 +885,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
 
+                    // Fast-path for ABORT_AUTOMATION: bypass FIFO queue and immediately invalidate in-flight/queued commands (Audit N3)
+                    let action_upper = action.trim().to_uppercase();
+                    if matches!(action_upper.as_str(), "ABORT_AUTOMATION" | "ABORT" | "CANCEL_AUTOMATION") {
+                        info!("[MAIN] 🚨 Fast-path ABORT_AUTOMATION [{}]! Preempting queue & requesting abort.", command_id);
+                        automation::request_automation_abort();
+                        let new_gen = session_gen_cmd.fetch_add(1, Ordering::SeqCst) + 1;
+                        let hl = Arc::clone(&highlighter_cmd);
+                        tokio::spawn(async move {
+                            hl.clear_all();
+                        });
+
+                        let net_abort_tx = net_client_cmd.clone();
+                        let cmd_id_owned = command_id.clone();
+                        tokio::spawn(async move {
+                            let abort_msg = ClientMessage::CommandResult {
+                                command_id: cmd_id_owned,
+                                success: true,
+                                message: "Otomatisasi desktop berhasil dihentikan seketika (Fast-path Abort).".to_string(),
+                                data: serde_json::json!({ "action": "abortAutomation", "new_epoch": new_gen }),
+                            };
+                            let _ = net_abort_tx.send_message(abort_msg).await;
+                        });
+                        continue;
+                    }
+
                     // Enqueue to serial FIFO queue with session epoch non-blockingly (Audit H10, K2, K6)
                     let current_gen = session_gen_cmd.load(Ordering::SeqCst);
                     if let Err(_) = fifo_cmd_tx.try_send((current_gen, command_id.clone(), action, params)) {
@@ -937,10 +980,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let window_weak_tray = main_window.as_weak();
     let audio_engine_tray = audio_engine.clone();
     let toggle_share_tray = Arc::clone(&toggle_screen_share);
+    let armed_tray = Arc::clone(&is_automation_armed);
     let _system_tray = SystemTray::spawn(move |event| {
         let window_weak = window_weak_tray.clone();
         let audio_engine = audio_engine_tray.clone();
         let toggle_share = Arc::clone(&toggle_share_tray);
+        let armed = Arc::clone(&armed_tray);
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(win) = window_weak.upgrade() {
                 match event {
@@ -987,6 +1032,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         info!("[TRAY] Context menu 'Berbagi Layar' activated.");
                         toggle_share(None);
                     }
+                    TrayEvent::ToggleArmed => {
+                        let now_armed = !armed.load(Ordering::SeqCst);
+                        armed.store(now_armed, Ordering::SeqCst);
+                        info!("[TRAY] 🛡️ Desktop automation armed state changed: {}", now_armed);
+                        let status_text = if now_armed {
+                            "🛡️ Otomasi Desktop: DIIZINKAN (Armed)"
+                        } else {
+                            "🛡️ Otomasi Desktop: DINONAKTIFKAN (Disarmed)"
+                        };
+                        win.set_status_message(status_text.into());
+                    }
                     TrayEvent::OpenSettings => {
                         info!("[TRAY] Context menu 'Pengaturan' activated.");
                         win.window().set_minimized(false);
@@ -1002,34 +1058,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
-    // 11. Register Windows Global Hotkeys (Boss Key, Mic Mute, Fullscreen, Screen Share)
+    // 11. Register Windows Global Hotkeys (Boss Key, Emergency Stop, Mic Mute, Fullscreen, Screen Share)
     let window_weak_hotkey = main_window.as_weak();
     let audio_engine_hotkey = audio_engine.clone();
     let toggle_share_hotkey = Arc::clone(&toggle_screen_share);
     let highlighter_hotkey = Arc::clone(&highlighter_controller);
     let armed_hotkey = Arc::clone(&is_automation_armed);
+    let session_gen_hotkey = Arc::clone(&session_generation);
     let _hotkey_listener = HotkeyListener::spawn(move |action| {
         let window_weak = window_weak_hotkey.clone();
         let audio_engine = audio_engine_hotkey.clone();
         let toggle_share = Arc::clone(&toggle_share_hotkey);
         let highlighter = Arc::clone(&highlighter_hotkey);
         let armed = Arc::clone(&armed_hotkey);
+        let session_gen = Arc::clone(&session_gen_hotkey);
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(win) = window_weak.upgrade() {
                 match action {
+                    HotkeyAction::EmergencyStop => {
+                        info!("[HOTKEY] 🚨 EMERGENCY STOP (Win+Alt+X) triggered! Disarming and silencing.");
+                        automation::request_automation_abort();
+                        session_gen.fetch_add(1, Ordering::SeqCst);
+                        armed.store(false, Ordering::SeqCst);
+                        highlighter.clear_all();
+                        toggle_share(Some(false));
+                        win.set_is_mic_muted(true);
+                        win.set_status_message("🚨 EMERGENCY STOP: Otomasi Dihentikan & Disarmed.".into());
+                        if let Some(audio_clone) = audio_engine.as_ref() {
+                            let audio_clone = Arc::clone(audio_clone);
+                            tokio::spawn(async move {
+                                let engine = audio_clone.lock().await;
+                                engine.set_mic_muted(true);
+                            });
+                        }
+                    }
                     HotkeyAction::BossKey => {
                         let is_vis = win.window().is_visible();
                         let is_min = win.window().is_minimized();
                         info!("[HOTKEY] 🕶️ Boss Key (Win+Alt+N) triggered (visible={}, minimized={})", is_vis, is_min);
+                        // Unconditionally abort automation and disarm regardless of window visibility (Audit N4)
+                        automation::request_automation_abort();
+                        session_gen.fetch_add(1, Ordering::SeqCst);
+                        armed.store(false, Ordering::SeqCst);
+                        highlighter.clear_all();
+
                         if is_min {
                             win.window().set_minimized(false);
                             let _ = win.window().show();
                         } else if is_vis {
-                            // Emergency disarm and silence everything on Boss Key hide (Audit K1)
                             let _ = win.window().hide();
-                            automation::request_automation_abort();
-                            highlighter.clear_all();
-                            armed.store(false, Ordering::SeqCst);
                             toggle_share(Some(false));
                             win.set_is_mic_muted(true);
                             if let Some(audio_clone) = audio_engine.as_ref() {
@@ -1155,8 +1232,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let window_weak = main_window.as_weak();
     main_window.on_save_settings(
         move |url, token, fps, low_ram, autostart, vision, auto, trans, telem, hotkeys| {
+            let normalized_url = BridgeConfig::normalize_ws_url(&url);
+            if let Err(err) = BridgeConfig::validate_ws_url(&normalized_url) {
+                if let Some(win) = window_weak.upgrade() {
+                    win.set_status_message(format!("⚠️ Pengaturan ditolak: {}", err).into());
+                }
+                return;
+            }
+
             let mut cfg = config_clone.lock().unwrap();
-            cfg.server_url = url.to_string();
+            cfg.server_url = normalized_url;
             cfg.auth_token = token.to_string();
             cfg.capture_fps = fps.max(1) as u32;
             cfg.low_ram_mode = low_ram;
@@ -1181,7 +1266,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(_) => {
                     info!("Settings saved successfully (autostart={}, fps={}).", autostart, fps);
                     if let Some(win) = window_weak.upgrade() {
-                        win.set_cfg_server_url(url.clone());
+                        win.set_cfg_server_url(cfg.server_url.clone().into());
                         win.set_cfg_auth_token(token.clone());
                         win.set_cfg_fps(fps.max(1));
                         win.set_cfg_low_ram_mode(low_ram);
@@ -1210,13 +1295,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let token_str = token.to_string();
         let window_weak = window_weak.clone();
 
+        let normalized_url = BridgeConfig::normalize_ws_url(&url_str);
+        if let Err(err) = BridgeConfig::validate_ws_url(&normalized_url) {
+            if let Some(win) = window_weak.upgrade() {
+                win.set_test_status_text(format!("❌ {}", err).into());
+            }
+            return;
+        }
+
         if let Some(win) = window_weak.upgrade() {
             win.set_is_testing(true);
             win.set_test_status_text("Testing connection...".into());
         }
 
         tokio::spawn(async move {
-            let normalized_url = BridgeConfig::normalize_ws_url(&url_str);
             info!("Testing WebSocket handshake to: {}", normalized_url);
 
             let res = test_ws_handshake(&normalized_url, &token_str).await;
@@ -1485,12 +1577,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     slint::run_event_loop_until_quit()?;
 
-    info!("[MAIN] Application event loop ended. Performing clean and graceful shutdown (Audit K7)...");
+    info!("[MAIN] Application event loop ended. Performing clean and graceful shutdown (Audit K7, N9)...");
+    automation::request_automation_abort();
+    session_generation.fetch_add(1, Ordering::SeqCst);
     highlighter_controller.clear_all();
     network_client.disconnect();
     if let Some(a) = &audio_engine {
-        let mut engine = a.lock().await;
-        engine.stop_duplex();
+        if let Ok(mut engine) = tokio::time::timeout(std::time::Duration::from_millis(1500), a.lock()).await {
+            engine.stop_duplex();
+        } else {
+            warn!("[MAIN] Audio engine lock acquisition timed out during shutdown; proceeding.");
+        }
     }
     if let Ok(mut ctrl) = capture_controller.lock() {
         if let Some(mut c) = ctrl.take() {

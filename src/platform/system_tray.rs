@@ -27,6 +27,7 @@ pub enum TrayEvent {
     ToggleMute,        // Context Menu "Mute / Unmute" (ID 1002)
     ToggleFullscreen,  // Context Menu "Layar Penuh (F11)" (ID 1003)
     ToggleScreenShare, // Context Menu "Berbagi Layar (Win+Alt+S)" (ID 1006)
+    ToggleArmed,       // Context Menu "Arm / Disarm Automation" (ID 1007)
     OpenSettings,      // Context Menu "Pengaturan" (ID 1004)
     Quit,              // Context Menu "Keluar" (ID 1005)
 }
@@ -45,6 +46,7 @@ const MENU_FULLSCREEN: usize = 1003;
 const MENU_SETTINGS: usize = 1004;
 const MENU_QUIT: usize = 1005;
 const MENU_SCREEN_SHARE: usize = 1006;
+const MENU_ARMED: usize = 1007;
 
 pub struct SystemTray {
     hwnd: Option<isize>,
@@ -227,6 +229,7 @@ unsafe extern "system" fn tray_wnd_proc(
                 MENU_MUTE => Some(TrayEvent::ToggleMute),
                 MENU_FULLSCREEN => Some(TrayEvent::ToggleFullscreen),
                 MENU_SCREEN_SHARE => Some(TrayEvent::ToggleScreenShare),
+                MENU_ARMED => Some(TrayEvent::ToggleArmed),
                 MENU_SETTINGS => Some(TrayEvent::OpenSettings),
                 MENU_QUIT => Some(TrayEvent::Quit),
                 _ => None,
@@ -266,6 +269,7 @@ unsafe fn show_context_menu(hwnd: HWND) {
     let item_open: Vec<u16> = "👁️ Open Nexa Bridge\0".encode_utf16().collect();
     let item_mute: Vec<u16> = "🎙️ Mute / Unmute Microphone\0".encode_utf16().collect();
     let item_screen: Vec<u16> = "🖥️ Toggle Screen Share (Win+Alt+S)\0".encode_utf16().collect();
+    let item_armed: Vec<u16> = "🛡️ Toggle Arm/Disarm Automation\0".encode_utf16().collect();
     let item_fs: Vec<u16> = "⛶ Fullscreen / Windowed (F11)\0".encode_utf16().collect();
     let item_settings: Vec<u16> = "⚙ Settings (~/.nexa-bridge.json)\0".encode_utf16().collect();
     let item_quit: Vec<u16> = "❌ Quit\0".encode_utf16().collect();
@@ -273,6 +277,7 @@ unsafe fn show_context_menu(hwnd: HWND) {
     AppendMenuW(hmenu, MF_STRING, MENU_OPEN, item_open.as_ptr());
     AppendMenuW(hmenu, MF_STRING, MENU_MUTE, item_mute.as_ptr());
     AppendMenuW(hmenu, MF_STRING, MENU_SCREEN_SHARE, item_screen.as_ptr());
+    AppendMenuW(hmenu, MF_STRING, MENU_ARMED, item_armed.as_ptr());
     AppendMenuW(hmenu, MF_STRING, MENU_FULLSCREEN, item_fs.as_ptr());
     AppendMenuW(hmenu, MF_STRING, MENU_SETTINGS, item_settings.as_ptr());
     AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());

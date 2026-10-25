@@ -7,6 +7,7 @@
 pub mod element_finder;
 pub mod highlighter;
 pub mod input;
+pub mod policy;
 
 #[allow(unused_imports)]
 pub use element_finder::*;
@@ -14,6 +15,8 @@ pub use element_finder::*;
 pub use highlighter::*;
 #[allow(unused_imports)]
 pub use input::*;
+#[allow(unused_imports)]
+pub use policy::*;
 
 use crate::network::ClientMessage;
 use tracing::{info, warn};
@@ -42,77 +45,130 @@ pub fn redact_params(action: &str, params: &serde_json::Value) -> String {
     }
 }
 
-/// Helper to launch desktop applications, URLs, or system targets safely.
+const ALLOWED_APPS: &[(&[&str], &str)] = &[
+    (&["chrome", "google chrome", "google-chrome", "browser"], "chrome.exe"),
+    (&["notepad", "catatan", "editor"], "notepad.exe"),
+    (&["calc", "calculator", "kalkulator"], "calc.exe"),
+    (&["explorer", "file explorer", "file_explorer", "berkas"], "explorer.exe"),
+    (&["settings", "pengaturan"], "ms-settings:"),
+    (&["spotify", "musik"], "spotify:"),
+];
+
+/// Helper to convert &str to null-terminated wide string (UTF-16)
+fn wide_null(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Execute a target via Windows ShellExecuteW without invoking any shell interpreter (cmd.exe / powershell.exe) (Audit N1)
+pub fn shell_open(target: &str) -> Result<(), String> {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let op = wide_null("open");
+    let file = wide_null(target);
+
+    let res = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            op.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+
+    let code = res as usize;
+    if code <= 32 {
+        Err(format!("ShellExecuteW gagal mengeksekusi '{}' (error code: {})", target, code))
+    } else {
+        Ok(())
+    }
+}
+
+/// Helper to launch desktop applications, URLs, or system targets safely (Security Audit N1).
+/// Enforces strict explicit whitelist, zero cmd.exe / powershell.exe invocations, and strict URL character filtering.
 pub fn launch_desktop_app(
     app_name: &str,
     path: Option<&str>,
     url: Option<&str>,
 ) -> Result<String, String> {
-    let target = if let Some(u) = url {
-        if !u.trim().is_empty() {
-            u.trim()
-        } else {
-            app_name.trim()
+    // 1. URL execution branch
+    let url_candidate = url
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+        .or_else(|| {
+            let p = path.unwrap_or("").trim();
+            if p.starts_with("http://") || p.starts_with("https://") {
+                Some(p)
+            } else {
+                let a = app_name.trim();
+                if a.starts_with("http://") || a.starts_with("https://") {
+                    Some(a)
+                } else {
+                    None
+                }
+            }
+        });
+
+    if let Some(u) = url_candidate {
+        let is_valid_scheme = u.starts_with("https://") || u.starts_with("http://");
+        let is_valid_len = u.len() <= 2048;
+        let has_dangerous_chars = u.chars().any(|c| {
+            c.is_control()
+                || c == ' '
+                || c == '&'
+                || c == '|'
+                || c == ';'
+                || c == '<'
+                || c == '>'
+                || c == '^'
+                || c == '"'
+                || c == '\''
+                || c == '`'
+        });
+
+        if !is_valid_scheme || !is_valid_len || has_dangerous_chars {
+            return Err(
+                "URL ditolak oleh kebijakan keamanan sistem (skema tidak valid atau mengandung karakter berbahaya)."
+                    .to_string(),
+            );
         }
-    } else if let Some(p) = path {
-        if !p.trim().is_empty() {
-            p.trim()
-        } else {
-            app_name.trim()
-        }
-    } else {
+
+        return shell_open(u).map(|_| format!("URL '{}' berhasil dibuka di browser default.", u));
+    }
+
+    // 2. Desktop Application execution branch
+    let target_name = if !app_name.trim().is_empty() {
         app_name.trim()
+    } else if let Some(p) = path {
+        p.trim()
+    } else {
+        ""
     };
 
-    if target.is_empty() {
+    if target_name.is_empty() {
         return Err("Nama aplikasi atau target tidak boleh kosong.".to_string());
     }
 
-    let lower = target.to_lowercase();
+    let key = target_name.to_lowercase();
 
-    // Security guard: disallow arbitrary dangerous script files
-    if lower.ends_with(".bat")
-        || lower.ends_with(".cmd")
-        || lower.ends_with(".vbs")
-        || lower.ends_with(".ps1")
-        || lower.ends_with(".reg")
-    {
-        return Err("Eksekusi file skrip ditolak oleh kebijakan keamanan sistem.".to_string());
-    }
+    // Check against strict whitelist
+    let matched_app = ALLOWED_APPS
+        .iter()
+        .find(|(aliases, _)| aliases.contains(&key.as_str()));
 
-    // URL handling
-    if lower.starts_with("http://") || lower.starts_with("https://") {
-        let spawn_res = std::process::Command::new("cmd")
-            .args(["/c", "start", "", target])
-            .spawn();
-        return match spawn_res {
-            Ok(_) => Ok(format!("URL '{}' berhasil dibuka di browser.", target)),
-            Err(e) => Err(format!("Gagal membuka URL di browser: {}", e)),
-        };
-    }
-
-    // Known Desktop Applications Mapping
-    let (prog, args): (&str, Vec<&str>) = match lower.as_str() {
-        "chrome" | "google chrome" | "google-chrome" | "browser" => {
-            ("cmd", vec!["/c", "start", "chrome"])
-        }
-        "notepad" | "catatan" | "editor" => ("notepad.exe", vec![]),
-        "calc" | "calculator" | "kalkulator" => ("calc.exe", vec![]),
-        "spotify" | "musik" => ("cmd", vec!["/c", "start", "spotify:"]),
-        "vscode" | "vs code" | "visual studio code" | "code" => ("cmd", vec!["/c", "code"]),
-        "explorer" | "file explorer" | "file_explorer" | "berkas" => ("explorer.exe", vec![]),
-        "cmd" | "command prompt" => ("cmd.exe", vec![]),
-        "powershell" | "terminal" => ("powershell.exe", vec![]),
-        "settings" | "pengaturan" => ("cmd", vec!["/c", "start", "ms-settings:"]),
-        "taskmgr" | "task manager" | "task_manager" => ("taskmgr.exe", vec![]),
-        _ => ("cmd", vec!["/c", "start", "", target]),
-    };
-
-    let spawn_res = std::process::Command::new(prog).args(args).spawn();
-
-    match spawn_res {
-        Ok(_) => Ok(format!("Aplikasi '{}' berhasil dibuka di desktop.", target)),
-        Err(e) => Err(format!("Gagal membuka aplikasi '{}': {}", target, e)),
+    match matched_app {
+        Some((_, binary_target)) => shell_open(binary_target).map(|_| {
+            format!(
+                "Aplikasi '{}' ({}) berhasil dibuka di desktop.",
+                key, binary_target
+            )
+        }),
+        None => Err(format!(
+            "Aplikasi '{}' ditolak oleh kebijakan keamanan sistem (tidak ada dalam daftar putih/whitelist).",
+            target_name
+        )),
     }
 }
 
@@ -752,10 +808,12 @@ pub async fn handle_execute_command(
         // ─────────────────────────────────────────────────────────────
         "LOCK_SCREEN" | "LOCKSCREEN" | "LOCK-SCREEN" => {
             let res = tokio::task::spawn_blocking(|| {
-                std::process::Command::new("rundll32.exe")
-                    .args(["user32.dll,LockWorkStation"])
-                    .spawn()
-                    .map_err(|e| format!("Gagal mengunci laptop: {}", e))
+                let ok = unsafe { windows_sys::Win32::System::Shutdown::LockWorkStation() };
+                if ok != 0 {
+                    Ok(())
+                } else {
+                    Err("Gagal mengunci layar workstation Windows via LockWorkStation API.".to_string())
+                }
             })
             .await
             .map_err(|e| format!("Join error: {}", e))
@@ -873,7 +931,7 @@ pub async fn handle_execute_command(
                 Ok(_) => ClientMessage::CommandResult {
                     command_id,
                     success: true,
-                    message: "Tangkapan layar desktop berhasil diambil (disimpan ke clipboard).".to_string(),
+                    message: "Tangkapan layar desktop dipicu via sistem tombol PrintScreen.".to_string(),
                     data: serde_json::json!({ "action": "takeScreenshot" }),
                 },
                 Err(err) => ClientMessage::CommandResult {
@@ -973,24 +1031,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dispatcher_desktop_press_key_valid() {
+    async fn test_dispatcher_desktop_press_key_validation() {
+        // Unknown key name is rejected safely without sending actual physical keystrokes (Audit N11)
         let res = handle_execute_command(
-            "cmd_key".to_string(),
+            "cmd_key_inv".to_string(),
             "DESKTOP_PRESS_KEY".to_string(),
-            serde_json::json!({ "key": "ENTER" }),
+            serde_json::json!({ "key": "UNKNOWN_KEY_XYZ" }),
             None,
         )
         .await;
 
         match res {
             ClientMessage::CommandResult { success, command_id, data, message } => {
-                assert_eq!(command_id, "cmd_key");
-                if success {
-                    assert_eq!(data["key"], "ENTER");
-                } else {
-                    assert!(message.contains("SendInput failed") || data["error"].as_str().unwrap().contains("SendInput"));
-                }
+                assert_eq!(command_id, "cmd_key_inv");
+                assert!(!success);
+                assert!(message.contains("Unsupported") || data.get("error").is_some());
             }
+            _ => panic!("Expected CommandResult"),
+        }
+
+        // Empty key name is rejected
+        let res_empty = handle_execute_command(
+            "cmd_key_empty".to_string(),
+            "DESKTOP_PRESS_KEY".to_string(),
+            serde_json::json!({ "key": "" }),
+            None,
+        )
+        .await;
+        match res_empty {
+            ClientMessage::CommandResult { success, .. } => assert!(!success),
             _ => panic!("Expected CommandResult"),
         }
     }
@@ -1334,7 +1403,7 @@ mod tests {
             _ => panic!("Expected CommandResult"),
         }
 
-        // Dangerous script extension is blocked by security guard
+        // Dangerous script extension or non-whitelisted binary is blocked by security guard
         let res_bat = handle_execute_command(
             "cmd_bat".to_string(),
             "LAUNCH_APP".to_string(),
@@ -1343,6 +1412,35 @@ mod tests {
         )
         .await;
         match res_bat {
+            ClientMessage::CommandResult { success, message, .. } => {
+                assert!(!success);
+                assert!(message.contains("kebijakan keamanan"));
+            }
+            _ => panic!("Expected CommandResult"),
+        }
+
+        // cmd and powershell are deliberately excluded from whitelist
+        let res_cmd = handle_execute_command(
+            "cmd_shell".to_string(),
+            "LAUNCH_APP".to_string(),
+            serde_json::json!({ "app_name": "cmd" }),
+            None,
+        )
+        .await;
+        match res_cmd {
+            ClientMessage::CommandResult { success, .. } => assert!(!success),
+            _ => panic!("Expected CommandResult"),
+        }
+
+        // URL injection attempts are strictly blocked
+        let res_inj = handle_execute_command(
+            "cmd_inj".to_string(),
+            "LAUNCH_APP".to_string(),
+            serde_json::json!({ "url": "https://example.com&calc.exe" }),
+            None,
+        )
+        .await;
+        match res_inj {
             ClientMessage::CommandResult { success, message, .. } => {
                 assert!(!success);
                 assert!(message.contains("kebijakan keamanan"));

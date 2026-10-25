@@ -26,6 +26,7 @@ pub struct AudioEngine {
     is_speaker_playing: Arc<AtomicBool>,
     speaker_playback_rms: Arc<AtomicU32>,
     is_active: bool,
+    persisted_mic_muted: Arc<AtomicBool>,
 }
 
 impl AudioEngine {
@@ -36,6 +37,7 @@ impl AudioEngine {
         let barge_in_notify = Arc::new(Notify::new());
         let is_speaker_playing = Arc::new(AtomicBool::new(false));
         let speaker_playback_rms = Arc::new(AtomicU32::new(0));
+        let persisted_mic_muted = Arc::new(AtomicBool::new(false));
 
         Ok(Self {
             speaker: None,
@@ -45,6 +47,7 @@ impl AudioEngine {
             is_speaker_playing,
             speaker_playback_rms,
             is_active: false,
+            persisted_mic_muted,
         })
     }
 
@@ -85,6 +88,10 @@ impl AudioEngine {
             is_speaker_playing,
         )
         .map_err(|e| format!("Failed to initialize microphone: {}", e))?;
+
+        // Reapply persisted mute state upon stream recreation (Audit N8)
+        let is_muted = self.persisted_mic_muted.load(Ordering::SeqCst);
+        microphone.set_muted(is_muted);
 
         self.speaker = Some(speaker);
         self.microphone = Some(microphone);
@@ -149,9 +156,10 @@ impl AudioEngine {
         }
     }
 
-    /// Set microphone mute state.
+    /// Set microphone mute state with persistence across duplex restarts (Audit N8).
     #[allow(dead_code)]
     pub fn set_mic_muted(&self, muted: bool) {
+        self.persisted_mic_muted.store(muted, Ordering::SeqCst);
         if let Some(ref mic) = self.microphone {
             mic.set_muted(muted);
         }
@@ -160,7 +168,7 @@ impl AudioEngine {
     /// Check if microphone is muted.
     #[allow(dead_code)]
     pub fn is_mic_muted(&self) -> bool {
-        self.microphone.as_ref().map(|m| m.is_muted()).unwrap_or(false)
+        self.persisted_mic_muted.load(Ordering::SeqCst)
     }
 
     /// Subscribe to user barge-in notification.

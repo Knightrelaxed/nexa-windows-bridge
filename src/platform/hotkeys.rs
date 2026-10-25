@@ -23,6 +23,7 @@ pub enum HotkeyAction {
     ToggleMute,        // Win + Alt + M (Mute / Unmute Microphone)
     ToggleFullscreen,  // F11 or Win + Alt + F (Toggle Fullscreen / Windowed)
     ToggleScreenShare, // Win + Alt + S (Toggle Direct3D 11 Screen Sharing)
+    EmergencyStop,     // Win + Alt + X (Emergency Killswitch: Abort, Disarm, Silence)
 }
 
 type HotkeyCallback = Box<dyn Fn(HotkeyAction) + Send + Sync>;
@@ -36,6 +37,7 @@ const ID_HOTKEY_MUTE: i32 = 2;         // Win + Alt + M
 const ID_HOTKEY_FS_F11: i32 = 3;       // F11
 const ID_HOTKEY_FS_WIN_F: i32 = 4;     // Win + Alt + F
 const ID_HOTKEY_SCREEN_SHARE: i32 = 5; // Win + Alt + S
+const ID_HOTKEY_EMERGENCY: i32 = 6;    // Win + Alt + X
 
 pub struct HotkeyListener {
     hwnd: Option<isize>,
@@ -157,6 +159,19 @@ impl HotkeyListener {
                     warn!("[HOTKEYS] ⚠️ Failed to register Screen Share Toggle (Win + Alt + S)");
                 }
 
+                // 6. Emergency Stop Killswitch: Win + Alt + X (Audit N4)
+                let res_emergency = RegisterHotKey(
+                    hwnd,
+                    ID_HOTKEY_EMERGENCY,
+                    MOD_WIN | MOD_ALT | MOD_NOREPEAT,
+                    'X' as u32,
+                );
+                if res_emergency != 0 {
+                    info!("[HOTKEYS] ✅ Registered Emergency Stop Killswitch (Win + Alt + X)");
+                } else {
+                    warn!("[HOTKEYS] ⚠️ Failed to register Emergency Stop Killswitch (Win + Alt + X)");
+                }
+
                 let _ = hwnd_tx.send(Some(hwnd as isize));
 
                 // Win32 message pump
@@ -172,6 +187,7 @@ impl HotkeyListener {
                 UnregisterHotKey(hwnd, ID_HOTKEY_FS_WIN_F);
                 UnregisterHotKey(hwnd, ID_HOTKEY_FS_F11);
                 UnregisterHotKey(hwnd, ID_HOTKEY_SCREEN_SHARE);
+                UnregisterHotKey(hwnd, ID_HOTKEY_EMERGENCY);
 
                 info!("[HOTKEYS] Hotkey listener loop terminated cleanly.");
             }
@@ -214,6 +230,7 @@ unsafe extern "system" fn hotkey_wnd_proc(
                 ID_HOTKEY_MUTE => Some(HotkeyAction::ToggleMute),
                 ID_HOTKEY_FS_F11 | ID_HOTKEY_FS_WIN_F => Some(HotkeyAction::ToggleFullscreen),
                 ID_HOTKEY_SCREEN_SHARE => Some(HotkeyAction::ToggleScreenShare),
+                ID_HOTKEY_EMERGENCY => Some(HotkeyAction::EmergencyStop),
                 _ => None,
             };
 

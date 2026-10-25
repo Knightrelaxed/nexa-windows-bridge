@@ -39,6 +39,7 @@ pub struct NetworkClient {
     state_tx: Arc<watch::Sender<ConnectionState>>,
     outbound_tx: mpsc::Sender<OutboundItem>,
     command_tx: broadcast::Sender<ServerMessage>,
+    audio_tx: broadcast::Sender<Vec<u8>>,
     reconnect_notify: Arc<Notify>,
     session_interrupt: Arc<Notify>,
     enabled: Arc<Mutex<bool>>,
@@ -50,7 +51,8 @@ impl NetworkClient {
     pub fn new(config: Arc<Mutex<BridgeConfig>>) -> Self {
         let (state_tx, _) = watch::channel(ConnectionState::Disconnected);
         let (outbound_tx, outbound_rx) = mpsc::channel::<OutboundItem>(128);
-        let (command_tx, _) = broadcast::channel::<ServerMessage>(256);
+        let (command_tx, _) = broadcast::channel::<ServerMessage>(512);
+        let (audio_tx, _) = broadcast::channel::<Vec<u8>>(512);
         let reconnect_notify = Arc::new(Notify::new());
         let session_interrupt = Arc::new(Notify::new());
         let enabled = Arc::new(Mutex::new(false));
@@ -62,6 +64,7 @@ impl NetworkClient {
             state_tx: Arc::new(state_tx),
             outbound_tx,
             command_tx: command_tx.clone(),
+            audio_tx: audio_tx.clone(),
             reconnect_notify: Arc::clone(&reconnect_notify),
             session_interrupt: Arc::clone(&session_interrupt),
             enabled: Arc::clone(&enabled),
@@ -75,6 +78,7 @@ impl NetworkClient {
             Arc::clone(&client.state_tx),
             outbound_rx,
             command_tx,
+            audio_tx,
             reconnect_notify,
             session_interrupt,
             enabled,
@@ -95,9 +99,14 @@ impl NetworkClient {
         self.state_tx.subscribe()
     }
 
-    /// Subscribe to incoming server commands
+    /// Subscribe to incoming server control commands (isolated from audio traffic, Audit N6)
     pub fn subscribe_commands(&self) -> broadcast::Receiver<ServerMessage> {
         self.command_tx.subscribe()
+    }
+
+    /// Subscribe to incoming streaming raw PCM audio frames (Audit N6)
+    pub fn subscribe_audio(&self) -> broadcast::Receiver<Vec<u8>> {
+        self.audio_tx.subscribe()
     }
 
     /// Send a structured protocol message to the server
@@ -176,6 +185,7 @@ async fn run_client_worker(
     state_tx: Arc<watch::Sender<ConnectionState>>,
     mut outbound_rx: mpsc::Receiver<OutboundItem>,
     command_tx: broadcast::Sender<ServerMessage>,
+    audio_tx: broadcast::Sender<Vec<u8>>,
     reconnect_notify: Arc<Notify>,
     session_interrupt: Arc<Notify>,
     enabled: Arc<Mutex<bool>>,
@@ -341,6 +351,13 @@ async fn run_client_worker(
                                                 last_rtt_ms.store(rtt, Ordering::Relaxed);
                                             }
                                         }
+                                        Ok(ServerMessage::AudioPlay { pcm_chunk }) => {
+                                            // Decode streaming speech audio to dedicated audio queue; do NOT flood command queue (Audit N6)
+                                            use base64::prelude::*;
+                                            if let Ok(bytes) = BASE64_STANDARD.decode(&pcm_chunk) {
+                                                let _ = audio_tx.send(bytes);
+                                            }
+                                        }
                                         Ok(ServerMessage::Unknown) => {
                                             // Silently ignore future extension types
                                         }
@@ -353,11 +370,8 @@ async fn run_client_worker(
                                     }
                                 }
                                 Some(Ok(Message::Binary(bin))) => {
-                                    use base64::prelude::*;
-                                    let b64 = BASE64_STANDARD.encode(&bin);
-                                    let _ = command_tx.send(ServerMessage::AudioPlay {
-                                        pcm_chunk: b64,
-                                    });
+                                    // Direct streaming audio delivery without base64 overhead (Audit N6)
+                                    let _ = audio_tx.send(bin.to_vec());
                                 }
                                 Some(Ok(Message::Ping(data))) => {
                                     let _ = ws_write.send(Message::Pong(data)).await;
