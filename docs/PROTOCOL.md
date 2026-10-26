@@ -122,23 +122,43 @@ Balasan server terhadap paket `PING`.
 ```
 
 #### 2. `EXECUTE_COMMAND` (Perintah Otomatisasi Desktop)
-Instruksi dari server AI untuk mengendalikan perangkat Windows.
+Instruksi dari server AI untuk mengendalikan perangkat Windows. Seluruh nama aksi dinormalisasi secara kanonikal (`canonical_action`) sehingga mendukung gaya penulisan `camelCase`, `kebab-case`, `snake_case`, maupun `UPPERCASE`.
+
 ```json
 {
   "type": "EXECUTE_COMMAND",
   "command_id": "cmd_win_98231",
   "action": "DESKTOP_CLICK",
   "params": {
-    "x": 1280,
-    "y": 720,
+    "x": 500,
+    "y": 350,
     "button": "LEFT"
   },
   "timestamp": 1787105000100
 }
 ```
 
-#### 3. `CALL_AUDIO_PLAY` (Stream Audio Balasan Suara AI)
-Chunk audio respons vokal AI (format PCM 24 kHz 16-bit mono Base64) untuk diputar langsung melalui speaker WASAPI.
+##### Daftar Aksi yang Didukung & Parameter:
+1. `DESKTOP_CLICK`: `x`, `y` (skala 0..1000), `button` (`"LEFT"`, `"RIGHT"`, `"MIDDLE"`), `double_click` (bool).
+2. `DESKTOP_SCROLL`: `direction` (`"UP"`, `"DOWN"`), `amount` / `steps` (default 3 notch).
+3. `DESKTOP_TYPE_TEXT`: `text` (string Unicode), `press_enter` (bool opsional). *Catatan: Diblokir jika jendela aktif adalah konsol terminal.*
+4. `DESKTOP_PRESS_KEY`: `key` (`"ENTER"`, `"SPACE"`, `"ESCAPE"`, `"TAB"`, `"BACKSPACE"`, `"UP"`, dll.).
+5. `HIGHLIGHT_ELEMENT`: `x`, `y`, `width`, `height` (0..1000), `style` (`"BOX"`, `"RING"`, `"POINTER"`, `"SPOTLIGHT"`), `label` (string opsional).
+6. `POINT_CURSOR`: `x`, `y` (0..1000).
+7. `CLEAR_HIGHLIGHTS`: Membersihkan seluruh sorotan visual overlay.
+8. `LAUNCH_APP`: `app` (`"chrome"`, `"notepad"`, `"calc"`, `"explorer"`, `"vscode"`, `"edge"`) atau `url` (`http://`, `https://`).
+9. `LOCK_SCREEN`: Mengunci workstation Windows (`LockWorkStation`).
+10. `SHOW_DESKTOP`: Menampilkan desktop Windows instan (`Win+D`).
+11. `SET_VOLUME`: `volume_level` (0.0..1.0), `direction` (`"UP"`, `"DOWN"`), `steps` (1..25).
+12. `MUTE`, `UNMUTE`, `TOGGLEMUTE`: Kendali pembisuan audio laptop.
+13. `TAKE_SCREENSHOT`: Menangkap layar desktop.
+14. `GET_BATTERY_STATUS`: Meminta laporan status daya baterai laptop.
+15. `GET_SYSTEM_METRICS`: Meminta laporan utilisasi CPU, RAM, dan resolusi.
+16. `ABORT_AUTOMATION` (atau `CANCEL`): Fast-path abort instan yang melompati antrean FIFO dan membatalkan otomasi seketika.
+
+#### 3. `CALL_AUDIO_PLAY` & Binary Stream (Stream Audio Balasan Suara AI - Audit N6, R4)
+Dapat dikirimkan dalam bentuk JSON dengan teks Base64 (`ServerMessage::AudioPlay`) atau dikirim langsung sebagai paket biner WebSocket murni (`Message::Binary`).
+* **Isolasi Aliran Data (Dedicated Audio Channel):** Data audio PCM tidak lagi membanjiri antrean perintah kendali desktop, melainkan disalurkan langsung ke kanal audio terpisah (`subscribe_audio`) dengan penanganan buffer yang menyerap hingga 20 detik audio burst tanpa hambatan.
 ```json
 {
   "type": "CALL_AUDIO_PLAY",

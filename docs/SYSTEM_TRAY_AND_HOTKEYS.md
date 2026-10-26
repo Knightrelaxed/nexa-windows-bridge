@@ -16,10 +16,11 @@ Aplikasi berjalan sebagai background companion yang dapat disembunyikan ke area 
 ### Menu Konteks Tray:
 1. **Buka N.E.X.A** (ID `1001`): Memulihkan jendela utama dari posisi tersembunyi/diminimalkan.
 2. **Mute / Unmute** (ID `1002`): Menyalakan/mematikan mikrofon secara global.
-3. **Layar Penuh (F11)** (ID `1003`): Beralih antara mode *Companion Window* (380x520) dan *Cybernetic Fullscreen Command Center*.
-4. **Berbagi Layar** (ID `1004`): Mengaktifkan/menonaktifkan streaming penangkapan layar Direct3D 11.
-5. **Pengaturan** (ID `1005`): Membuka dialog pengaturan endpoint dan token.
-6. **Keluar** (ID `1006`): Menutup aplikasi secara bersih (*graceful exit*).
+3. **Toggle Screen Share (Win+Alt+S)** (ID `1006`): Mengaktifkan/menonaktifkan streaming penangkapan layar Direct3D 11.
+4. **Toggle Arm/Disarm Automation** (ID `1007`): Memberikan izin eksekusi otomasi desktop secara berbatas waktu (**Lease 15 Menit**) atau menonaktifkannya seketika (Audit N2, R3).
+5. **Layar Penuh (F11)** (ID `1003`): Beralih antara mode *Dynamic Capsule Pill* dan *Cybernetic Fullscreen Command Center*.
+6. **Pengaturan** (ID `1004`): Membuka dialog pengaturan endpoint, token, dan preferensi kartu HUD.
+7. **Keluar** (ID `1005`): Menutup aplikasi secara bersih (*graceful exit*).
 
 ---
 
@@ -29,12 +30,13 @@ Pengguna dapat mengendalikan N.E.X.A kapan saja bahkan saat sedang bermain game 
 
 * **Mekanisme Win32:** Menggunakan API `RegisterHotKey` dan `UnregisterHotKey` pada thread tersendiri yang memompa pesan `WM_HOTKEY`.
 
-| Pintasan Keyboard | Aksi Teknis (`HotkeyAction`) | Fungsi Operasional |
+| Pintasan Keyboard | Aksi Teknis (`HotkeyAction`) | Fungsi Operasional & Fitur Keamanan |
 | :--- | :--- | :--- |
-| **Win + Alt + N** | `BossKey` | **Boss Key / Quick Summon:** Menyembunyikan aplikasi seketika jika ingin privasi, atau memunculkannya kembali ke layar. |
+| **Win + Alt + X** | `EmergencyStop` | **Tombol Darurat Otomasi (Audit N3, N4):** Menghentikan otomasi yang sedang berjalan seketika (*instant abort*), menaikkan epoch generasi sesi untuk membuang antrean perintah, mendisarm sistem (`armed = 0`), membersihkan sorotan layar, mematikan screen share, dan membisukan mikrofon. |
+| **Win + Alt + N** | `BossKey` | **Boss Key / Quick Summon (Audit N4):** Tanpa memandang jendela terlihat atau tersembunyi, Boss Key tanpa syarat selalu menghentikan otomasi dan mendisarm sistem, lalu menyembunyikan/menampilkan jendela instan. |
 | **Win + Alt + M** | `ToggleMute` | **Mute Mikrofon Cepat:** Mematikan stream WASAPI tanpa perlu menyentuh mouse. |
 | **F11** atau **Win + Alt + F** | `ToggleFullscreen` | **Toggle Layar Penuh:** Beralih ke HUD J.A.R.V.I.S beresolusi penuh. |
-| **Win + Alt + S** | `ToggleScreenShare` | **Toggle Vision AI:** Memulai atau menghentikan penangkapan layar GPU. |
+| **Win + Alt + S** | `ToggleScreenShare` | **Toggle Vision AI:** Memulai atau menghentikan penangkapan layar GPU Direct3D 11. |
 
 ---
 

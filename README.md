@@ -7,6 +7,7 @@
 Dokumentasi lengkap dan arsitektur sistem telah disusun di dalam folder [`docs/`](./docs/):
 
 * [**Arsitektur Sistem & Model Konkurensi**](./docs/ARCHITECTURE.md)
+* [**Spesifikasi Keamanan & Kebijakan Otomasi (Armed Guard & Anti-Injection)**](./docs/SECURITY.md)
 * [**Subsistem Audio WASAPI & WebRTC AEC3 (DAC Reference Tap)**](./docs/AUDIO_SUBSYSTEM.md)
 * [**Subsistem Screen Capture GPU Direct3D 11 & Vision**](./docs/CAPTURE_SUBSYSTEM.md)
 * [**Subsistem Otomasi Input & Panduan Layar (UIA Timeout & High-DPI)**](./docs/AUTOMATION_SUBSYSTEM.md)
@@ -25,7 +26,7 @@ Dokumentasi lengkap dan arsitektur sistem telah disusun di dalam folder [`docs/`
 # Jalankan mode pengembangan
 cargo run
 
-# Jalankan pengujian unit (72 tests)
+# Jalankan pengujian unit (90 tests)
 cargo test
 
 # Build binary mandiri (.exe) -> menghasilkan target/release/Nexa Bridge.exe

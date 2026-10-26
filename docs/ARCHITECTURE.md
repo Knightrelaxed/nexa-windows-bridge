@@ -84,17 +84,24 @@ Aplikasi ini menggunakan pemisahan tanggung jawab yang ketat antar thread untuk 
      * **Pencegahan Infinite Retry Auth (Audit M2):** Menangkap status HTTP 401/403 untuk menghentikan reconnect otomatis saat token ditolak server.
      * **Watchdog Aktivitas Keepalive 15s (Audit H2):** Memutus koneksi soket setengah terbuka (*half-open socket*) jika tidak ada lalu lintas atau pong masuk selama >15 detik saat Wi-Fi terputus tanpa FIN TCP.
   2. **State Watcher**: Memantau perubahan `ConnectionState` berbasis `AtomicBool` yang bebas poisoning.
-  3. **Command & Audio Dispatcher (Audit H4)**:
-     * Menggunakan kapasitas broadcast bus 256.
+  3. **Command & Audio Dispatcher (Audit H4, N6, R4)**:
+     * Menggunakan kapasitas broadcast bus 256 untuk pesan kendali dan status kognitif.
+     * **Pemisahan Jalur Audio Dedikasi (`subscribe_audio`)**: Chunk audio PCM dialirkan melalui kanal dedicated `mpsc` terpisah sehingga ledakan audio tidak membanjiri atau menunda antrean eksekusi perintah kendali.
      * Menangani kondisi `RecvError::Lagged` secara mulus tanpa menghentikan loop penerimaan perintah secara permanen.
-  4. **Duplex Audio Forwarder**: Meneruskan frame PCM 16kHz dari mikrofon laptop ke antrean WebSocket dan menghitung energi RMS untuk menganimasikan avatar saat mode listening.
-  5. **Barge-In Monitor**: Mendengarkan sinyal interupsi saat pengguna berbicara ketika AI sedang memutar suara, lalu memutus output speaker seketika.
-  6. **Telemetry Sampler Task**: Membaca beban CPU & RAM setiap 2 detik dan memperbarui bar HUD antarmuka.
+  4. **Antrean Serial FIFO Ber-Epoch (`fifo_cmd_tx` - Audit H10, K2, K9)**:
+     * Antrean eksekusi perintah kapasitas 32 yang menjamin pengetikan, klik, dan pergerakan kursor berjalan serial berurutan.
+     * Mengikat stempel generasi sesi (`session_generation`). Saat koneksi terputus atau terjadi pembatalan, nomor generasi dinaikkan sehingga seluruh perintah antrean lama dibatalkan seketika.
+     * Masing-masing perintah dibungkus isolasi task (`tokio::spawn`) untuk mencegah *worker termination* saat terjadi panic Windows.
+  5. **Fast-Path Abort (Audit N3, R2)**:
+     * Perintah pembatalan (`ABORT_AUTOMATION`, `CANCEL`) melompati antrean serial FIFO untuk memberikan respon pembatalan mikrodetik.
+  6. **Duplex Audio Forwarder**: Meneruskan frame PCM 16kHz dari mikrofon laptop ke antrean WebSocket dan menghitung energi RMS untuk menganimasikan avatar saat mode listening.
+  7. **Barge-In Monitor**: Mendengarkan sinyal interupsi saat pengguna berbicara ketika AI sedang memutar suara, lalu memutus output speaker seketika.
+  8. **Telemetry Sampler Task**: Membaca beban CPU & RAM setiap 2 detik dan memperbarui bar HUD antarmuka.
 
 ### C. Dedicated Win32 OS Threads (Platform Hooks)
 1. **`PowerListener`**: Thread Win32 mandiri dengan *message loop* tersembunyi (`HWND_MESSAGE`) untuk mendengarkan pesan `WM_POWERBROADCAST`.
-2. **`SystemTray`**: Thread terisolasi untuk menangani ikon notifikasi taskbar (`Shell_NotifyIconW`) dan menu klik kanan.
-3. **`HotkeyListener`**: Thread terisolasi untuk mendengarkan pintasan global (`RegisterHotKey` dan loop `WM_HOTKEY`).
+2. **`SystemTray`**: Thread terisolasi untuk menangani ikon notifikasi taskbar (`Shell_NotifyIconW`), menu klik kanan, dan toggle mode armed (Lease 15 Menit).
+3. **`HotkeyListener`**: Thread terisolasi untuk mendengarkan pintasan global (`RegisterHotKey` dan loop `WM_HOTKEY`), termasuk tombol darurat Win+Alt+X dan Boss Key Win+Alt+N.
 4. **`SingleInstanceGuard`**: Memastikan hanya ada satu proses Nexa Bridge yang berjalan di sistem dan memulihkan jendela aktif jika pengguna meluncurkan shortcut kedua kali.
 
 ---
@@ -105,7 +112,9 @@ Aplikasi ini menggunakan pemisahan tanggung jawab yang ketat antar thread untuk 
 | :--- | :--- | :--- | :--- |
 | `state_tx` | `tokio::sync::watch` | Worker $\to$ UI Watcher | Mengabarkan status koneksi terbaru (`Connected`, `Connecting`, `Reconnecting`, `Disconnected`, `Suspended`). |
 | `outbound_tx` | `tokio::sync::mpsc (128)` | UI/Audio/Capture $\to$ Worker | Antrean pesan keluar (JSON string atau paket biner audio). |
-| `command_tx` | `tokio::sync::broadcast (256)` | Worker $\to$ Handlers | Bus multi-subscriber kapasitas tinggi untuk pesan `EXECUTE_COMMAND`, `AudioPlay`, dan `StatusUpdate`. |
+| `command_tx` | `tokio::sync::broadcast (256)` | Worker $\to$ Handlers | Bus multi-subscriber kapasitas tinggi untuk pesan status, eksekusi perintah, dan event kognitif. |
+| `audio_tx` | `tokio::sync::mpsc (128)` | Worker $\to$ Audio Engine | Kanal khusus streaming PCM audio independen dari antrean kendali (Audit N6). |
+| `fifo_cmd_tx` | `tokio::sync::mpsc (32)` | Dispatcher $\to$ Executor | Antrean eksekusi serial perintah desktop dengan generasi epoch isolasi (Audit K2). |
 | `reconnect_notify` | `tokio::sync::Notify` | UI/Power $\to$ Worker | Memicu percobaan koneksi instan (mengabaikan timer backoff). |
 | `session_interrupt` | `tokio::sync::Notify` | UI/Power $\to$ Worker | Memutus loop sesi aktif secara instan saat user memilih disconnect atau laptop sleep. |
 | `barge_in_notify` | `tokio::sync::Notify` | Audio Engine $\to$ Main Runtime | Memberi sinyal bahwa pengguna menyela ucapan AI untuk mematikan audio seketika. |

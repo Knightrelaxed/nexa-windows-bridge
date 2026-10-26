@@ -93,20 +93,35 @@ Dokumen ini menyediakan referensi teknis mendetail dari setiap berkas kode yang 
   * `ClientMessage`: `Ping`, `CommandResult`, `Telemetry`, `PowerEvent`, `VideoFrame`, `AudioStream`, `AudioInterrupted`.
   * `ServerMessage`: `Pong`, `ExecuteCommand`, `AudioPlay`, `AudioInterrupted`, `StatusUpdate`, `ReplyComplete`, `Unknown`.
 * **`src/network/client.rs` (`NetworkClient`):**
-  Klien WebSocket asinkron tangguh dengan *exponential backoff reconnection* otomatis, watchdog aktivitas keepalive 15 detik (deteksi soket setengah terbuka tanpa TCP FIN), handshake timeout 10 detik dan pembatalan instan via `session_interrupt`, penanganan penolakan token HTTP 401/403, permit drain via `now_or_never()`, serta broadcast command bus kapasitas 256.
+  Klien WebSocket asinkron tangguh dengan *exponential backoff reconnection* otomatis, watchdog aktivitas keepalive 15 detik (deteksi soket setengah terbuka tanpa TCP FIN), handshake timeout 10 detik dan pembatalan instan via `session_interrupt`, penanganan penolakan token HTTP 401/403, permit drain via `now_or_never()`, kanal stream audio terdedikasi `subscribe_audio()`, validasi host TLS pra-koneksi, serta broadcast command bus kapasitas 256.
 
 ---
 
-## 6. Submodul Integrasi Platform Windows (`src/platform/`)
+## 6. Submodul Otomasi Desktop & Keamanan (`src/automation/`)
+
+* **`src/automation/mod.rs`:**
+  Pusat orkestrasi perintah desktop (`handle_execute_command`), daftar putih aplikasi resmi (*safe app launcher*), sanitasi URL dan pencegahan eksekusi shell, isolasi task per perintah, serta penyensoran parameter sensitif dari disk log (`redact_params`).
+* **`src/automation/policy.rs`:**
+  Penebak dan pengawas izin aksi (`requires_arm`, `is_abort_action`, `canonical_action`). Memetakan aksi aman (visual/telemetri) vs aksi berbahaya (fisik/sistem) dengan normalisasi lintas format nama (camelCase, kebab-case, snake_case).
+* **`src/automation/input.rs`:**
+  Simulasi mouse dan keyboard tingkat rendah via Win32 `SendInput`, denormalisasi koordinat absolut `0..65535`, pengetikan Unicode bebas layout, penekanan tombol virtual, minimasi desktop instan (`Win+D`), serta deteksi dan pemblokiran aktif konsol terminal latar depan (`is_foreground_terminal_active`).
+* **`src/automation/element_finder.rs`:**
+  Integrasi COM Windows UI Automation (`IUIAutomation::ElementFromPoint`) untuk penarikan magnetis (*magnetic smart-snap*) koordinat AI ke batas fisik kontrol antarmuka OS dengan pelindung batas waktu (*timeout guard*) 150 ms.
+* **`src/automation/highlighter.rs`:**
+  Pengendali jendela overlay transparan DirectComposition GPU untuk visualisasi panduan AR AI (`BOX`, `RING`, `POINTER`, `SPOTLIGHT`, dan `RIPPLE`), kompensasi penskalaan DPI 150% ThinkPad X380 Yoga, serta siklus hidup pemudaran otomatis (*auto-dissolve*).
+
+---
+
+## 7. Submodul Integrasi Platform Windows (`src/platform/`)
 
 * **`src/platform/mod.rs`:**
   Mengekspor komponen platform: `PowerListener`, `HotkeyListener`, `SystemTray`, `SystemTelemetry`, `SingleInstanceGuard`, dan `Autostart`.
 * **`src/platform/power.rs` (`PowerListener`):**
   Mendengarkan event daya kernel Windows `WM_POWERBROADCAST` pada `HWND_MESSAGE` (`PBT_APMSUSPEND` saat layar ditutup & `PBT_APMRESUMEAUTOMATIC` saat dibuka kembali).
 * **`src/platform/system_tray.rs` (`SystemTray`):**
-  Mengelola ikon di area notifikasi Windows via `Shell_NotifyIconW` dengan tooltip "Nexa Bridge", klik kiri untuk toggle jendela, dan menu klik kanan (Buka Nexa Bridge, Mute, Layar Penuh, Berbagi Layar, Pengaturan, Keluar).
+  Mengelola ikon di area notifikasi Windows via `Shell_NotifyIconW` dengan tooltip "Nexa Bridge", klik kiri untuk toggle jendela, dan menu klik kanan (Buka Nexa Bridge, Mute, Layar Penuh, Berbagi Layar, Toggle Armed 15 Menit, Pengaturan, Keluar).
 * **`src/platform/hotkeys.rs` (`HotkeyListener`):**
-  Mendaftarkan pintasan keyboard global via `RegisterHotKey`: Boss Key (`Win+Alt+N`), Mic Mute (`Win+Alt+M`), Fullscreen (`F11` / `Win+Alt+F`), dan Berbagi Layar (`Win+Alt+S`).
+  Mendaftarkan pintasan keyboard global via `RegisterHotKey`: Tombol Darurat Otomasi (`Win+Alt+X`), Boss Key (`Win+Alt+N`), Mic Mute (`Win+Alt+M`), Fullscreen (`F11` / `Win+Alt+F`), dan Berbagi Layar (`Win+Alt+S`).
 * **`src/platform/single_instance.rs` (`SingleInstanceGuard`):**
   Menjamin hanya ada satu proses Nexa Bridge yang berjalan di sistem dan memulihkan jendela aktif jika shortcut diluncurkan kembali.
 * **`src/platform/telemetry.rs` (`SystemTelemetry`):**
@@ -114,7 +129,7 @@ Dokumen ini menyediakan referensi teknis mendetail dari setiap berkas kode yang 
 
 ---
 
-## 7. Direktori Antarmuka Slint (`ui/`) & Dokumentasi Spesifikasi UI
+## 8. Direktori Antarmuka Slint (`ui/`) & Dokumentasi Spesifikasi UI
 
 > 📘 **Dokumentasi Lengkap Elemen UI:** Rincian mendalam setiap elemen visual, label teks, fungsi kode Rust, dan properti antarmuka tersedia di [UI_COMPONENTS_AND_SPECIFICATION.md](file:///c:/workspace/nexa-windows-bridge/docs/UI_COMPONENTS_AND_SPECIFICATION.md).
 

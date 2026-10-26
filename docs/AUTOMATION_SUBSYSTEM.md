@@ -99,29 +99,44 @@ graph TD
   - Timer pembubaran otomatis berbasis *epoch atomic token* untuk mencegah konflik antar-sorotan berturut-turut.
   - Fungsi pembersihan manual `clear_all()` untuk aksi `CLEAR_HIGHLIGHTS`.
 
-### F. Command Dispatcher & WebSocket Integration (Milestone 6.4)
+### F. Command Dispatcher & Antrean Serial FIFO Ber-Epoch (Milestone 6.4 & 7.1)
 * Mengorkestrasi seluruh subsistem otomasi melalui fungsi utama [`handle_execute_command`](../src/automation/mod.rs).
-* **Penanganan 7 Perintah Desktop Standar Live Tool Registry:**
-  1. `DESKTOP_CLICK`: Validasi koordinat normalisasi `(x, y)` [0..1000], konversi tombol (`LEFT`, `RIGHT`, `MIDDLE`), klik ganda, picu *click ripple* visual, dan eksekusi klik Win32.
-  2. `DESKTOP_SCROLL`: Pengguliran layar berdasarkan `direction` (`UP`/`DOWN`) dan jumlah notch `amount` via `MOUSEEVENTF_WHEEL`.
-  3. `DESKTOP_TYPE_TEXT`: Pengetikan teks Unicode bebas tata letak, pemetaan otomatis baris baru `\n` ke `VK_RETURN`, dan opsi penekanan Enter di akhir teks.
-  4. `DESKTOP_PRESS_KEY`: Penekanan tombol virtual keyboard fungsional dan navigasi.
-  5. `HIGHLIGHT_ELEMENT`: Evaluasi koordinat bounding box, *magnetic smart-snap* ke elemen OS via Windows UI Automation, dan perenderan overlay visual sesuai gaya (`BOX`, `RING`, `POINTER`, `SPOTLIGHT`).
-  6. `POINT_CURSOR`: Penunjukan titik kursor pada koordinat tertentu.
-  7. `CLEAR_HIGHLIGHTS`: Pembersihan seketika seluruh overlay dan sorotan aktif.
-* **Integrasi Non-Blocking Async (`src/main.rs`):**
-  - Menerima `ServerMessage::ExecuteCommand` melalui broadcast bus kapasitas 256.
-  - Mengeksekusi penanganan otomasi di background task (`tokio::spawn`) agar tidak memblokir alur data audio dupleks WASAPI maupun loop jaringan utama.
-  - Mengirimkan balik hasil tipe-kuat `ClientMessage::CommandResult` ke peladen Azure.
+* **Antrean Serial FIFO dengan Isolasi Panic (Audit H10, K2, K9):**
+  - Perintah masuk disalurkan ke antrean non-blocking `mpsc::channel(32)` yang diproses secara berurutan (*serial execution*) agar klik dan pengetikan tidak tumpang-tindih.
+  - Setiap perintah diikat dengan nomor generasi sesi (`session_generation`). Jika sesi di-reset atau koneksi terputus, perintah basi dibatalkan instan (*stale command dropped*).
+  - Setiap eksekusi dibungkus dalam `tokio::spawn` terisolasi sehingga panic tak terduga tidak membunuh loop worker.
+
+### G. Perintah Ekstensi Desktop & Kontrol Sistem OS (Milestone 6.6)
+Selain 7 perintah interaksi dasar, subsistem otomasi mendukung perintah sistem terverifikasi:
+1. `LAUNCH_APP`: Membuka aplikasi resmi (Chrome, Notepad, Calculator, Explorer, VS Code, Edge) atau tautan URL `http(s)://` yang telah disanitasi dari karakter injeksi shell (`&`, `|`, `;`, dll.) menggunakan Win32 `ShellExecuteW`. Menolak keras eksekusi `.exe` bebas, skrip `.bat/.cmd/.ps1`, maupun jalur UNC.
+2. `LOCK_SCREEN`: Mengunci workstation Windows seketika melalui native Win32 API `LockWorkStation` (`windows_sys::Win32::System::Shutdown`).
+3. `SHOW_DESKTOP`: Menampilkan desktop Windows seketika menggunakan kombinasi native Win32 `SendInput` tombol `Win + D`, bebas dari *console flashing* tanpa memanggil PowerShell eksternal.
+4. `SET_VOLUME`: Menyesuaikan volume suara laptop secara proporsional berdasarkan `volume_level` (0.0 - 1.0) atau jumlah langkah (`steps` / `amount` dibatasi 1 - 25 langkah) dengan penekanan tombol `VOLUME_UP` / `VOLUME_DOWN`.
+5. `MUTE`, `UNMUTE`, `TOGGLEMUTE`: Mengendalikan mute speaker laptop. `UNMUTE` dipisahkan secara aman dari tombol toggle dengan mengirimkan penekanan tombol `VOLUME_UP` (standar OS Windows untuk memulihkan audio tanpa risiko membisukan kembali).
+6. `TAKE_SCREENSHOT`: Menangkap tangkapan layar perangkat.
+7. `GET_BATTERY_STATUS`: Membaca telemetri daya real-time melalui Win32 `GetSystemPowerStatus` (level baterai %, status pengisian AC/DC).
+8. `GET_SYSTEM_METRICS`: Membaca metrik perangkat keras sistem (CPU, RAM, dimensi layar fisik).
+9. `ABORT_AUTOMATION`: Pembatalan otomasi jalur cepat (*fast-path*) yang melompati antrean FIFO, menaikkan epoch generasi sesi, meminta pembatalan atomik, dan menghapus seluruh sorotan layar seketika.
+
+### H. Arsitektur Keamanan Armed Guard & Proteksi Terminal (Audit N2, R2, R3)
+* **Default-Deny:** Semua otomasi yang melakukan interaksi fisik (`CLICK`, `SCROLL`, `TYPE_TEXT`, `PRESS_KEY`), meluncurkan aplikasi, atau mengubah sistem wajib memperoleh izin (**Armed**).
+* **Lease 15 Menit:** Pengaktifan status armed via System Tray otomatis kedaluwarsa setelah 15 menit menggunakan epoch Unix timestamp, mencegah izin aktif selamanya tanpa pengawasan.
+* **Normalisasi Kanonikal (`canonical_action`):** Seluruh aksi diverifikasi konsisten terlepas dari gaya penamaan (`camelCase`, `kebab-case`, `snake_case`, atau spasi).
+* **Proteksi Terminal Konsol Latar Depan:** Memeriksa jendela aktif sebelum mengetik; otomatis memblokir `DESKTOP_TYPE_TEXT` dan `DESKTOP_PRESS_KEY` jika jendela aktif adalah `cmd.exe`, `powershell.exe`, `pwsh.exe`, `WindowsTerminal.exe`, `conhost.exe`, atau `regedit.exe`.
+* Untuk dokumentasi keamanan lengkap, lihat [Spesifikasi Keamanan & Kebijakan Otomasi](SECURITY.md).
 
 ---
 
-## 3. Status Rencana Milestone Subsistem Otomasi (Fase 6)
+## 3. Status Rencana Milestone Subsistem Otomasi
 
 | Milestone | Deskripsi | Status |
 | :--- | :--- | :--- |
 | **Milestone 6.1** | Desktop Input Automation (`src/automation/input.rs`) — SendInput mouse & keyboard | **SELESAI ✅** |
-| **Milestone 6.2** | Magnetic Smart-Snap via Windows UI Automation & Timeout Guard | **SELESAI ✅** |
-| **Milestone 6.3** | Stealth Overlay, Click Ripple, & High-DPI Scaling 150% | **SELESAI ✅** |
+| **Milestone 6.2** | Magnetic Smart-Snap via Windows UI Automation & Timeout Guard 150ms | **SELESAI ✅** |
+| **Milestone 6.3** | Stealth Overlay, Click Ripple, & High-DPI Scaling 150% ThinkPad Yoga | **SELESAI ✅** |
 | **Milestone 6.4** | Router EXECUTE_COMMAND & WebSocket Binding di `src/main.rs` | **SELESAI ✅** |
-| **Milestone 6.5** | Verifikasi Komprehensif, Audit Claude Review (C1, H1-H8, M1-M8), & Release Build | **SELESAI ✅** |
+| **Milestone 6.5** | Verifikasi Komprehensif & Audit Review (C1, H1-H8, M1-M8) | **SELESAI ✅** |
+| **Milestone 6.6** | Ekstensi Aksi Desktop: Safe App Launch, Lock Screen, Show Desktop, Honest Volume | **SELESAI ✅** |
+| **Milestone 7.1** | Antrean Serial FIFO Ber-Epoch, Isolasi Panic, dan Fast-Path Abort | **SELESAI ✅** |
+| **Milestone 7.2** | Audit Keamanan Ronde 1 (N1-N11): Eliminasi Injeksi cmd, Armed Guard Tray, Graceful Drop | **SELESAI ✅** |
+| **Milestone 7.3** | Audit Keamanan Ronde 2 (R1-R9): Strict TLS Loopback, Terminal Guard, 15-Min Lease | **SELESAI ✅** |
