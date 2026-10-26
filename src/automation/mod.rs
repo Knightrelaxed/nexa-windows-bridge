@@ -181,19 +181,20 @@ pub async fn handle_execute_command(
     params: serde_json::Value,
     highlighter: Option<&HighlighterController>,
 ) -> ClientMessage {
-    let action_clean = action.trim().to_uppercase();
+    let action_canon = canonical_action(&action);
     info!(
-        "[AUTOMATION] ⚡ Dispatching command '{}' [{}] with params: {}",
-        action_clean,
+        "[AUTOMATION] ⚡ Dispatching command '{}' (canon: '{}') [{}] with params: {}",
+        action,
+        action_canon,
         command_id,
-        redact_params(&action_clean, &params)
+        redact_params(&action, &params)
     );
 
-    match action_clean.as_str() {
+    match action_canon.as_str() {
         // ─────────────────────────────────────────────────────────────
         // 1. DESKTOP_CLICK
         // ─────────────────────────────────────────────────────────────
-        "DESKTOP_CLICK" | "DESKTOPCLICK" | "DESKTOP-CLICK" => {
+        "DESKTOPCLICK" => {
             let x = match params
                 .get("x")
                 .or_else(|| params.get("norm_x"))
@@ -288,7 +289,7 @@ pub async fn handle_execute_command(
         // ─────────────────────────────────────────────────────────────
         // 2. DESKTOP_SCROLL
         // ─────────────────────────────────────────────────────────────
-        "DESKTOP_SCROLL" | "DESKTOPSCROLL" | "DESKTOP-SCROLL" => {
+        "DESKTOPSCROLL" => {
             let direction = params
                 .get("direction")
                 .and_then(|v| v.as_str())
@@ -340,7 +341,7 @@ pub async fn handle_execute_command(
         // ─────────────────────────────────────────────────────────────
         // 3. DESKTOP_TYPE_TEXT
         // ─────────────────────────────────────────────────────────────
-        "DESKTOP_TYPE_TEXT" | "DESKTOPTYPETEXT" | "DESKTOP_TYPETEXT" | "DESKTOP-TYPE-TEXT" => {
+        "DESKTOPTYPETEXT" => {
             let text = match params
                 .get("text")
                 .or_else(|| params.get("content"))
@@ -409,7 +410,7 @@ pub async fn handle_execute_command(
         // ─────────────────────────────────────────────────────────────
         // 4. DESKTOP_PRESS_KEY
         // ─────────────────────────────────────────────────────────────
-        "DESKTOP_PRESS_KEY" | "DESKTOPPRESSKEY" | "DESKTOP_PRESSKEY" | "DESKTOP-PRESS-KEY" => {
+        "DESKTOPPRESSKEY" => {
             let key = match params
                 .get("key")
                 .or_else(|| params.get("key_name"))
@@ -486,7 +487,7 @@ pub async fn handle_execute_command(
         // ─────────────────────────────────────────────────────────────
         // 5. HIGHLIGHT_ELEMENT
         // ─────────────────────────────────────────────────────────────
-        "HIGHLIGHT_ELEMENT" | "HIGHLIGHTELEMENT" | "HIGHLIGHT-ELEMENT" => {
+        "HIGHLIGHTELEMENT" | "HIGHLIGHT" => {
             // Support both flat bounds (ymin, xmin, ymax, xmax) and box_2d array: [ymin, xmin, ymax, xmax]
             // Strictly validate coordinates to prevent silent 0..1000 whole-screen false-positives (Audit N11)
             let parsed_coords = if let Some(arr) = params.get("box_2d").and_then(|v| v.as_array()) {
@@ -586,7 +587,7 @@ pub async fn handle_execute_command(
         // ─────────────────────────────────────────────────────────────
         // 6. POINT_CURSOR
         // ─────────────────────────────────────────────────────────────
-        "POINT_CURSOR" | "POINTCURSOR" | "POINT-CURSOR" => {
+        "POINTCURSOR" => {
             let x = match params
                 .get("x")
                 .or_else(|| params.get("norm_x"))
@@ -648,7 +649,7 @@ pub async fn handle_execute_command(
         // ─────────────────────────────────────────────────────────────
         // 7. CLEAR_HIGHLIGHTS
         // ─────────────────────────────────────────────────────────────
-        "CLEAR_HIGHLIGHTS" | "CLEARHIGHLIGHTS" | "CLEAR_HIGHLIGHT" | "CLEARHIGHLIGHT" | "CLEAR-HIGHLIGHTS" => {
+        "CLEARHIGHLIGHTS" | "CLEARHIGHLIGHT" => {
             if let Some(hl) = highlighter {
                 hl.clear_all();
             }
@@ -664,9 +665,9 @@ pub async fn handle_execute_command(
         }
 
         // ─────────────────────────────────────────────────────────────
-        // 8. ABORT_AUTOMATION (Audit N1, N13)
+        // 8. ABORT_AUTOMATION (Audit N1, N13, R2)
         // ─────────────────────────────────────────────────────────────
-        "ABORT_AUTOMATION" | "ABORTAUTOMATION" | "ABORT-AUTOMATION" | "ABORT" | "CANCEL_AUTOMATION" | "CANCELAUTOMATION" | "CANCEL-AUTOMATION" => {
+        "ABORTAUTOMATION" | "ABORT" | "CANCELAUTOMATION" | "STOPAUTOMATION" => {
             request_automation_abort();
             info!("[AUTOMATION] 🛑 Abort signal triggered via command {}", command_id);
             ClientMessage::CommandResult {
@@ -682,7 +683,7 @@ pub async fn handle_execute_command(
         // ─────────────────────────────────────────────────────────────
         // 9. LAUNCH_APP / OPEN_APP (Milestone 6.5 Voice Intent Parity)
         // ─────────────────────────────────────────────────────────────
-        "LAUNCH_APP" | "LAUNCHAPP" | "OPEN_APP" | "OPENAPP" | "OPEN_APPLICATION" => {
+        "LAUNCHAPP" | "OPENAPP" | "OPENAPPLICATION" => {
             let app_name = params
                 .get("app_name")
                 .or_else(|| params.get("appName"))
@@ -732,24 +733,59 @@ pub async fn handle_execute_command(
         }
 
         // ─────────────────────────────────────────────────────────────
-        // 10. SET_VOLUME
+        // 10. SET_VOLUME (Audit R5: honest reporting & step-based control)
         // ─────────────────────────────────────────────────────────────
-        "SET_VOLUME" | "SETVOLUME" | "SET-VOLUME" => {
+        "SETVOLUME" => {
             let volume_level = params
                 .get("volume_level")
                 .or_else(|| params.get("volumeLevel"))
                 .or_else(|| params.get("level"))
                 .and_then(|v| v.as_f64());
+            let dir_param = params
+                .get("direction")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let steps_param = params
+                .get("steps")
+                .or_else(|| params.get("amount"))
+                .and_then(|v| v.as_i64());
 
             let res = tokio::task::spawn_blocking(move || {
                 if let Some(lvl) = volume_level {
                     if lvl <= 0.0 {
-                        desktop_press_key("VOLUME_MUTE")
+                        desktop_press_key("VOLUME_MUTE")?;
+                        Ok((1, "VOLUME_MUTE".to_string(), 0.0))
                     } else {
-                        desktop_press_key("VOLUME_UP")
+                        let steps = ((lvl / 2.0).round() as i64).clamp(1, 25);
+                        let key = if dir_param
+                            .map(|d| d.eq_ignore_ascii_case("DOWN"))
+                            .unwrap_or(false)
+                        {
+                            "VOLUME_DOWN"
+                        } else {
+                            "VOLUME_UP"
+                        };
+                        for _ in 0..steps {
+                            desktop_press_key(key)?;
+                            std::thread::sleep(std::time::Duration::from_millis(15));
+                        }
+                        Ok((steps, key.to_string(), lvl))
                     }
                 } else {
-                    desktop_press_key("VOLUME_UP")
+                    let steps = steps_param.unwrap_or(5).clamp(1, 25);
+                    let key = if dir_param
+                        .map(|d| d.eq_ignore_ascii_case("DOWN"))
+                        .unwrap_or(false)
+                    {
+                        "VOLUME_DOWN"
+                    } else {
+                        "VOLUME_UP"
+                    };
+                    for _ in 0..steps {
+                        desktop_press_key(key)?;
+                        std::thread::sleep(std::time::Duration::from_millis(15));
+                    }
+                    Ok((steps, key.to_string(), (steps * 2) as f64))
                 }
             })
             .await
@@ -757,14 +793,15 @@ pub async fn handle_execute_command(
             .and_then(|r| r);
 
             match res {
-                Ok(vk) => ClientMessage::CommandResult {
+                Ok((steps, key_used, approx_lvl)) => ClientMessage::CommandResult {
                     command_id,
                     success: true,
-                    message: "Volume laptop berhasil disesuaikan.".to_string(),
+                    message: format!("Volume laptop disesuaikan ({} langkah {}).", steps, key_used),
                     data: serde_json::json!({
                         "action": "setVolume",
-                        "vk": vk,
-                        "volume_level": volume_level
+                        "steps": steps,
+                        "key": key_used,
+                        "target_level": approx_lvl
                     }),
                 },
                 Err(err) => ClientMessage::CommandResult {
@@ -777,9 +814,9 @@ pub async fn handle_execute_command(
         }
 
         // ─────────────────────────────────────────────────────────────
-        // 11. MUTE / UNMUTE / TOGGLE_MUTE
+        // 11. MUTE / UNMUTE / TOGGLE_MUTE (Audit R5: separate semantics)
         // ─────────────────────────────────────────────────────────────
-        "MUTE" | "UNMUTE" | "TOGGLE_MUTE" | "TOGGLEMUTE" => {
+        "MUTE" => {
             let res = tokio::task::spawn_blocking(|| {
                 desktop_press_key("VOLUME_MUTE")
             })
@@ -791,8 +828,57 @@ pub async fn handle_execute_command(
                 Ok(vk) => ClientMessage::CommandResult {
                     command_id,
                     success: true,
-                    message: "Status audio/mute laptop berhasil diubah.".to_string(),
+                    message: "Perintah bisukan audio laptop (Mute) dikirim.".to_string(),
                     data: serde_json::json!({ "action": "mute", "vk": vk }),
+                },
+                Err(err) => ClientMessage::CommandResult {
+                    command_id,
+                    success: false,
+                    message: format!("Gagal membisukan audio laptop: {}", err),
+                    data: serde_json::json!({ "error": err }),
+                },
+            }
+        }
+
+        "UNMUTE" => {
+            // In Windows, VOLUME_UP is the guaranteed standard to un-mute master audio
+            let res = tokio::task::spawn_blocking(|| {
+                desktop_press_key("VOLUME_UP")
+            })
+            .await
+            .map_err(|e| format!("Join error: {}", e))
+            .and_then(|r| r);
+
+            match res {
+                Ok(vk) => ClientMessage::CommandResult {
+                    command_id,
+                    success: true,
+                    message: "Status audio laptop diaktifkan kembali (Unmute).".to_string(),
+                    data: serde_json::json!({ "action": "unmute", "vk": vk }),
+                },
+                Err(err) => ClientMessage::CommandResult {
+                    command_id,
+                    success: false,
+                    message: format!("Gagal mengaktifkan audio laptop: {}", err),
+                    data: serde_json::json!({ "error": err }),
+                },
+            }
+        }
+
+        "TOGGLEMUTE" => {
+            let res = tokio::task::spawn_blocking(|| {
+                desktop_press_key("VOLUME_MUTE")
+            })
+            .await
+            .map_err(|e| format!("Join error: {}", e))
+            .and_then(|r| r);
+
+            match res {
+                Ok(vk) => ClientMessage::CommandResult {
+                    command_id,
+                    success: true,
+                    message: "Status audio mute/unmute laptop berhasil di-toggle.".to_string(),
+                    data: serde_json::json!({ "action": "toggleMute", "vk": vk }),
                 },
                 Err(err) => ClientMessage::CommandResult {
                     command_id,
@@ -806,7 +892,7 @@ pub async fn handle_execute_command(
         // ─────────────────────────────────────────────────────────────
         // 12. LOCK_SCREEN
         // ─────────────────────────────────────────────────────────────
-        "LOCK_SCREEN" | "LOCKSCREEN" | "LOCK-SCREEN" => {
+        "LOCKSCREEN" => {
             let res = tokio::task::spawn_blocking(|| {
                 let ok = unsafe { windows_sys::Win32::System::Shutdown::LockWorkStation() };
                 if ok != 0 {
@@ -838,7 +924,7 @@ pub async fn handle_execute_command(
         // ─────────────────────────────────────────────────────────────
         // 13. GET_BATTERY_STATUS
         // ─────────────────────────────────────────────────────────────
-        "GET_BATTERY_STATUS" | "BATTERY_STATUS" | "GETBATTERYSTATUS" => {
+        "GETBATTERYSTATUS" | "BATTERYSTATUS" => {
             let battery = crate::platform::power::get_battery_status();
             match battery {
                 Some(b) => ClientMessage::CommandResult {
@@ -868,7 +954,7 @@ pub async fn handle_execute_command(
         // ─────────────────────────────────────────────────────────────
         // 14. SYSTEM_METRICS / GET_SYSTEM_METRICS
         // ─────────────────────────────────────────────────────────────
-        "SYSTEM_METRICS" | "GET_SYSTEM_METRICS" | "GETSYSTEMMETRICS" => {
+        "SYSTEMMETRICS" | "GETSYSTEMMETRICS" | "TELEMETRY" => {
             let mut telemetry = crate::platform::telemetry::SystemTelemetry::default();
             std::thread::sleep(std::time::Duration::from_millis(15));
             let cpu = telemetry.sample_cpu_percent();
@@ -887,14 +973,16 @@ pub async fn handle_execute_command(
         }
 
         // ─────────────────────────────────────────────────────────────
-        // 15. SHOW_DESKTOP / MINIMIZE_ALL / GO_HOME_SCREEN
+        // 15. SHOW_DESKTOP (Audit R9: native SendInput Win+D without console flash)
         // ─────────────────────────────────────────────────────────────
-        "SHOW_DESKTOP" | "SHOWDESKTOP" | "MINIMIZE_ALL" | "MINIMIZEALL" | "GO_HOME_SCREEN" => {
+        "SHOWDESKTOP" | "MINIMIZEALL" | "GOHOMESCREEN" => {
             let res = tokio::task::spawn_blocking(|| {
-                std::process::Command::new("powershell")
-                    .args(["-NoProfile", "-Command", "(New-Object -ComObject Shell.Application).MinimizeAll()"])
-                    .spawn()
-                    .map_err(|e| format!("Gagal meminimalkan jendela: {}", e))
+                use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_LWIN;
+                let win_down = make_keyboard_input(VK_LWIN, false);
+                let d_down = make_keyboard_input('D' as u16, false);
+                let d_up = make_keyboard_input('D' as u16, true);
+                let win_up = make_keyboard_input(VK_LWIN, true);
+                unsafe { send_inputs(&[win_down, d_down, d_up, win_up]) }
             })
             .await
             .map_err(|e| format!("Join error: {}", e))
@@ -904,13 +992,13 @@ pub async fn handle_execute_command(
                 Ok(_) => ClientMessage::CommandResult {
                     command_id,
                     success: true,
-                    message: "Tampilan desktop berhasil dibuka (semua jendela diminimalkan).".to_string(),
+                    message: "Tampilan desktop Windows berhasil dipicu secara instan (Win+D).".to_string(),
                     data: serde_json::json!({ "action": "showDesktop" }),
                 },
                 Err(err) => ClientMessage::CommandResult {
                     command_id,
                     success: false,
-                    message: format!("Gagal membuka tampilan desktop: {}", err),
+                    message: format!("Gagal memicu tampilan desktop: {}", err),
                     data: serde_json::json!({ "error": err }),
                 },
             }
@@ -919,7 +1007,7 @@ pub async fn handle_execute_command(
         // ─────────────────────────────────────────────────────────────
         // 16. TAKE_SCREENSHOT
         // ─────────────────────────────────────────────────────────────
-        "TAKE_SCREENSHOT" | "TAKESCREENSHOT" | "CAPTURE_SCREEN" | "SCREENSHOT" => {
+        "TAKESCREENSHOT" | "CAPTURESCREEN" | "SCREENSHOT" => {
             let res = tokio::task::spawn_blocking(|| {
                 desktop_press_key("PRINTSCREEN")
             })
@@ -989,6 +1077,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Interactive hardware test: sends physical mouse wheel event"]
     async fn test_dispatcher_desktop_scroll_valid() {
         let res = handle_execute_command(
             "cmd_scroll".to_string(),
@@ -1004,7 +1093,6 @@ mod tests {
                 if success {
                     assert_eq!(data["delta"], 240);
                 } else {
-                    // Under UIPI/headless background runner: SendInput is properly verified and rejected (error code 5)
                     assert!(message.contains("SendInput failed") || data["error"].as_str().unwrap().contains("SendInput"));
                 }
             }
@@ -1152,27 +1240,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatcher_camel_case_action_names() {
-        // desktopScroll (camelCase)
+        // getBatteryStatus (camelCase, Audit R2)
         let res1 = handle_execute_command(
             "cmd_c1".to_string(),
-            "desktopScroll".to_string(),
-            serde_json::json!({ "direction": "UP", "amount": 1 }),
+            "getBatteryStatus".to_string(),
+            serde_json::json!({}),
             None,
         )
         .await;
         match res1 {
-            ClientMessage::CommandResult { command_id, success, data, message } => {
+            ClientMessage::CommandResult { command_id, .. } => {
                 assert_eq!(command_id, "cmd_c1");
-                if success {
-                    assert_eq!(data["delta"], 120);
-                } else {
-                    assert!(message.contains("SendInput failed") || data["error"].as_str().unwrap().contains("SendInput"));
-                }
             }
             _ => panic!("Expected CommandResult"),
         }
 
-        // clearHighlights (camelCase)
+        // clearHighlights (camelCase, Audit R2)
         let res2 = handle_execute_command(
             "cmd_c2".to_string(),
             "clearHighlights".to_string(),
@@ -1187,6 +1270,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Interactive hardware test: sends physical CTRL+C to active foreground window"]
     async fn test_dispatcher_key_combo_and_box_2d() {
         // Key combo: CTRL+C
         let res_combo = handle_execute_command(

@@ -99,10 +99,12 @@ impl BridgeConfig {
                     }
                     Err(e) => {
                         tracing::error!(
-                            "Gagal mem-parse file konfigurasi di {}: {}. Menggunakan fallback.",
+                            "Gagal mem-parse file konfigurasi di {}: {}. Menyimpan cadangan ke .bak dan menggunakan fallback.",
                             bridge_path.display(),
                             e
                         );
+                        let bak_path = bridge_path.with_extension("bak");
+                        let _ = fs::copy(&bridge_path, &bak_path);
                     }
                 },
                 Err(e) => {
@@ -165,20 +167,22 @@ impl BridgeConfig {
         Ok(())
     }
 
-    /// Check whether a host is a local loopback address (127.0.0.1, localhost, ::1)
+    /// Check whether a host is genuinely a local loopback address (Audit R1)
+    /// Disallows userinfo spoofing (e.g. 127.0.0.1@evil.com) and subdomain suffix bypasses (localhost.evil.com, 127.0.0.1.nip.io).
     pub fn is_local_host(url: &str) -> bool {
-        let u = url.trim().to_lowercase();
-        let stripped = u
-            .strip_prefix("wss://")
-            .or_else(|| u.strip_prefix("ws://"))
-            .or_else(|| u.strip_prefix("https://"))
-            .or_else(|| u.strip_prefix("http://"))
-            .unwrap_or(&u);
-
-        stripped.starts_with("127.0.0.1")
-            || stripped.starts_with("localhost")
-            || stripped.starts_with("[::1]")
-            || stripped.starts_with("::1")
+        let rest = url.trim().split("://").last().unwrap_or("");
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+        if authority.contains('@') {
+            return false;
+        }
+        let host = match authority.strip_prefix('[') {
+            Some(r) => r.split(']').next().unwrap_or(""),
+            None => authority.split(':').next().unwrap_or(""),
+        };
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<std::net::IpAddr>()
+                .map_or(false, |ip| ip.is_loopback())
     }
 
     /// Enforce TLS for all non-local connections (Security Audit N5).
@@ -267,7 +271,7 @@ mod tests {
 
     #[test]
     fn test_validate_ws_url_tls_enforcement() {
-        // Localhost allowed on ws://
+        // Genuine loopback addresses allowed on ws://
         assert!(BridgeConfig::validate_ws_url("ws://localhost:3000/ws").is_ok());
         assert!(BridgeConfig::validate_ws_url("ws://127.0.0.1:3000/ws").is_ok());
         assert!(BridgeConfig::validate_ws_url("ws://[::1]:3000/ws").is_ok());
@@ -275,8 +279,10 @@ mod tests {
         // Secure wss:// allowed everywhere
         assert!(BridgeConfig::validate_ws_url("wss://server.nexa.ai/ws").is_ok());
 
-        // Insecure ws:// rejected for remote host
-        assert!(BridgeConfig::validate_ws_url("ws://nexa.remote-server.com/ws").is_err());
+        // Audit R1 bypass vectors strictly rejected!
+        assert!(BridgeConfig::validate_ws_url("ws://localhost.evil.com/ws").is_err());
+        assert!(BridgeConfig::validate_ws_url("ws://127.0.0.1.nip.io/ws").is_err());
+        assert!(BridgeConfig::validate_ws_url("ws://127.0.0.1@evil.com/ws").is_err());
         assert!(BridgeConfig::validate_ws_url("ws://192.168.1.50:3000/ws").is_err());
     }
 

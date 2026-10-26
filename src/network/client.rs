@@ -210,6 +210,14 @@ async fn run_client_worker(
             (cfg.websocket_url(), cfg.auth_token.clone())
         };
 
+        // Enforce TLS policy at connection establishment (Audit R1)
+        if let Err(e) = BridgeConfig::validate_ws_url(&url) {
+            error!("[NETWORK] ⛔ Rejecting connection: {}. TLS (wss://) is strictly required for remote hosts.", e);
+            *enabled.lock().unwrap() = false;
+            let _ = state_tx.send(ConnectionState::AuthRejected);
+            continue;
+        }
+
         let _ = state_tx.send(ConnectionState::Connecting);
         info!("[NETWORK] Connecting to: {}", url);
 

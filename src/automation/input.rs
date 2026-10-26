@@ -493,6 +493,65 @@ pub fn desktop_scroll(direction: &str, amount: i32) -> Result<i32, String> {
     Ok(delta)
 }
 
+/// Returns true if the currently active foreground window belongs to a system terminal or sensitive command processor (Audit R3).
+/// Protects against autonomous AI injecting arbitrary terminal commands into an open console window.
+pub fn is_foreground_terminal_active() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::Foundation::CloseHandle;
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            return false;
+        }
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == 0 {
+            return false;
+        }
+
+        let h_proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h_proc.is_null() {
+            return false;
+        }
+
+        extern "system" {
+            fn QueryFullProcessImageNameW(
+                hprocess: windows_sys::Win32::Foundation::HANDLE,
+                dwflags: u32,
+                lpexename: *mut u16,
+                lpsize: *mut u32,
+            ) -> windows_sys::Win32::Foundation::BOOL;
+        }
+
+        let mut buf = [0u16; 1024];
+        let mut size = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(h_proc, 0, buf.as_mut_ptr(), &mut size);
+        CloseHandle(h_proc);
+
+        if ok != 0 && size > 0 {
+            let path = String::from_utf16_lossy(&buf[..size as usize]);
+            let lower = path.to_lowercase();
+            let is_blocked = lower.ends_with("cmd.exe")
+                || lower.ends_with("powershell.exe")
+                || lower.ends_with("pwsh.exe")
+                || lower.ends_with("windowsterminal.exe")
+                || lower.ends_with("conhost.exe")
+                || lower.ends_with("regedit.exe");
+            if is_blocked {
+                warn!(
+                    "[SECURITY] 🛑 Blocked physical input: active foreground window is protected terminal '{}'",
+                    path
+                );
+            }
+            is_blocked
+        } else {
+            false
+        }
+    }
+}
+
 /// Type Unicode text using KEYEVENTF_UNICODE to ensure 100% layout-independent character entry.
 /// Correctly handles surrogate pairs and maps newlines ('\n') to VK_RETURN for universal compatibility.
 /// Supports immediate cancellation if an abort signal is received (Audit N13).
@@ -504,6 +563,11 @@ pub fn desktop_type_text(text: &str, press_enter: bool) -> Result<usize, String>
 
     if is_automation_abort_requested() {
         return Err("Automation execution was cancelled before typing began".to_string());
+    }
+
+    // Active terminal window guard (Audit R3)
+    if is_foreground_terminal_active() {
+        return Err("Pengetikan teks ditolak oleh kebijakan keamanan sistem: jendela terminal yang sedang aktif dilindungi dari injeksi perintah AI.".to_string());
     }
 
     let mut char_count = 0;
@@ -606,6 +670,11 @@ pub fn desktop_press_key(key: &str) -> Result<u16, String> {
     let trimmed = key.trim();
     if trimmed.is_empty() {
         return Err("Key name cannot be empty".to_string());
+    }
+
+    // Active terminal window guard (Audit R3)
+    if is_foreground_terminal_active() {
+        return Err("Penekanan tombol ditolak oleh kebijakan keamanan sistem: jendela terminal yang sedang aktif dilindungi dari injeksi perintah AI.".to_string());
     }
 
     let vks = if trimmed.contains('+') {

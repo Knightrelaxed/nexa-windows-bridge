@@ -27,6 +27,19 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use ui::MainWindow;
 
+/// Checks if desktop automation is currently armed and lease is valid (Audit R3).
+fn is_automation_armed(armed_until: &AtomicU64) -> bool {
+    let until = armed_until.load(Ordering::SeqCst);
+    if until == 0 {
+        return false;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    now < until
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 0. Single-Instance Mutex Arbiter (Milestone 7.4 / Claude Bug #4)
@@ -49,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("N.E.X.A Windows Bridge v0.1.0");
+        println!("N.E.X.A Windows Bridge v{}", env!("CARGO_PKG_VERSION"));
         println!("Native Windows Desktop Companion for Lenovo ThinkPad X380 Yoga");
         println!();
         println!("USAGE:");
@@ -221,10 +234,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let is_capture_desired = Arc::new(AtomicBool::new(false));
     let capture_generation = Arc::new(AtomicU64::new(0));
 
-    // Session generation epoch & automation armed guard for security isolation (Audit K1, K2, N2)
-    // Default-deny policy: automation starts DISARMED and requires explicit user enablement
+    // Session generation epoch & automation armed guard for security isolation (Audit K1, K2, N2, R3)
+    // Default-deny policy: automation starts DISARMED and requires explicit user enablement with 15-minute lease
     let session_generation = Arc::new(AtomicU64::new(0));
-    let is_automation_armed = Arc::new(AtomicBool::new(false));
+    let armed_until = Arc::new(AtomicU64::new(0));
 
     let toggle_screen_share: Arc<dyn Fn(Option<bool>) + Send + Sync> = {
         let capture_ctrl = Arc::clone(&capture_controller);
@@ -460,7 +473,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let toggle_share_conn = Arc::clone(&toggle_screen_share);
     let is_speaker_playing_mic = is_speaker_playing.clone();
     let session_gen_conn = Arc::clone(&session_generation);
-    let armed_conn = Arc::clone(&is_automation_armed);
+    let armed_conn = Arc::clone(&armed_until);
 
     tokio::spawn(async move {
         let (mic_pcm_tx, mut mic_pcm_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
@@ -634,7 +647,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     info!("[MAIN] Connection inactive: Stopping WASAPI Duplex & Invalidating Session...");
                     session_gen_conn.fetch_add(1, Ordering::SeqCst);
                     automation::request_automation_abort();
-                    armed_conn.store(false, Ordering::SeqCst);
+                    armed_conn.store(0, Ordering::SeqCst);
 
                     if let Some(audio_clone) = audio_engine_conn.as_ref().map(Arc::clone) {
                         tokio::spawn(async move {
@@ -698,7 +711,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hl_worker = Arc::clone(&highlighter_cmd);
     let net_tx_worker = net_client_cmd.clone();
     let session_gen_worker = Arc::clone(&session_generation);
-    let armed_worker = Arc::clone(&is_automation_armed);
+    let armed_worker = Arc::clone(&armed_until);
 
     tokio::spawn(async move {
         while let Some((gen, cmd_id, action_name, action_params)) = fifo_cmd_rx.recv().await {
@@ -711,13 +724,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
 
-            // Check armed guard for all physical inputs, app launching, lock screen, and system modifications (Audit N2)
-            if automation::requires_arm(&action_name) && !armed_worker.load(Ordering::SeqCst) {
-                warn!("[MAIN] 🛡️ Command [{}] rejected: Desktop automation is DISARMED", cmd_id);
+            // Check armed guard for all physical inputs, app launching, lock screen, and system modifications (Audit N2, R2, R3)
+            if automation::requires_arm(&action_name) && !is_automation_armed(&armed_worker) {
+                warn!("[MAIN] 🛡️ Command [{}] rejected: Desktop automation is DISARMED or lease expired", cmd_id);
                 let disarm_msg = ClientMessage::CommandResult {
                     command_id: cmd_id,
                     success: false,
-                    message: "Otomatisasi desktop sedang dinonaktifkan (Disarmed). Izinkan otomasi melalui UI atau System Tray sebelum mengeksekusi aksi.".to_string(),
+                    message: "Otomatisasi desktop sedang dinonaktifkan (Disarmed / Lease Kedaluwarsa). Izinkan kembali otomasi melalui System Tray sebelum mengeksekusi aksi.".to_string(),
                     data: serde_json::json!({ "error": "AUTOMATION_DISARMED" }),
                 };
                 let _ = net_tx_worker.send_message(disarm_msg).await;
@@ -772,14 +785,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
             match msg {
-                ServerMessage::AudioPlay { pcm_chunk } => {
-                    use base64::prelude::*;
-                    if let Ok(bytes) = BASE64_STANDARD.decode(&pcm_chunk) {
-                        if let Some(audio_clone) = audio_engine_cmd.as_ref() {
-                            let mut engine = audio_clone.lock().await;
-                            engine.play_response_pcm(&bytes);
-                        }
-                    }
+                ServerMessage::AudioPlay { .. } => {
+                    // Audit R4: AudioPlay is dispatched directly via dedicated audio stream channel (subscribe_audio)
                 }
                 ServerMessage::AudioInterrupted => {
                     info!("[MAIN] Server signaled audio interrupted (barge-in).");
@@ -885,9 +892,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
 
-                    // Fast-path for ABORT_AUTOMATION: bypass FIFO queue and immediately invalidate in-flight/queued commands (Audit N3)
-                    let action_upper = action.trim().to_uppercase();
-                    if matches!(action_upper.as_str(), "ABORT_AUTOMATION" | "ABORT" | "CANCEL_AUTOMATION") {
+                    // Fast-path for ABORT_AUTOMATION: bypass FIFO queue and immediately invalidate in-flight/queued commands (Audit N3, R2)
+                    if automation::is_abort_action(&action) {
                         info!("[MAIN] 🚨 Fast-path ABORT_AUTOMATION [{}]! Preempting queue & requesting abort.", command_id);
                         automation::request_automation_abort();
                         let new_gen = session_gen_cmd.fetch_add(1, Ordering::SeqCst) + 1;
@@ -980,7 +986,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let window_weak_tray = main_window.as_weak();
     let audio_engine_tray = audio_engine.clone();
     let toggle_share_tray = Arc::clone(&toggle_screen_share);
-    let armed_tray = Arc::clone(&is_automation_armed);
+    let armed_tray = Arc::clone(&armed_until);
     let _system_tray = SystemTray::spawn(move |event| {
         let window_weak = window_weak_tray.clone();
         let audio_engine = audio_engine_tray.clone();
@@ -1033,13 +1039,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         toggle_share(None);
                     }
                     TrayEvent::ToggleArmed => {
-                        let now_armed = !armed.load(Ordering::SeqCst);
-                        armed.store(now_armed, Ordering::SeqCst);
-                        info!("[TRAY] 🛡️ Desktop automation armed state changed: {}", now_armed);
-                        let status_text = if now_armed {
-                            "🛡️ Otomasi Desktop: DIIZINKAN (Armed)"
-                        } else {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        let currently_armed = is_automation_armed(&armed);
+                        let status_text = if currently_armed {
+                            armed.store(0, Ordering::SeqCst);
+                            info!("[TRAY] 🛡️ Desktop automation DISARMED by user.");
                             "🛡️ Otomasi Desktop: DINONAKTIFKAN (Disarmed)"
+                        } else {
+                            let lease_expiry = now + 900; // 15-minute lease (Audit R3)
+                            armed.store(lease_expiry, Ordering::SeqCst);
+                            info!("[TRAY] 🛡️ Desktop automation ARMED for 15 minutes (until unix timestamp {}).", lease_expiry);
+                            "🛡️ Otomasi Desktop: DIIZINKAN (Armed 15 Menit)"
                         };
                         win.set_status_message(status_text.into());
                     }
@@ -1063,7 +1076,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let audio_engine_hotkey = audio_engine.clone();
     let toggle_share_hotkey = Arc::clone(&toggle_screen_share);
     let highlighter_hotkey = Arc::clone(&highlighter_controller);
-    let armed_hotkey = Arc::clone(&is_automation_armed);
+    let armed_hotkey = Arc::clone(&armed_until);
     let session_gen_hotkey = Arc::clone(&session_generation);
     let _hotkey_listener = HotkeyListener::spawn(move |action| {
         let window_weak = window_weak_hotkey.clone();
@@ -1079,7 +1092,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         info!("[HOTKEY] 🚨 EMERGENCY STOP (Win+Alt+X) triggered! Disarming and silencing.");
                         automation::request_automation_abort();
                         session_gen.fetch_add(1, Ordering::SeqCst);
-                        armed.store(false, Ordering::SeqCst);
+                        armed.store(0, Ordering::SeqCst);
                         highlighter.clear_all();
                         toggle_share(Some(false));
                         win.set_is_mic_muted(true);
@@ -1099,7 +1112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // Unconditionally abort automation and disarm regardless of window visibility (Audit N4)
                         automation::request_automation_abort();
                         session_gen.fetch_add(1, Ordering::SeqCst);
-                        armed.store(false, Ordering::SeqCst);
+                        armed.store(0, Ordering::SeqCst);
                         highlighter.clear_all();
 
                         if is_min {
@@ -1759,4 +1772,28 @@ unsafe fn position_settings_window(hwnd: windows_sys::Win32::Foundation::HWND) {
     let pos_y = (60.0 * scale).round() as i32;
 
     SetWindowPos(hwnd, HWND_TOPMOST, pos_x, pos_y, w, h, SWP_SHOWWINDOW);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_automation_armed_lease() {
+        let armed_until = AtomicU64::new(0);
+        assert!(!is_automation_armed(&armed_until));
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Expired lease in the past
+        armed_until.store(now.saturating_sub(10), Ordering::SeqCst);
+        assert!(!is_automation_armed(&armed_until));
+
+        // Active lease in the future
+        armed_until.store(now + 900, Ordering::SeqCst);
+        assert!(is_automation_armed(&armed_until));
+    }
 }
