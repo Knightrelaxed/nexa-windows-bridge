@@ -314,6 +314,7 @@ impl HighlighterController {
 
     /// Smoothly dissolve the currently active highlight (e.g. on user click or action)
     pub fn dissolve_active_highlight(&self) {
+        self.active_epoch.fetch_add(1, Ordering::SeqCst);
         if let Some(ref win_weak) = self.overlay_window {
             let win_hide = win_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
@@ -519,5 +520,14 @@ mod tests {
 
         // Can clear all
         controller.clear_all();
+    }
+
+    #[test]
+    fn test_dissolve_active_highlight_bumps_epoch() {
+        let controller = HighlighterController::new(None);
+        let ep0 = controller.active_epoch.load(Ordering::SeqCst);
+        controller.dissolve_active_highlight();
+        let ep1 = controller.active_epoch.load(Ordering::SeqCst);
+        assert_eq!(ep1, ep0 + 1);
     }
 }

@@ -59,9 +59,13 @@ pub struct WindowSnapshot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GuardedTarget {
-    pub snapshot: WindowSnapshot,
-    /// Jendela top-level di titik yang dituju (sudah dipastikan satu aplikasi dengan foreground)
+    /// Jendela top-level di titik yang dituju (bebas dari hung app & bukan proses Nexa)
     pub target_hwnd: usize,
+    pub target_pid: u32,
+    /// Apakah jendela target saat ini berstatus foreground (aktif)?
+    pub is_foreground: bool,
+    /// Snapshot jendela foreground saat dicek (jika ada dan valid)
+    pub snapshot: Option<WindowSnapshot>,
 }
 
 fn pid_of(hwnd: HWND) -> u32 {
@@ -207,24 +211,34 @@ pub fn is_responsive(hwnd: usize, timeout_ms: u32) -> bool {
 }
 
 /// Guard lengkap untuk aksi input pada titik layar (px, py):
-/// foreground valid & bukan Nexa/terminal → jendela di titik = aplikasi yang sama → responsif.
+/// mencari jendela top-level di titik → tolak jika milik internal Nexa → tolak jika hung/unresponsive.
+/// Menandai apakah jendela target adalah jendela aktif (foreground) saat ini.
 pub fn guard_point(px: i32, py: i32) -> Result<GuardedTarget, GuardError> {
-    let snapshot = capture_foreground()?;
     let target = top_level_at(px, py).ok_or(GuardError::NoWindowAtPoint)?;
     let target_h = target as HWND;
     let target_pid = pid_of(target_h);
-    if target_pid != snapshot.pid && root_owner_of(target_h) != snapshot.root_owner {
-        return Err(GuardError::TargetNotForeground {
-            foreground_pid: snapshot.pid,
-            target_pid,
-        });
+
+    if target_pid == std::process::id() {
+        return Err(GuardError::OwnProcess);
     }
+
     if !is_responsive(target, 150) {
         return Err(GuardError::NotResponding);
     }
+
+    let (is_foreground, snapshot) = match capture_foreground() {
+        Ok(snap) => {
+            let is_fg = target_pid == snap.pid || root_owner_of(target_h) == snap.root_owner;
+            (is_fg, Some(snap))
+        }
+        Err(_) => (false, None),
+    };
+
     Ok(GuardedTarget {
-        snapshot,
         target_hwnd: target,
+        target_pid,
+        is_foreground,
+        snapshot,
     })
 }
 
@@ -264,5 +278,10 @@ mod tests {
     fn codes_are_stable() {
         assert_eq!(GuardError::OwnProcess.code(), "GUARD_OWN_PROCESS");
         assert_eq!(GuardError::NotResponding.code(), "TARGET_NOT_RESPONDING");
+    }
+
+    #[test]
+    fn guard_point_outside_screen_returns_no_window() {
+        assert_eq!(guard_point(-30_000, -30_000), Err(GuardError::NoWindowAtPoint));
     }
 }

@@ -9,7 +9,7 @@
 //!
 //! Thread UI Slint (STA, winit memanggil OleInitialize) TIDAK PERNAH menyentuh UIA.
 
-use super::guard::{self, WindowSnapshot};
+use super::guard;
 use super::scan::{
     activate_semantic, pick_among, revalidate, set_value_semantic, Scan, Semantic, UiaContext,
 };
@@ -280,7 +280,11 @@ pub fn degraded_click(
     let s = get_primary_screen_dimensions();
     let (px, py) = denormalize_to_pixels(norm_x, norm_y, s.width, s.height);
     let target = guard::guard_point(px, py)?;
-    guard::verify_unchanged(&target.snapshot)?;
+    if target.is_foreground {
+        if let Some(ref snap) = target.snapshot {
+            let _ = guard::verify_unchanged(snap);
+        }
+    }
     let (rx, ry) = desktop_click(norm_x, norm_y, button, double).map_err(UiaError::InputFailed)?;
     Ok(ClickReport {
         method: ClickMethod::PhysicalRaw,
@@ -442,30 +446,48 @@ fn run_click(
     let screen = get_primary_screen_dimensions();
     let (px, py) = denormalize_to_pixels(norm_x, norm_y, screen.width, screen.height);
 
-    // 1) Window Guard (foreground ∧ titik di aplikasi yang sama ∧ responsif)
+    // 1) Window Guard (titik pada jendela valid & responsif, bukan internal Nexa)
     let target = guard::guard_point(px, py)?;
     let query = snap_query(px, py, None);
 
-    // 2) Scan + snap (+ 1× ulang bila elemen stale)
+    // 2) Scan + snap (+ 1x ulang bila elemen stale)
+    // Scan pada target_hwnd; jika gagal/timeout, operasi baca murni ini tidak boleh mengaborsi klik
     for attempt in 0..2 {
-        let scan = ctx.scan_window(target.target_hwnd, deadline, cancel)?;
-        let Some(m) = pick_best(&scan.infos, &query) else {
-            break;
-        };
-        match act_on(&scan, m.index, &target.snapshot, button, double, policy, t0) {
-            Err(e) if e.is_transient() && attempt == 0 => {
-                debug!("[UIA] transient ({}), scan ulang", e);
-                std::thread::sleep(Duration::from_millis(60));
+        match ctx.scan_window(target.target_hwnd, deadline, cancel) {
+            Ok(scan) => {
+                if let Some(m) = pick_best(&scan.infos, &query) {
+                    match act_on(&scan, m.index, &target, button, double, policy, t0) {
+                        Ok(report) => return Ok(report),
+                        Err(e) if e.is_transient() && attempt == 0 => {
+                            debug!("[UIA] transient ({}), scan ulang", e);
+                            std::thread::sleep(Duration::from_millis(60));
+                            continue;
+                        }
+                        Err(e) => {
+                            debug!("[UIA] act_on gagal ({}), lanjut ke fallback fisik", e);
+                            break;
+                        }
+                    }
+                } else {
+                    break;
+                }
             }
-            other => return other,
+            Err(e) => {
+                debug!("[UIA] scan_window gagal/timeout ({}), fallback ke klik fisik", e);
+                break;
+            }
         }
     }
 
-    // 3) Tidak ada kontrol interaktif di radius → koordinat mentah (opsional)
+    // 3) Fallback: klik fisik di koordinat mentah
     if !policy.allow_unsnapped_fallback {
         return Err(UiaError::NoTarget);
     }
-    guard::verify_unchanged(&target.snapshot)?;
+    if target.is_foreground {
+        if let Some(ref snap) = target.snapshot {
+            let _ = guard::verify_unchanged(snap);
+        }
+    }
     if is_automation_abort_requested() {
         return Err(UiaError::Cancelled);
     }
@@ -483,7 +505,7 @@ fn run_click(
 fn act_on(
     scan: &Scan,
     idx: usize,
-    snap: &WindowSnapshot,
+    target: &guard::GuardedTarget,
     button: MouseButton,
     double: bool,
     policy: ClickPolicy,
@@ -509,17 +531,20 @@ fn act_on(
     };
 
     revalidate(info, el)?;
-    guard::verify_unchanged(snap)?;
 
-    // Tier-1 semantik (hanya klik kiri tunggal)
-    if policy.allow_semantic && button == MouseButton::Left && !double {
-        match activate_semantic(el, info.kind)? {
-            Semantic::Done(p) => return Ok(report(ClickMethod::Semantic(p))),
-            // Timeout = ambigu. Fallback fisik di sini berisiko klik ganda → hentikan.
-            Semantic::Unconfirmed(p) => return Ok(report(ClickMethod::SemanticUnconfirmed(p))),
-            Semantic::NotApplicable | Semantic::Failed => {}
+    // Tier-1 semantik: HANYA dilakukan jika jendela target saat ini adalah foreground,
+    // klik kiri tunggal, dan foreground belum berubah.
+    if target.is_foreground && policy.allow_semantic && button == MouseButton::Left && !double {
+        if let Some(ref snap) = target.snapshot {
+            if guard::verify_unchanged(snap).is_ok() {
+                match activate_semantic(el, info.kind)? {
+                    Semantic::Done(p) => return Ok(report(ClickMethod::Semantic(p))),
+                    // Timeout = ambigu. Fallback fisik di sini berisiko klik ganda -> hentikan.
+                    Semantic::Unconfirmed(p) => return Ok(report(ClickMethod::SemanticUnconfirmed(p))),
+                    Semantic::NotApplicable | Semantic::Failed => {}
+                }
+            }
         }
-        guard::verify_unchanged(snap)?; // percobaan semantik memakan waktu
     }
 
     // Tier-2 fisik di pusat kontrol hasil snap
@@ -590,12 +615,18 @@ fn run_set_text(
     let info = scan.infos.get(idx).ok_or(UiaError::StaleElement)?;
     let el = scan.elements.get(idx).ok_or(UiaError::StaleElement)?;
     revalidate(info, el)?;
-    guard::verify_unchanged(&target.snapshot)?;
+    let snap = target.snapshot.as_ref().ok_or_else(|| {
+        UiaError::Guard(guard::GuardError::TargetNotForeground {
+            foreground_pid: 0,
+            target_pid: target.target_pid,
+        })
+    })?;
+    guard::verify_unchanged(snap)?;
 
     match set_value_semantic(el, text)? {
         Semantic::Done(_) => {
             if press_enter {
-                guard::verify_unchanged(&target.snapshot)?;
+                guard::verify_unchanged(snap)?;
                 desktop_press_key("ENTER").map_err(UiaError::InputFailed)?;
             }
             return Ok(finish("semantic_value"));
@@ -609,9 +640,9 @@ fn run_set_text(
     let (cx, cy) = info.center();
     physical_click_at_pixel(cx, cy, MouseButton::Left, false)?;
     std::thread::sleep(Duration::from_millis(40));
-    guard::verify_unchanged(&target.snapshot)?;
+    guard::verify_unchanged(snap)?;
     desktop_press_key("CTRL+A").map_err(UiaError::InputFailed)?;
-    guard::type_guarded(&target.snapshot, text, press_enter)?;
+    guard::type_guarded(snap, text, press_enter)?;
     Ok(finish("physical_typed"))
 }
 
