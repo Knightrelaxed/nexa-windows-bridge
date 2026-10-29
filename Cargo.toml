@@ -26,7 +26,13 @@ sonora = "0.2"
 base64 = "0.23"
 windows-capture = "2.0.1"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
-windows = { version = "0.62", features = ["Win32_UI_Accessibility", "Win32_System_Com"] }
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+    "Win32_UI_Accessibility",
+] }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",

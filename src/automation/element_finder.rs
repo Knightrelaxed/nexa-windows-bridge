@@ -49,11 +49,11 @@ impl PixelRect {
     }
 
     pub fn width(&self) -> i32 {
-        (self.right - self.left).max(0)
+        self.right.saturating_sub(self.left).max(0)
     }
 
     pub fn height(&self) -> i32 {
-        (self.bottom - self.top).max(0)
+        self.bottom.saturating_sub(self.top).max(0)
     }
 
     /// Check if dimensions are rational for an interactive UI control

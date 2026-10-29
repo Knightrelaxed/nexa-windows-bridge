@@ -8,6 +8,7 @@
 
 use crate::automation::element_finder::smart_snap_bounding_box;
 use crate::automation::input::{denormalize_to_pixels, get_primary_screen_dimensions};
+use crate::automation::uia;
 use crate::ui::OverlayWindow;
 use slint::ComponentHandle;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -193,38 +194,107 @@ impl HighlighterController {
 
     /// Display an element highlight with magnetic snapping, optional label, and auto-dissolve
     pub fn show_highlight(&self, req: HighlightRequest) {
+        let win_weak = match self.overlay_window {
+            Some(ref w) => w.clone(),
+            None => return,
+        };
+
         let epoch = self.active_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        let active_epoch = Arc::clone(&self.active_epoch);
 
-        // Perform Magnetic Smart-Snap via Windows UI Automation
-        let snapped = smart_snap_bounding_box(req.ymin, req.xmin, req.ymax, req.xmax);
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let win_weak_clone = win_weak.clone();
+            handle.spawn(async move {
+                // Perform Magnetic Smart-Snap via UFO-adapted UIA module (non-blocking)
+                let snapped = match uia::UiaHandle::global() {
+                    Ok(uia) => uia.snap_box(req.ymin, req.xmin, req.ymax, req.xmax).await,
+                    Err(_) => smart_snap_bounding_box(req.ymin, req.xmin, req.ymax, req.xmax),
+                };
 
-        let screen = get_primary_screen_dimensions();
-        let (px0, py0) = denormalize_to_pixels(snapped.xmin, snapped.ymin, screen.width, screen.height);
-        let (px1, py1) = denormalize_to_pixels(snapped.xmax, snapped.ymax, screen.width, screen.height);
+                // Check epoch: if superseded by a newer highlight while snapping, don't show outdated box
+                if active_epoch.load(Ordering::SeqCst) != epoch {
+                    return;
+                }
 
-        let target_x = px0 as f32;
-        let target_y = py0 as f32;
-        let target_w = (px1 - px0).max(12) as f32;
-        let target_h = (py1 - py0).max(12) as f32;
+                let screen = get_primary_screen_dimensions();
+                let (px0, py0) = denormalize_to_pixels(snapped.xmin, snapped.ymin, screen.width, screen.height);
+                let (px1, py1) = denormalize_to_pixels(snapped.xmax, snapped.ymax, screen.width, screen.height);
 
-        let style_str = req.style.as_str().to_string();
-        let label = req.label.clone();
-        let duration = Duration::from_millis(req.duration_ms);
+                let target_x = px0 as f32;
+                let target_y = py0 as f32;
+                let target_w = (px1 - px0).max(12) as f32;
+                let target_h = (py1 - py0).max(12) as f32;
 
-        info!(
-            "[HIGHLIGHTER] 🌟 show_highlight [style={}, label='{}']: rect=({}, {} - {}x{}) duration={}ms",
-            style_str, label, target_x, target_y, target_w, target_h, req.duration_ms
-        );
+                let style_str = req.style.as_str().to_string();
+                let label = req.label.clone();
+                let duration = Duration::from_millis(req.duration_ms);
 
-        if let Some(ref win_weak) = self.overlay_window {
+                info!(
+                    "[HIGHLIGHTER] 🌟 show_highlight [style={}, label='{}']: rect=({}, {} - {}x{}) duration={}ms (snapped={})",
+                    style_str, label, target_x, target_y, target_w, target_h, req.duration_ms, snapped.is_snapped
+                );
+
+                let win_handle = win_weak_clone.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(w) = win_handle.upgrade() {
+                        let scale = w.window().scale_factor();
+                        let scale = if scale > 0.0 { scale } else { 1.0 };
+
+                        w.set_window_width(screen.width as f32 / scale);
+                        w.set_window_height(screen.height as f32 / scale);
+                        w.set_target_x(target_x / scale);
+                        w.set_target_y(target_y / scale);
+                        w.set_target_w(target_w / scale);
+                        w.set_target_h(target_h / scale);
+                        w.set_highlight_style(style_str.into());
+                        w.set_highlight_label(label.into());
+                        w.set_highlight_opacity(1.0);
+                        w.set_highlight_visible(true);
+                        let _ = w.show();
+                        let _ = try_apply_stealth_styles();
+                    }
+                });
+
+                // Apply stealth styles retry safely guarded by Tokio handle (Claude Bug M7)
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                apply_stealth_window_styles();
+
+                // Spawn auto-dissolve timer for the current epoch
+                tokio::time::sleep(duration).await;
+                if active_epoch.load(Ordering::SeqCst) == epoch {
+                    let win_handle_timer = win_weak_clone.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(w) = win_handle_timer.upgrade() {
+                            w.set_highlight_visible(false);
+                            if !w.get_ripple_visible() {
+                                let _ = w.hide();
+                            }
+                        }
+                    });
+                    debug!("[HIGHLIGHTER] Auto-dissolved highlight epoch {}", epoch);
+                }
+            });
+        } else {
+            // Fallback for non-tokio contexts (e.g. sync tests or background sync threads)
+            let snapped = smart_snap_bounding_box(req.ymin, req.xmin, req.ymax, req.xmax);
+            let screen = get_primary_screen_dimensions();
+            let (px0, py0) = denormalize_to_pixels(snapped.xmin, snapped.ymin, screen.width, screen.height);
+            let (px1, py1) = denormalize_to_pixels(snapped.xmax, snapped.ymax, screen.width, screen.height);
+
+            let target_x = px0 as f32;
+            let target_y = py0 as f32;
+            let target_w = (px1 - px0).max(12) as f32;
+            let target_h = (py1 - py0).max(12) as f32;
+
+            let style_str = req.style.as_str().to_string();
+            let label = req.label.clone();
+
             let win_handle = win_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(w) = win_handle.upgrade() {
-                    // Divide physical pixels by Slint window scale factor for High-DPI parity (Claude Bug M6)
                     let scale = w.window().scale_factor();
                     let scale = if scale > 0.0 { scale } else { 1.0 };
 
-                    // Set all properties BEFORE showing the window
                     w.set_window_width(screen.width as f32 / scale);
                     w.set_window_height(screen.height as f32 / scale);
                     w.set_target_x(target_x / scale);
@@ -236,36 +306,9 @@ impl HighlighterController {
                     w.set_highlight_opacity(1.0);
                     w.set_highlight_visible(true);
                     let _ = w.show();
+                    let _ = try_apply_stealth_styles();
                 }
             });
-
-            // Apply stealth styles (with retry) safely guarded by Tokio handle (Claude Bug M7)
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(async move {
-                    // Small delay to let Slint process the show() and create the HWND
-                    tokio::time::sleep(Duration::from_millis(30)).await;
-                    apply_stealth_window_styles();
-                });
-
-                // Spawn auto-dissolve timer for the current epoch
-                let active_epoch = Arc::clone(&self.active_epoch);
-                let win_handle_timer = win_weak.clone();
-
-                handle.spawn(async move {
-                    tokio::time::sleep(duration).await;
-                    if active_epoch.load(Ordering::SeqCst) == epoch {
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(w) = win_handle_timer.upgrade() {
-                                w.set_highlight_visible(false);
-                                if !w.get_ripple_visible() {
-                                    let _ = w.hide();
-                                }
-                            }
-                        });
-                        debug!("[HIGHLIGHTER] Auto-dissolved highlight epoch {}", epoch);
-                    }
-                });
-            }
         }
     }
 

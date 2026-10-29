@@ -8,6 +8,7 @@ pub mod element_finder;
 pub mod highlighter;
 pub mod input;
 pub mod policy;
+pub mod uia;
 
 #[allow(unused_imports)]
 pub use element_finder::*;
@@ -240,38 +241,75 @@ pub async fn handle_execute_command(
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            // Execute physical click via spawn_blocking FIRST so overlay window never intercepts it (Audit C2)
-            let click_res = tokio::task::spawn_blocking(move || {
-                desktop_click(x, y, button, double_click)
-            })
-            .await
-            .map_err(|e| format!("Join error: {}", e))
-            .and_then(|r| r);
+            // Execute hybrid UIA click (Window Guard -> Interactive Scan -> Semantic Pattern -> Physical Snapped/Raw)
+            let uia_handle_res = uia::UiaHandle::global();
+            let click_res = match uia_handle_res {
+                Ok(handle) => {
+                    handle
+                        .click(x, y, button, double_click, uia::ClickPolicy::default())
+                        .await
+                }
+                Err(e) => Err(e),
+            };
+
+            // If the job never started (e.g. queue full, circuit breaker open, actor uninitialized),
+            // safely degrade to degraded_click (Window Guard + physical SendInput) without risk of double action.
+            let click_res = match click_res {
+                Ok(report) => Ok(report),
+                Err(e) if e.job_never_started() => {
+                    warn!(
+                        "[AUTOMATION] UIA job never started ({}); falling back to degraded click",
+                        e
+                    );
+                    tokio::task::spawn_blocking(move || {
+                        uia::degraded_click(x, y, button, double_click)
+                    })
+                    .await
+                    .unwrap_or_else(|join_err| {
+                        Err(uia::UiaError::Internal(format!("Join error: {}", join_err)))
+                    })
+                }
+                Err(e) => Err(e),
+            };
 
             match click_res {
-                Ok((res_px, res_py)) => {
+                Ok(report) => {
                     // Trigger visual click ripple indicator and auto-dissolve active highlight ONLY after click succeeds
                     if let Some(hl) = highlighter {
                         hl.dissolve_active_highlight();
-                        hl.show_click_ripple(res_px, res_py);
+                        hl.show_click_ripple(report.px, report.py);
                     }
+
+                    let mut data = report.to_json(x, y);
+                    if let Some(obj) = data.as_object_mut() {
+                        obj.insert(
+                            "button".to_string(),
+                            serde_json::json!(format!("{:?}", button)),
+                        );
+                        obj.insert(
+                            "double_click".to_string(),
+                            serde_json::json!(double_click),
+                        );
+                    }
+
+                    let snap_info = if report.snapped {
+                        if let Some(ref c) = report.control {
+                            format!(" (snapped ke {} '{}')", c.kind.as_str(), c.name)
+                        } else {
+                            " (snapped)".to_string()
+                        }
+                    } else {
+                        String::new()
+                    };
 
                     ClientMessage::CommandResult {
                         command_id,
                         success: true,
                         message: format!(
-                            "Titik ({:.1}, {:.1}) [pixel: {}, {}] berhasil diklik di layar desktop.",
-                            x, y, res_px, res_py
+                            "Titik ({:.1}, {:.1}) [pixel: {}, {}]{} [{}] berhasil diklik di layar desktop.",
+                            x, y, report.px, report.py, snap_info, report.method.as_str()
                         ),
-                        data: serde_json::json!({
-                            "action": "desktopClick",
-                            "x": x,
-                            "y": y,
-                            "pixel_x": res_px,
-                            "pixel_y": res_py,
-                            "button": format!("{:?}", button),
-                            "double_click": double_click
-                        }),
+                        data,
                     }
                 }
                 Err(err) => {
@@ -280,7 +318,10 @@ pub async fn handle_execute_command(
                         command_id,
                         success: false,
                         message: format!("Gagal mengeklik layar desktop: {}", err),
-                        data: serde_json::json!({ "error": err }),
+                        data: serde_json::json!({
+                            "error": err.code(),
+                            "details": err.to_string(),
+                        }),
                     }
                 }
             }
@@ -1071,6 +1112,31 @@ mod tests {
             ClientMessage::CommandResult { success, command_id, .. } => {
                 assert!(!success);
                 assert_eq!(command_id, "cmd_1");
+            }
+            _ => panic!("Expected CommandResult"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_desktop_click_invalid_y_coordinate() {
+        let res = handle_execute_command(
+            "cmd_click_y".to_string(),
+            "DESKTOP_CLICK".to_string(),
+            serde_json::json!({ "x": 500.0, "y": 1500.0 }),
+            None,
+        )
+        .await;
+
+        match res {
+            ClientMessage::CommandResult {
+                success,
+                command_id,
+                data,
+                ..
+            } => {
+                assert!(!success);
+                assert_eq!(command_id, "cmd_click_y");
+                assert_eq!(data.get("error").and_then(|v| v.as_str()), Some("INVALID_COORDINATE_Y"));
             }
             _ => panic!("Expected CommandResult"),
         }
