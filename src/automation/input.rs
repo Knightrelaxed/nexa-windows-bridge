@@ -384,6 +384,14 @@ pub fn desktop_click(
     let (px, py) = denormalize_to_pixels(norm_x, norm_y, screen.width, screen.height);
     let (abs_x, abs_y) = denormalize_to_mouse_absolute(norm_x, norm_y);
 
+    // Guard against accidentally clicking Nexa Bridge's own interactive window (floating capsule pill / settings)
+    if crate::automation::uia::guard::is_point_inside_own_interactive_window(px, py) {
+        return Err(format!(
+            "Ditolak oleh kebijakan keamanan: Titik ({:.1}, {:.1}) [pixel: {}, {}] berada di atas antarmuka/HUD Nexa Bridge. Nexa dilarang mengeklik antarmukanya sendiri. Jika Tuan bermaksud menutup aplikasi, gunakan tool closeWindow().",
+            norm_x, norm_y, px, py
+        ));
+    }
+
     let (down_flag, up_flag) = match button {
         MouseButton::Left => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
         MouseButton::Right => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
@@ -465,10 +473,85 @@ pub fn desktop_click(
 }
 
 /// Perform mouse wheel scroll in the specified direction ("UP" or "DOWN").
+/// Optionally accepts target normalized coordinates (x, y) in 0..=1000.
+/// If coordinates are not provided, checks whether the current mouse position
+/// is in a non-scrollable deadzone (e.g. browser titlebar/tabstrip at y < 220, or taskbar at y > screen_h - 60).
+/// If in a deadzone, it automatically repositions the cursor to the center content area.
 /// Returns the scroll delta applied.
-pub fn desktop_scroll(direction: &str, amount: i32) -> Result<i32, String> {
+pub fn desktop_scroll(
+    direction: &str,
+    amount: i32,
+    target_x: Option<f64>,
+    target_y: Option<f64>,
+) -> Result<i32, String> {
     let delta = calculate_scroll_wheel_delta(direction, amount);
+    let screen = get_primary_screen_dimensions();
 
+    // 1. Position cursor to target coordinates or center content area if stranded in deadzone
+    if let (Some(nx), Some(ny)) = (target_x, target_y) {
+        if !(0.0..=1000.0).contains(&nx) || !(0.0..=1000.0).contains(&ny) {
+            return Err(format!(
+                "Coordinates out of bounds: ({:.1}, {:.1}) must be between 0 and 1000",
+                nx, ny
+            ));
+        }
+        let (abs_x, abs_y) = denormalize_to_mouse_absolute(nx, ny);
+        unsafe {
+            let move_input = INPUT {
+                r#type: INPUT_MOUSE,
+                Anonymous: INPUT_0 {
+                    mi: MOUSEINPUT {
+                        dx: abs_x,
+                        dy: abs_y,
+                        mouseData: 0,
+                        dwFlags: MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE,
+                        time: 0,
+                        dwExtraInfo: 0,
+                    },
+                },
+            };
+            send_inputs(&[move_input])?;
+            sleep(Duration::from_millis(15));
+        }
+    } else {
+        unsafe {
+            use windows_sys::Win32::Foundation::POINT;
+            use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+            let mut pt: POINT = std::mem::zeroed();
+            if GetCursorPos(&mut pt) != 0 {
+                let is_header_deadzone = pt.y < 220;
+                let is_taskbar_deadzone = pt.y > (screen.height - 60);
+                let is_offscreen = pt.x < 0 || pt.x >= screen.width || pt.y < 0 || pt.y >= screen.height;
+
+                if is_header_deadzone || is_taskbar_deadzone || is_offscreen {
+                    let center_norm_x = 500.0;
+                    let center_norm_y = 500.0;
+                    let (abs_x, abs_y) = denormalize_to_mouse_absolute(center_norm_x, center_norm_y);
+                    let move_input = INPUT {
+                        r#type: INPUT_MOUSE,
+                        Anonymous: INPUT_0 {
+                            mi: MOUSEINPUT {
+                                dx: abs_x,
+                                dy: abs_y,
+                                mouseData: 0,
+                                dwFlags: MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE,
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
+                        },
+                    };
+                    send_inputs(&[move_input])?;
+                    sleep(Duration::from_millis(15));
+                    info!(
+                        "[AUTOMATION] 📜 desktop_scroll: Cursor was in deadzone ({}, {}), auto-repositioned to center ({}, {})",
+                        pt.x, pt.y, screen.width / 2, screen.height / 2
+                    );
+                }
+            }
+        }
+    }
+
+    // 2. Emit mouse wheel scroll input
     unsafe {
         let scroll_input = INPUT {
             r#type: INPUT_MOUSE,
@@ -722,11 +805,71 @@ pub fn close_active_window() -> Result<String, String> {
             return Err("Jendela aktif tidak memiliki proses yang valid.".to_string());
         }
 
-        if pid == std::process::id() {
-            return Err("Ditolak oleh kebijakan keamanan: Nexa Bridge dilindungi dari penutupan diri sendiri.".to_string());
+        let mut target_hwnd = hwnd;
+        let mut target_pid = pid;
+
+        if target_pid == std::process::id() {
+            // Jendela foreground saat ini adalah Nexa Bridge sendiri (misalnya karena terklik atau ALT+TAB).
+            // Cari jendela teratas dalam Z-order selain milik Nexa Bridge untuk ditutup secara aman.
+            struct FallbackCtx {
+                own_pid: u32,
+                found_hwnd: windows_sys::Win32::Foundation::HWND,
+                found_pid: u32,
+            }
+
+            unsafe extern "system" fn fallback_cb(
+                h: windows_sys::Win32::Foundation::HWND,
+                lp: windows_sys::Win32::Foundation::LPARAM,
+            ) -> windows_sys::Win32::Foundation::BOOL {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                    GetWindowLongW, GetWindowTextLengthW, GetWindowThreadProcessId,
+                    IsIconic, IsWindowVisible, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
+                };
+                let ctx = &mut *(lp as *mut FallbackCtx);
+                if IsWindowVisible(h) == 0 || IsIconic(h) != 0 {
+                    return 1;
+                }
+                let mut p = 0u32;
+                GetWindowThreadProcessId(h, &mut p);
+                if p == 0 || p == ctx.own_pid {
+                    return 1;
+                }
+                let ex = GetWindowLongW(h, GWL_EXSTYLE) as u32;
+                if ex & WS_EX_TOOLWINDOW != 0 {
+                    return 1;
+                }
+                let len = GetWindowTextLengthW(h);
+                if len == 0 {
+                    return 1;
+                }
+                ctx.found_hwnd = h;
+                ctx.found_pid = p;
+                0 // Berhenti pada jendela aplikasi pertama
+            }
+
+            let mut f_ctx = FallbackCtx {
+                own_pid: std::process::id(),
+                found_hwnd: std::ptr::null_mut(),
+                found_pid: 0,
+            };
+            windows_sys::Win32::UI::WindowsAndMessaging::EnumWindows(
+                Some(fallback_cb),
+                &mut f_ctx as *mut _ as isize,
+            );
+
+            if !f_ctx.found_hwnd.is_null() {
+                target_hwnd = f_ctx.found_hwnd;
+                target_pid = f_ctx.found_pid;
+                info!(
+                    "[AUTOMATION] 🛑 close_active_window: Nexa Bridge is foreground, resolving underlying window in Z-order: hwnd=0x{:X}, pid={}",
+                    target_hwnd as usize, target_pid
+                );
+            } else {
+                return Err("Ditolak oleh kebijakan keamanan: Nexa Bridge dilindungi dari penutupan diri sendiri dan tidak ditemukan jendela aplikasi lain untuk ditutup.".to_string());
+            }
         }
 
-        let proc_name = get_process_name_by_pid(pid);
+        let proc_name = get_process_name_by_pid(target_pid);
         let lower = proc_name.to_lowercase();
         if lower == "csrss.exe"
             || lower == "dwm.exe"
@@ -741,10 +884,10 @@ pub fn close_active_window() -> Result<String, String> {
             ));
         }
 
-        let len = GetWindowTextLengthW(hwnd);
+        let len = GetWindowTextLengthW(target_hwnd);
         let title = if len > 0 {
             let mut buf = vec![0u16; (len + 1) as usize];
-            let read_len = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+            let read_len = GetWindowTextW(target_hwnd, buf.as_mut_ptr(), buf.len() as i32);
             if read_len > 0 {
                 String::from_utf16_lossy(&buf[..read_len as usize]).trim().to_string()
             } else {
@@ -754,14 +897,14 @@ pub fn close_active_window() -> Result<String, String> {
             "Jendela Aktif".to_string()
         };
 
-        let sent = PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        let sent = PostMessageW(target_hwnd, WM_CLOSE, 0, 0);
         if sent == 0 {
             return Err("Gagal mengirim sinyal penutupan (WM_CLOSE) ke jendela aktif.".to_string());
         }
 
         info!(
             "[AUTOMATION] 🛑 close_active_window: successfully sent WM_CLOSE to '{}' ({}, pid={})",
-            title, proc_name, pid
+            title, proc_name, target_pid
         );
 
         Ok(format!("Jendela '{}' ({}) berhasil ditutup.", title, proc_name))
@@ -1146,5 +1289,21 @@ mod tests {
             assert!(!w.title.is_empty(), "Window title must not be empty");
             assert!(!w.process_name.is_empty(), "Process name must not be empty");
         }
+    }
+
+    #[test]
+    fn test_desktop_scroll_out_of_bounds_target() {
+        let res_x_high = desktop_scroll("DOWN", 3, Some(1005.0), Some(500.0));
+        assert!(res_x_high.is_err());
+        assert!(res_x_high.unwrap_err().contains("out of bounds"));
+
+        let res_y_low = desktop_scroll("UP", 3, Some(500.0), Some(-10.0));
+        assert!(res_y_low.is_err());
+        assert!(res_y_low.unwrap_err().contains("out of bounds"));
+    }
+
+    #[test]
+    fn test_own_interactive_window_guard_offscreen() {
+        assert!(!crate::automation::uia::guard::is_point_inside_own_interactive_window(-9999, -9999));
     }
 }

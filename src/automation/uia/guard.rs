@@ -210,10 +210,66 @@ pub fn is_responsive(hwnd: usize, timeout_ms: u32) -> bool {
     }
 }
 
+/// Deteksi apakah titik (px, py) berada di dalam jendela interaktif milik Nexa Bridge
+/// (seperti floating capsule HUD pill atau dialog pengaturan).
+/// Jendela transparan/click-through (seperti overlay stealth highlighter WS_EX_TRANSPARENT) dikecualikan.
+pub fn is_point_inside_own_interactive_window(px: i32, py: i32) -> bool {
+    struct OwnHitCheck {
+        px: i32,
+        py: i32,
+        own_pid: u32,
+        hit: bool,
+    }
+
+    unsafe extern "system" fn own_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let ctx = &mut *(lparam as *mut OwnHitCheck);
+        if IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
+            return 1;
+        }
+        if pid_of(hwnd) != ctx.own_pid {
+            return 1;
+        }
+        let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        // Jendela berfitur click-through (WS_EX_TRANSPARENT) tidak menangkap klik fisik
+        if ex & WS_EX_TRANSPARENT != 0 {
+            return 1;
+        }
+        let mut r = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        if GetWindowRect(hwnd, &mut r) == 0 {
+            return 1;
+        }
+        if ctx.px >= r.left && ctx.px < r.right && ctx.py >= r.top && ctx.py < r.bottom {
+            ctx.hit = true;
+            return 0; // Berhenti: titik mengenai jendela interaktif milik proses sendiri
+        }
+        1
+    }
+
+    let mut check = OwnHitCheck {
+        px,
+        py,
+        own_pid: std::process::id(),
+        hit: false,
+    };
+    unsafe {
+        EnumWindows(Some(own_cb), &mut check as *mut _ as LPARAM);
+    }
+    check.hit
+}
+
 /// Guard lengkap untuk aksi input pada titik layar (px, py):
 /// mencari jendela top-level di titik → tolak jika milik internal Nexa → tolak jika hung/unresponsive.
 /// Menandai apakah jendela target adalah jendela aktif (foreground) saat ini.
 pub fn guard_point(px: i32, py: i32) -> Result<GuardedTarget, GuardError> {
+    if is_point_inside_own_interactive_window(px, py) {
+        return Err(GuardError::OwnProcess);
+    }
+
     let target = top_level_at(px, py).ok_or(GuardError::NoWindowAtPoint)?;
     let target_h = target as HWND;
     let target_pid = pid_of(target_h);

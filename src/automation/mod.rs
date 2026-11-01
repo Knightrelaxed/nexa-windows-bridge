@@ -341,10 +341,18 @@ pub async fn handle_execute_command(
                 .or_else(|| params.get("notches"))
                 .and_then(|v| v.as_i64())
                 .unwrap_or(3) as i32;
+            let target_x = params
+                .get("x")
+                .or_else(|| params.get("target_x"))
+                .and_then(|v| v.as_f64());
+            let target_y = params
+                .get("y")
+                .or_else(|| params.get("target_y"))
+                .and_then(|v| v.as_f64());
 
             let dir_clone = direction.clone();
             let scroll_res = tokio::task::spawn_blocking(move || {
-                desktop_scroll(&dir_clone, amount)
+                desktop_scroll(&dir_clone, amount, target_x, target_y)
             })
             .await
             .map_err(|e| format!("Join error: {}", e))
@@ -363,7 +371,9 @@ pub async fn handle_execute_command(
                         "action": "desktopScroll",
                         "direction": direction,
                         "amount": amount,
-                        "delta": delta
+                        "delta": delta,
+                        "x": target_x,
+                        "y": target_y
                     }),
                 },
                 Err(err) => {
@@ -1282,6 +1292,26 @@ mod tests {
                 } else {
                     assert!(message.contains("SendInput failed") || data["error"].as_str().unwrap().contains("SendInput"));
                 }
+            }
+            _ => panic!("Expected CommandResult"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_desktop_scroll_invalid_coords_fails() {
+        let res = handle_execute_command(
+            "cmd_scroll_err".to_string(),
+            "DESKTOP_SCROLL".to_string(),
+            serde_json::json!({ "direction": "DOWN", "amount": 3, "x": 1200.0, "y": 500.0 }),
+            None,
+        )
+        .await;
+
+        match res {
+            ClientMessage::CommandResult { success, command_id, message, .. } => {
+                assert!(!success);
+                assert_eq!(command_id, "cmd_scroll_err");
+                assert!(message.contains("out of bounds"));
             }
             _ => panic!("Expected CommandResult"),
         }
