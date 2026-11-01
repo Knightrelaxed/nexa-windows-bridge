@@ -205,6 +205,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // do NOT make a Slint window transparent. The overlay window must only be
     // shown momentarily when overlay graphics are active, then hidden again.
     let overlay_window = ui::OverlayWindow::new().ok();
+    // Pre-apply stealth styles so HWND is pre-configured with WS_EX_LAYERED + LWA_COLORKEY transparency
+    automation::apply_stealth_window_styles();
 
     let highlighter_controller = Arc::new(automation::HighlighterController::new(
         overlay_window.as_ref().map(|w| w.as_weak()),

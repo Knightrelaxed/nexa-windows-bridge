@@ -136,9 +136,9 @@ fn try_apply_stealth_styles() -> bool {
         let required_flags = (WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW) as i32;
         if (ex_style & required_flags) != required_flags {
             SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style | required_flags);
-            // Configure full alpha transparency for layered click-through
-            SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
         }
+        // Configure full colorkey transparency so transparent black background (0,0,0) is keyed out and never renders as a black box
+        SetLayeredWindowAttributes(hwnd, 0, 0, LWA_COLORKEY);
 
         // 2. Extend DWM frame into client area (-1 margins) to guarantee hardware alpha glass transparency
         let margins = MARGINS {

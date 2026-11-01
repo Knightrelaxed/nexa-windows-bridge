@@ -274,10 +274,9 @@ pub async fn handle_execute_command(
 
             match click_res {
                 Ok(report) => {
-                    // Trigger visual click ripple indicator and auto-dissolve active highlight ONLY after click succeeds
+                    // Auto-dissolve active highlight after click succeeds (do NOT spawn fullscreen overlay ripple which flashes black screen)
                     if let Some(hl) = highlighter {
                         hl.dissolve_active_highlight();
-                        hl.show_click_ripple(report.px, report.py);
                     }
 
                     let mut data = report.to_json(x, y);
