@@ -10,7 +10,8 @@ use tracing::{error, info, warn};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_NOREPEAT, MOD_WIN, VK_F11,
+    RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
+    VK_F11,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, PostMessageW,
@@ -111,7 +112,7 @@ impl HotkeyListener {
                     warn!("[HOTKEYS] ⚠️ Failed to register Boss Key (Win + Alt + N)");
                 }
 
-                // 2. Mute Toggle: Win + Alt + M
+                // 2. Mute Toggle: Win + Alt + M (with Ctrl + Shift + M fallback for Windows Game Bar conflict)
                 let res_mute = RegisterHotKey(
                     hwnd,
                     ID_HOTKEY_MUTE,
@@ -121,7 +122,18 @@ impl HotkeyListener {
                 if res_mute != 0 {
                     info!("[HOTKEYS] ✅ Registered Mute Toggle (Win + Alt + M)");
                 } else {
-                    warn!("[HOTKEYS] ⚠️ Failed to register Mute Toggle (Win + Alt + M)");
+                    tracing::debug!("[HOTKEYS] Win + Alt + M reserved by Windows Game Bar; attempting Ctrl + Shift + M fallback");
+                    let res_fallback = RegisterHotKey(
+                        hwnd,
+                        ID_HOTKEY_MUTE,
+                        MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
+                        'M' as u32,
+                    );
+                    if res_fallback != 0 {
+                        info!("[HOTKEYS] ✅ Registered Mute Toggle (Ctrl + Shift + M fallback)");
+                    } else {
+                        tracing::debug!("[HOTKEYS] Mute Toggle hotkey unavailable");
+                    }
                 }
 
                 // 3. Fullscreen Fallback: Win + Alt + F

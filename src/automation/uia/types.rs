@@ -268,7 +268,12 @@ impl UiaError {
     pub fn job_never_started(&self) -> bool {
         matches!(
             self,
-            UiaError::Unavailable(_) | UiaError::Busy | UiaError::CircuitOpen
+            UiaError::Unavailable(_)
+                | UiaError::Busy
+                | UiaError::CircuitOpen
+                | UiaError::TargetNotResponding
+                | UiaError::Guard(GuardError::WindowGone)
+                | UiaError::Guard(GuardError::NoWindowAtPoint)
         )
     }
 }

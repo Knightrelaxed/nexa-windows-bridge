@@ -198,16 +198,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         main_window.set_status_message("Ready to connect.".into());
     }
 
-    // 3.1 Initialize Slint OverlayWindow and Stealth Highlighter Controller
-    // NOTE: Do NOT show the overlay window here. It must remain hidden until
-    // a highlight/ripple is actually requested. Slint windows are rendered via
-    // their own GPU swapchain — DWM frame extension and SetLayeredWindowAttributes
-    // do NOT make a Slint window transparent. The overlay window must only be
-    // shown momentarily when overlay graphics are active, then hidden again.
-    let overlay_window = ui::OverlayWindow::new().ok();
-    let highlighter_controller = Arc::new(automation::HighlighterController::new(
-        overlay_window.as_ref().map(|w| w.as_weak()),
-    ));
+    // 3.1 Initialize Native Win32 GDI Stealth Highlighter Controller
+    // NOTE: Uses dedicated GDI layered window with LWA_COLORKEY transparency,
+    // completely eliminating Slint GPU swapchain black screen flicker/blackout.
+    let highlighter_controller = Arc::new(automation::HighlighterController::new(None));
 
     // 4. Initialize Network Client
     let network_client = NetworkClient::new(Arc::clone(&config));
@@ -1703,9 +1697,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = slint::quit_event_loop();
     });
 
-    // Keep overlay window alive across application runtime
-    let _overlay_guard = overlay_window;
-
     // Run the Slint GUI Event Loop until explicit quit (Claude Bug #2 & #3)
     if !start_minimized {
         main_window.show()?;
@@ -1749,7 +1740,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop(_system_tray);
     drop(_hotkey_listener);
     drop(_power_listener);
-    drop(_overlay_guard);
     drop(_log_guard);
 
     info!("[MAIN] Graceful shutdown complete. Exiting cleanly.");

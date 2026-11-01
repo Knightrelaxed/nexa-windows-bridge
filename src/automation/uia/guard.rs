@@ -222,7 +222,8 @@ pub fn guard_point(px: i32, py: i32) -> Result<GuardedTarget, GuardError> {
         return Err(GuardError::OwnProcess);
     }
 
-    if !is_responsive(target, 150) {
+    // 500ms timeout prevents false "Not Responding" rejections during heavy browser renders (e.g. Chrome/Edge)
+    if !is_responsive(target, 500) {
         return Err(GuardError::NotResponding);
     }
 

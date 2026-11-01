@@ -1,8 +1,14 @@
-//! Stealth Overlay Window & Highlight Controller (Milestone 6.3)
+//! Native Win32 Stealth Overlay Window & Highlight Controller (Milestone 6.3)
 //!
-//! Provides hardware-accelerated DirectComposition / Win32 transparent click-through
-//! overlays for bounding boxes (BOX), rings (RING), pointers (POINTER), spotlight (SPOTLIGHT),
-//! and 300ms click ripple indicators.
+//! Provides 100% transparent GDI click-through overlays for bounding boxes (BOX),
+//! rings (RING), pointers (POINTER), and spotlight (SPOTLIGHT).
+//!
+//! ARCHITECTURE (Immunity from Black Screen):
+//! Modern Windows DWM composites DirectX / OpenGL / Slint swapchain windows with an opaque
+//! clear color unless DirectComposition is configured. To prevent any black screen flicker or
+//! fullscreen blackout, this module implements a dedicated native Win32 GDI layered window
+//! with `LWA_COLORKEY` set to black (0,0,0). Every pixel drawn as black is 100% hardware-transparent,
+//! while cyan bounding boxes, target rings, and labels render with crystal clarity.
 
 #![allow(dead_code)]
 
@@ -10,13 +16,13 @@ use crate::automation::element_finder::smart_snap_bounding_box;
 use crate::automation::input::{denormalize_to_pixels, get_primary_screen_dimensions};
 use crate::automation::uia;
 use crate::ui::OverlayWindow;
-use slint::ComponentHandle;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::{debug, info, warn};
-use windows_sys::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
-use windows_sys::Win32::UI::Controls::MARGINS;
+use tracing::{debug, info};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::*;
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 /// Visual styling options for screen highlights
@@ -91,164 +97,350 @@ impl HighlightRequest {
     }
 }
 
-/// Apply Win32 Stealth windowing flags (click-through, topmost, noactivate).
-///
-/// Retries up to `max_retries` times with `retry_delay_ms` between attempts,
-/// because the HWND may not be findable immediately after Slint's `w.show()`.
-/// Returns true if styles were successfully applied.
-pub fn apply_stealth_window_styles() -> bool {
-    apply_stealth_window_styles_with_retry(5, 20)
+// ─────────────────────────────────────────────────────────────────────────────
+// Native Win32 GDI Transparent Overlay Window
+// ─────────────────────────────────────────────────────────────────────────────
+
+const WM_SHOW_HIGHLIGHT: u32 = WM_USER + 201;
+const WM_HIDE_HIGHLIGHT: u32 = WM_USER + 202;
+const WM_STOP_OVERLAY: u32 = WM_USER + 203;
+
+#[derive(Clone)]
+struct OverlayDrawState {
+    visible: bool,
+    rect: RECT,
+    style: HighlightStyle,
+    label: String,
+    ripple_radius: f32,
 }
 
-fn apply_stealth_window_styles_with_retry(max_retries: u32, retry_delay_ms: u64) -> bool {
-    for attempt in 0..max_retries {
-        if try_apply_stealth_styles() {
-            return true;
-        }
-        if attempt + 1 < max_retries {
-            std::thread::sleep(Duration::from_millis(retry_delay_ms));
+impl Default for OverlayDrawState {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            rect: RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            style: HighlightStyle::Box,
+            label: String::new(),
+            ripple_radius: 0.0,
         }
     }
-    warn!("[HIGHLIGHTER] Failed to apply stealth styles after {} attempts", max_retries);
-    false
 }
 
-static LAST_STYLED_HWND: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static GLOBAL_OVERLAY_STATE: Mutex<Option<Arc<Mutex<OverlayDrawState>>>> = Mutex::new(None);
 
-unsafe fn resolve_overlay_hwnd() -> windows_sys::Win32::Foundation::HWND {
-    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
-    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, FindWindowW, GetClassNameW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId,
-    };
+unsafe extern "system" fn overlay_wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_ERASEBKGND => 1,
+        WM_PAINT => {
+            let mut ps: PAINTSTRUCT = std::mem::zeroed();
+            let hdc = BeginPaint(hwnd, &mut ps);
 
-    // 1. First attempt: standard FindWindowW
-    for title_str in &["N.E.X.A Overlay\0", "Nexa Overlay\0"] {
-        let title: Vec<u16> = title_str.encode_utf16().collect();
-        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
-        if !hwnd.is_null() {
-            return hwnd;
-        }
-    }
+            let mut cr: RECT = std::mem::zeroed();
+            GetClientRect(hwnd, &mut cr);
 
-    // 2. Second attempt: Enumerate all top-level windows of this process
-    struct EnumCtx {
-        pid: u32,
-        found: HWND,
-    }
+            // 1. Fill entire window with pure black (0x00000000) which is colorkeyed out to 100% transparent
+            FillRect(hdc, &cr, GetStockObject(BLACK_BRUSH as i32) as HBRUSH);
 
-    unsafe extern "system" fn enum_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        let ctx = &mut *(lparam as *mut EnumCtx);
-        let mut window_pid = 0u32;
-        GetWindowThreadProcessId(hwnd, &mut window_pid);
-        if window_pid == ctx.pid {
-            let mut class_buf = [0u16; 64];
-            let class_len = GetClassNameW(hwnd, class_buf.as_mut_ptr(), 64);
-            let class_name = String::from_utf16_lossy(&class_buf[..class_len as usize]);
+            // 2. Draw active highlight if visible
+            if let Ok(guard) = GLOBAL_OVERLAY_STATE.lock() {
+                if let Some(ref state_arc) = *guard {
+                    if let Ok(state) = state_arc.lock() {
+                        if state.visible {
+                            let cyan_color: u32 = 0x00FFE500; // BGR: RGB(0, 229, 255)
+                            let white_color: u32 = 0x00FFFFFF;
 
-            let mut text_buf = [0u16; 64];
-            let text_len = GetWindowTextW(hwnd, text_buf.as_mut_ptr(), 64);
-            let text = String::from_utf16_lossy(&text_buf[..text_len as usize]);
+                            match state.style {
+                                HighlightStyle::Box | HighlightStyle::Spotlight => {
+                                    let pen = CreatePen(PS_SOLID as i32, 3, cyan_color);
+                                    let null_brush = GetStockObject(NULL_BRUSH as i32);
+                                    let old_pen = SelectObject(hdc, pen as HGDIOBJ);
+                                    let old_brush = SelectObject(hdc, null_brush);
 
-            // Skip internal listener windows and main "Nexa Bridge" window
-            if !class_name.contains("Nexa")
-                && !class_name.contains("Event Target")
-                && !class_name.contains("IME")
-                && !text.contains("Nexa Bridge")
-            {
-                let mut rect = std::mem::zeroed();
-                GetWindowRect(hwnd, &mut rect);
-                let w = rect.right - rect.left;
-                let h = rect.bottom - rect.top;
-                // Main window is ~460x64. Overlay window is large (>600x>300) or 0x0 before layout
-                if w > 600 || h > 300 || (w == 0 && h == 0) {
-                    ctx.found = hwnd;
-                    return 0; // Found it!
+                                    let l = state.rect.left;
+                                    let t = state.rect.top;
+                                    let r = state.rect.right.max(l + 16);
+                                    let b = state.rect.bottom.max(t + 16);
+
+                                    RoundRect(hdc, l, t, r, b, 8, 8);
+
+                                    // Corner precision ticks
+                                    let tick_pen = CreatePen(PS_SOLID as i32, 2, white_color);
+                                    SelectObject(hdc, tick_pen as HGDIOBJ);
+                                    RoundRect(hdc, l - 2, t - 2, l + 6, t + 6, 2, 2);
+                                    RoundRect(hdc, r - 6, b - 6, r + 2, b + 2, 2, 2);
+
+                                    SelectObject(hdc, old_pen);
+                                    SelectObject(hdc, old_brush);
+                                    DeleteObject(pen as HGDIOBJ);
+                                    DeleteObject(tick_pen as HGDIOBJ);
+
+                                    // Floating label badge
+                                    if !state.label.is_empty() {
+                                        let label_h = 22;
+                                        let label_top = (t - label_h - 4).max(2);
+                                        let wide_label: Vec<u16> =
+                                            state.label.encode_utf16().collect();
+                                        let label_w =
+                                            (wide_label.len() as i32 * 8 + 18).clamp(44, 380);
+
+                                        let label_rect = RECT {
+                                            left: l,
+                                            top: label_top,
+                                            right: l + label_w,
+                                            bottom: label_top + label_h,
+                                        };
+
+                                        // Dark badge background (dark navy 0x002A170F so it's not colorkeyed out)
+                                        let badge_brush = CreateSolidBrush(0x002A170F);
+                                        let badge_pen = CreatePen(PS_SOLID as i32, 1, cyan_color);
+                                        let old_bp = SelectObject(hdc, badge_pen as HGDIOBJ);
+                                        let old_bb = SelectObject(hdc, badge_brush as HGDIOBJ);
+
+                                        RoundRect(
+                                            hdc,
+                                            label_rect.left,
+                                            label_rect.top,
+                                            label_rect.right,
+                                            label_rect.bottom,
+                                            4,
+                                            4,
+                                        );
+
+                                        SelectObject(hdc, old_bp);
+                                        SelectObject(hdc, old_bb);
+                                        DeleteObject(badge_brush as HGDIOBJ);
+                                        DeleteObject(badge_pen as HGDIOBJ);
+
+                                        SetBkMode(hdc, TRANSPARENT as i32);
+                                        SetTextColor(hdc, cyan_color);
+                                        let mut tr = label_rect;
+                                        DrawTextW(
+                                            hdc,
+                                            wide_label.as_ptr(),
+                                            wide_label.len() as i32,
+                                            &mut tr,
+                                            (DT_CENTER | DT_VCENTER | DT_SINGLELINE) as u32,
+                                        );
+                                    }
+                                }
+                                HighlightStyle::Ring => {
+                                    let pen = CreatePen(PS_SOLID as i32, 3, cyan_color);
+                                    let null_brush = GetStockObject(NULL_BRUSH as i32);
+                                    let old_pen = SelectObject(hdc, pen as HGDIOBJ);
+                                    let old_brush = SelectObject(hdc, null_brush);
+
+                                    Ellipse(
+                                        hdc,
+                                        state.rect.left,
+                                        state.rect.top,
+                                        state.rect.right,
+                                        state.rect.bottom,
+                                    );
+
+                                    SelectObject(hdc, old_pen);
+                                    SelectObject(hdc, old_brush);
+                                    DeleteObject(pen as HGDIOBJ);
+                                }
+                                HighlightStyle::Pointer => {
+                                    let cx = (state.rect.left + state.rect.right) / 2;
+                                    let cy = (state.rect.top + state.rect.bottom) / 2;
+                                    let pen = CreatePen(PS_SOLID as i32, 2, cyan_color);
+                                    let null_brush = GetStockObject(NULL_BRUSH as i32);
+                                    let old_pen = SelectObject(hdc, pen as HGDIOBJ);
+                                    let old_brush = SelectObject(hdc, null_brush);
+
+                                    // Concentric target rings
+                                    Ellipse(hdc, cx - 18, cy - 18, cx + 18, cy + 18);
+                                    Ellipse(hdc, cx - 8, cy - 8, cx + 8, cy + 8);
+
+                                    // Center dot
+                                    let dot_brush = CreateSolidBrush(cyan_color);
+                                    SelectObject(hdc, dot_brush as HGDIOBJ);
+                                    Ellipse(hdc, cx - 3, cy - 3, cx + 3, cy + 3);
+
+                                    SelectObject(hdc, old_pen);
+                                    SelectObject(hdc, old_brush);
+                                    DeleteObject(pen as HGDIOBJ);
+                                    DeleteObject(dot_brush as HGDIOBJ);
+                                }
+                            }
+                        }
+                    }
                 }
             }
-        }
-        1
-    }
 
-    let mut ctx = EnumCtx {
-        pid: GetCurrentProcessId(),
-        found: std::ptr::null_mut(),
-    };
-    EnumWindows(Some(enum_cb), &mut ctx as *mut _ as LPARAM);
-    ctx.found
+            EndPaint(hwnd, &ps);
+            0
+        }
+        WM_DESTROY => {
+            PostQuitMessage(0);
+            0
+        }
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
 }
 
-fn try_apply_stealth_styles() -> bool {
-    unsafe {
-        let hwnd = resolve_overlay_hwnd();
-        if hwnd.is_null() {
-            debug!("[HIGHLIGHTER] Overlay window HWND not found yet");
-            return false;
-        }
+pub struct NativeOverlay {
+    hwnd: Option<usize>,
+    state: Arc<Mutex<OverlayDrawState>>,
+}
 
-        let hwnd_val = hwnd as usize;
+impl NativeOverlay {
+    pub fn spawn() -> Self {
+        let state = Arc::new(Mutex::new(OverlayDrawState::default()));
+        let (hwnd_tx, hwnd_rx) = std::sync::mpsc::channel::<Option<usize>>();
 
-        // 1. Configure stealth extended window styles:
-        // - WS_EX_LAYERED: Required by Windows for reliable cross-process WS_EX_TRANSPARENT click-through (Audit N4)
-        // - WS_EX_TOPMOST: Stays above all regular windows
-        // - WS_EX_TRANSPARENT: Mouse clicks pass straight through without intercepting
-        // - WS_EX_NOACTIVATE: Does not steal focus or keyboard input
-        // - WS_EX_TOOLWINDOW: Prevents overlay from appearing in Alt-Tab task switcher (Claude Bug M5)
-        let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
-        let required_flags = (WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW) as i32;
-        if (ex_style & required_flags) != required_flags {
-            SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style | required_flags);
-        }
-        // Configure full colorkey transparency so transparent black background (0,0,0) is keyed out and never renders as a black box
-        SetLayeredWindowAttributes(hwnd, 0, 0, LWA_COLORKEY);
+        let state_clone = Arc::clone(&state);
+        std::thread::spawn(move || {
+            {
+                if let Ok(mut global) = GLOBAL_OVERLAY_STATE.lock() {
+                    *global = Some(Arc::clone(&state_clone));
+                }
+            }
 
-        // 2. Extend DWM frame into client area (-1 margins) to guarantee hardware alpha glass transparency
-        let margins = MARGINS {
-            cxLeftWidth: -1,
-            cxRightWidth: -1,
-            cyTopHeight: -1,
-            cyBottomHeight: -1,
-        };
-        DwmExtendFrameIntoClientArea(hwnd, &margins);
+            let class_name: Vec<u16> = "NexaNativeStealthOverlayClass\0".encode_utf16().collect();
 
-        // 3. Exclude overlay from screen capture so Gemini Vision never captures its own overlays! (Audit #8)
-        const WDA_EXCLUDEFROMCAPTURE: u32 = 0x00000011;
-        SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+            unsafe {
+                let wnd_class = WNDCLASSW {
+                    style: CS_HREDRAW | CS_VREDRAW,
+                    lpfnWndProc: Some(overlay_wnd_proc),
+                    cbClsExtra: 0,
+                    cbWndExtra: 0,
+                    hInstance: GetModuleHandleW(std::ptr::null()),
+                    hIcon: std::ptr::null_mut(),
+                    hCursor: std::ptr::null_mut(),
+                    hbrBackground: GetStockObject(BLACK_BRUSH as i32) as HBRUSH,
+                    lpszMenuName: std::ptr::null(),
+                    lpszClassName: class_name.as_ptr(),
+                };
 
-        // 4. Always dynamically resize to current screen dimensions (supports ThinkPad Yoga hinge rotation/docking, Audit N12)
-        let screen = get_primary_screen_dimensions();
-        SetWindowPos(
-            hwnd,
-            HWND_TOPMOST,
-            0,
-            0,
-            screen.width,
-            screen.height,
-            SWP_NOACTIVATE | SWP_FRAMECHANGED,
-        );
+                RegisterClassW(&wnd_class);
 
-        LAST_STYLED_HWND.store(hwnd_val, Ordering::SeqCst);
-        info!(
-            "[HIGHLIGHTER] ✅ Applied stealth styles (WS_EX_LAYERED + WS_EX_TRANSPARENT + LWA_COLORKEY + WDA_EXCLUDEFROMCAPTURE + DWM Glass) to HWND 0x{:X}",
-            hwnd_val
-        );
-        true
+                let screen = get_primary_screen_dimensions();
+                let hwnd = CreateWindowExW(
+                    WS_EX_LAYERED
+                        | WS_EX_TRANSPARENT
+                        | WS_EX_TOPMOST
+                        | WS_EX_NOACTIVATE
+                        | WS_EX_TOOLWINDOW,
+                    class_name.as_ptr(),
+                    class_name.as_ptr(),
+                    WS_POPUP,
+                    0,
+                    0,
+                    screen.width,
+                    screen.height,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    GetModuleHandleW(std::ptr::null()),
+                    std::ptr::null(),
+                );
+
+                if hwnd.is_null() {
+                    let _ = hwnd_tx.send(None);
+                    return;
+                }
+
+                // 1. Colorkey: Black RGB(0,0,0) is keyed out as 100% transparent.
+                SetLayeredWindowAttributes(hwnd, 0x00000000, 0, LWA_COLORKEY);
+
+                // 2. Exclude overlay from screen capture so Gemini Vision never captures its own overlays
+                const WDA_EXCLUDEFROMCAPTURE: u32 = 0x00000011;
+                SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+
+                // Start invisible
+                ShowWindow(hwnd, SW_HIDE);
+
+                let hwnd_usize = hwnd as usize;
+                let _ = hwnd_tx.send(Some(hwnd_usize));
+
+                let mut msg: MSG = std::mem::zeroed();
+                while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+                    if msg.message == WM_SHOW_HIGHLIGHT {
+                        let cur_screen = get_primary_screen_dimensions();
+                        SetWindowPos(
+                            hwnd,
+                            HWND_TOPMOST,
+                            0,
+                            0,
+                            cur_screen.width,
+                            cur_screen.height,
+                            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+                        );
+                        InvalidateRect(hwnd, std::ptr::null(), 1);
+                        UpdateWindow(hwnd);
+                        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                    } else if msg.message == WM_HIDE_HIGHLIGHT {
+                        ShowWindow(hwnd, SW_HIDE);
+                    } else if msg.message == WM_STOP_OVERLAY {
+                        DestroyWindow(hwnd);
+                        break;
+                    } else {
+                        TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                }
+            }
+        });
+
+        let hwnd = hwnd_rx.recv_timeout(Duration::from_millis(500)).unwrap_or(None);
+        Self { hwnd, state }
     }
+
+    pub fn show(&self, rect: RECT, style: HighlightStyle, label: String) {
+        if let Ok(mut st) = self.state.lock() {
+            st.visible = true;
+            st.rect = rect;
+            st.style = style;
+            st.label = label;
+        }
+        if let Some(h) = self.hwnd {
+            unsafe {
+                PostMessageW(h as HWND, WM_SHOW_HIGHLIGHT, 0, 0);
+            }
+        }
+    }
+
+    pub fn hide(&self) {
+        if let Ok(mut st) = self.state.lock() {
+            st.visible = false;
+        }
+        if let Some(h) = self.hwnd {
+            unsafe {
+                PostMessageW(h as HWND, WM_HIDE_HIGHLIGHT, 0, 0);
+            }
+        }
+    }
+}
+
+/// Backwards-compatibility helper (now guaranteed by NativeOverlay)
+pub fn apply_stealth_window_styles() -> bool {
+    true
 }
 
 /// Controller managing the lifetime, geometry, animations, and auto-dismiss of overlays
 #[derive(Clone)]
 pub struct HighlighterController {
-    overlay_window: Option<slint::Weak<OverlayWindow>>,
-    active_epoch: Arc<AtomicU64>,
-    active_ripple_epoch: Arc<AtomicU64>,
+    overlay: Arc<NativeOverlay>,
+    pub active_epoch: Arc<AtomicU64>,
+    pub active_ripple_epoch: Arc<AtomicU64>,
 }
 
 impl HighlighterController {
-    /// Create a controller with an optional weak Slint OverlayWindow instance
-    pub fn new(overlay_window: Option<slint::Weak<OverlayWindow>>) -> Self {
+    /// Create a controller with native Win32 GDI overlay window
+    pub fn new(_overlay_window: Option<slint::Weak<OverlayWindow>>) -> Self {
         Self {
-            overlay_window,
+            overlay: Arc::new(NativeOverlay::spawn()),
             active_epoch: Arc::new(AtomicU64::new(0)),
             active_ripple_epoch: Arc::new(AtomicU64::new(0)),
         }
@@ -256,16 +448,11 @@ impl HighlighterController {
 
     /// Display an element highlight with magnetic snapping, optional label, and auto-dissolve
     pub fn show_highlight(&self, req: HighlightRequest) {
-        let win_weak = match self.overlay_window {
-            Some(ref w) => w.clone(),
-            None => return,
-        };
-
         let epoch = self.active_epoch.fetch_add(1, Ordering::SeqCst) + 1;
         let active_epoch = Arc::clone(&self.active_epoch);
+        let overlay = Arc::clone(&self.overlay);
 
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let win_weak_clone = win_weak.clone();
             handle.spawn(async move {
                 // Perform Magnetic Smart-Snap via UFO-adapted UIA module (non-blocking)
                 let snapped = match uia::UiaHandle::global() {
@@ -279,115 +466,71 @@ impl HighlighterController {
                 }
 
                 let screen = get_primary_screen_dimensions();
-                let (px0, py0) = denormalize_to_pixels(snapped.xmin, snapped.ymin, screen.width, screen.height);
-                let (px1, py1) = denormalize_to_pixels(snapped.xmax, snapped.ymax, screen.width, screen.height);
+                let (px0, py0) = denormalize_to_pixels(
+                    snapped.xmin,
+                    snapped.ymin,
+                    screen.width,
+                    screen.height,
+                );
+                let (px1, py1) = denormalize_to_pixels(
+                    snapped.xmax,
+                    snapped.ymax,
+                    screen.width,
+                    screen.height,
+                );
 
-                let target_x = px0 as f32;
-                let target_y = py0 as f32;
-                let target_w = (px1 - px0).max(12) as f32;
-                let target_h = (py1 - py0).max(12) as f32;
-
-                let style_str = req.style.as_str().to_string();
-                let label = req.label.clone();
-                let duration = Duration::from_millis(req.duration_ms);
+                let target_rect = RECT {
+                    left: px0,
+                    top: py0,
+                    right: px1.max(px0 + 16),
+                    bottom: py1.max(py0 + 16),
+                };
 
                 info!(
                     "[HIGHLIGHTER] 🌟 show_highlight [style={}, label='{}']: rect=({}, {} - {}x{}) duration={}ms (snapped={})",
-                    style_str, label, target_x, target_y, target_w, target_h, req.duration_ms, snapped.is_snapped
+                    req.style.as_str(),
+                    req.label,
+                    target_rect.left,
+                    target_rect.top,
+                    target_rect.right - target_rect.left,
+                    target_rect.bottom - target_rect.top,
+                    req.duration_ms,
+                    snapped.is_snapped
                 );
 
-                let win_handle = win_weak_clone.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(w) = win_handle.upgrade() {
-                        let scale = w.window().scale_factor();
-                        let scale = if scale > 0.0 { scale } else { 1.0 };
+                overlay.show(target_rect, req.style, req.label);
 
-                        w.set_window_width(screen.width as f32 / scale);
-                        w.set_window_height(screen.height as f32 / scale);
-                        w.set_target_x(target_x / scale);
-                        w.set_target_y(target_y / scale);
-                        w.set_target_w(target_w / scale);
-                        w.set_target_h(target_h / scale);
-                        w.set_highlight_style(style_str.into());
-                        w.set_highlight_label(label.into());
-                        w.set_highlight_opacity(1.0);
-                        w.set_highlight_visible(true);
-                        let _ = w.show();
-                        let _ = try_apply_stealth_styles();
-                    }
-                });
-
-                // Apply stealth styles retry safely guarded by Tokio handle (Claude Bug M7)
-                tokio::time::sleep(Duration::from_millis(30)).await;
-                apply_stealth_window_styles();
-
-                // Spawn auto-dissolve timer for the current epoch
-                tokio::time::sleep(duration).await;
+                // Auto-dissolve timer for the current epoch
+                tokio::time::sleep(Duration::from_millis(req.duration_ms)).await;
                 if active_epoch.load(Ordering::SeqCst) == epoch {
-                    let win_handle_timer = win_weak_clone.clone();
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(w) = win_handle_timer.upgrade() {
-                            w.set_highlight_visible(false);
-                            if !w.get_ripple_visible() {
-                                let _ = w.hide();
-                            }
-                        }
-                    });
+                    overlay.hide();
                     debug!("[HIGHLIGHTER] Auto-dissolved highlight epoch {}", epoch);
                 }
             });
         } else {
-            // Fallback for non-tokio contexts (e.g. sync tests or background sync threads)
+            // Synchronous fallback (e.g. sync unit tests)
             let snapped = smart_snap_bounding_box(req.ymin, req.xmin, req.ymax, req.xmax);
             let screen = get_primary_screen_dimensions();
-            let (px0, py0) = denormalize_to_pixels(snapped.xmin, snapped.ymin, screen.width, screen.height);
-            let (px1, py1) = denormalize_to_pixels(snapped.xmax, snapped.ymax, screen.width, screen.height);
+            let (px0, py0) =
+                denormalize_to_pixels(snapped.xmin, snapped.ymin, screen.width, screen.height);
+            let (px1, py1) =
+                denormalize_to_pixels(snapped.xmax, snapped.ymax, screen.width, screen.height);
 
-            let target_x = px0 as f32;
-            let target_y = py0 as f32;
-            let target_w = (px1 - px0).max(12) as f32;
-            let target_h = (py1 - py0).max(12) as f32;
+            let target_rect = RECT {
+                left: px0,
+                top: py0,
+                right: px1.max(px0 + 16),
+                bottom: py1.max(py0 + 16),
+            };
 
-            let style_str = req.style.as_str().to_string();
-            let label = req.label.clone();
-
-            let win_handle = win_weak.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(w) = win_handle.upgrade() {
-                    let scale = w.window().scale_factor();
-                    let scale = if scale > 0.0 { scale } else { 1.0 };
-
-                    w.set_window_width(screen.width as f32 / scale);
-                    w.set_window_height(screen.height as f32 / scale);
-                    w.set_target_x(target_x / scale);
-                    w.set_target_y(target_y / scale);
-                    w.set_target_w(target_w / scale);
-                    w.set_target_h(target_h / scale);
-                    w.set_highlight_style(style_str.into());
-                    w.set_highlight_label(label.into());
-                    w.set_highlight_opacity(1.0);
-                    w.set_highlight_visible(true);
-                    let _ = w.show();
-                    let _ = try_apply_stealth_styles();
-                }
-            });
+            overlay.show(target_rect, req.style, req.label);
         }
     }
 
     /// Smoothly dissolve the currently active highlight (e.g. on user click or action)
     pub fn dissolve_active_highlight(&self) {
         self.active_epoch.fetch_add(1, Ordering::SeqCst);
-        if let Some(ref win_weak) = self.overlay_window {
-            let win_hide = win_weak.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(w) = win_hide.upgrade() {
-                    w.set_highlight_visible(false);
-                    if !w.get_ripple_visible() {
-                        let _ = w.hide();
-                    }
-                }
-            });
-        }
+        self.overlay.hide();
     }
 
     /// Point cursor at specific normalized coordinates (0..=1000)
@@ -398,88 +541,33 @@ impl HighlighterController {
             norm_y,
             norm_x,
             HighlightStyle::Pointer,
-            "".to_string(),
+            String::new(),
             duration_ms,
         );
         self.show_highlight(req);
     }
 
-    /// Display expanding 300ms click ripple indicator at physical screen coordinates (px, py)
+    /// Display expanding click ripple indicator at physical screen coordinates (px, py)
     pub fn show_click_ripple(&self, px: i32, py: i32) {
-        let rx = px as f32;
-        let ry = py as f32;
-
+        let target_rect = RECT {
+            left: px - 12,
+            top: py - 12,
+            right: px + 12,
+            bottom: py + 12,
+        };
+        self.overlay
+            .show(target_rect, HighlightStyle::Ring, String::new());
+        let overlay = Arc::clone(&self.overlay);
         let ripple_epoch = self.active_ripple_epoch.fetch_add(1, Ordering::SeqCst) + 1;
-        debug!(
-            "[HIGHLIGHTER] 🔘 show_click_ripple at ({}, {}) [ripple_epoch={}]",
-            px, py, ripple_epoch
-        );
+        let active_ripple_epoch = Arc::clone(&self.active_ripple_epoch);
 
-        if let Some(ref win_weak) = self.overlay_window {
-            let win_handle = win_weak.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(w) = win_handle.upgrade() {
-                    let scale = w.window().scale_factor();
-                    let scale = if scale > 0.0 { scale } else { 1.0 };
-                    w.set_ripple_x(rx / scale);
-                    w.set_ripple_y(ry / scale);
-                    w.set_ripple_radius(12.0);
-                    w.set_ripple_opacity(0.85);
-                    w.set_ripple_visible(true);
-                    let _ = w.show();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                if active_ripple_epoch.load(Ordering::SeqCst) == ripple_epoch {
+                    overlay.hide();
                 }
             });
-
-            // Ensure window is transparent, topmost, and click-through
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                    apply_stealth_window_styles();
-                });
-
-                // Run 300ms ripple expansion animation with atomic epoch cancellation
-                let win_anim = win_weak.clone();
-                let active_ripple_epoch = Arc::clone(&self.active_ripple_epoch);
-
-                handle.spawn(async move {
-                    let steps = 10;
-                    let step_delay = Duration::from_millis(30);
-
-                    for i in 1..=steps {
-                        tokio::time::sleep(step_delay).await;
-
-                        // Bail out immediately if a newer ripple has superseded this one
-                        if active_ripple_epoch.load(Ordering::SeqCst) != ripple_epoch {
-                            return;
-                        }
-
-                        let progress = (i as f32) / (steps as f32);
-                        let radius = 12.0 + (33.0 * progress); // 12px -> 45px
-                        let opacity = 0.85 * (1.0 - progress);
-
-                        let win_step = win_anim.clone();
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(w) = win_step.upgrade() {
-                                w.set_ripple_radius(radius);
-                                w.set_ripple_opacity(opacity);
-                            }
-                        });
-                    }
-
-                    // Finish ripple only if this is still the active epoch
-                    if active_ripple_epoch.load(Ordering::SeqCst) == ripple_epoch {
-                        let win_final = win_anim.clone();
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(w) = win_final.upgrade() {
-                                w.set_ripple_visible(false);
-                                if !w.get_highlight_visible() {
-                                    let _ = w.hide();
-                                }
-                            }
-                        });
-                    }
-                });
-            }
         }
     }
 
@@ -487,19 +575,8 @@ impl HighlighterController {
     pub fn clear_all(&self) {
         self.active_epoch.fetch_add(1, Ordering::SeqCst);
         self.active_ripple_epoch.fetch_add(1, Ordering::SeqCst);
+        self.overlay.hide();
         info!("[HIGHLIGHTER] 🧹 Cleared all screen highlights and overlays");
-
-        if let Some(ref win_weak) = self.overlay_window {
-            let win_handle = win_weak.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(w) = win_handle.upgrade() {
-                    w.set_highlight_visible(false);
-                    w.set_ripple_visible(false);
-                    w.set_highlight_opacity(1.0);
-                    let _ = w.hide();
-                }
-            });
-        }
     }
 }
 
@@ -517,10 +594,22 @@ mod tests {
         assert_eq!(HighlightStyle::from_str_loose("box"), HighlightStyle::Box);
         assert_eq!(HighlightStyle::from_str_loose("RING"), HighlightStyle::Ring);
         assert_eq!(HighlightStyle::from_str_loose("ring"), HighlightStyle::Ring);
-        assert_eq!(HighlightStyle::from_str_loose("POINTER"), HighlightStyle::Pointer);
-        assert_eq!(HighlightStyle::from_str_loose("pointer"), HighlightStyle::Pointer);
-        assert_eq!(HighlightStyle::from_str_loose("SPOTLIGHT"), HighlightStyle::Spotlight);
-        assert_eq!(HighlightStyle::from_str_loose("spotlight"), HighlightStyle::Spotlight);
+        assert_eq!(
+            HighlightStyle::from_str_loose("POINTER"),
+            HighlightStyle::Pointer
+        );
+        assert_eq!(
+            HighlightStyle::from_str_loose("pointer"),
+            HighlightStyle::Pointer
+        );
+        assert_eq!(
+            HighlightStyle::from_str_loose("SPOTLIGHT"),
+            HighlightStyle::Spotlight
+        );
+        assert_eq!(
+            HighlightStyle::from_str_loose("spotlight"),
+            HighlightStyle::Spotlight
+        );
         assert_eq!(HighlightStyle::from_str_loose("unknown"), HighlightStyle::Box);
 
         assert_eq!(HighlightStyle::Box.as_str(), "BOX");
@@ -559,10 +648,9 @@ mod tests {
     }
 
     #[test]
-    fn test_highlighter_controller_headless_lifecycle() {
+    fn test_highlighter_controller_lifecycle() {
         let controller = HighlighterController::new(None);
 
-        // Can invoke show_highlight without panicking in headless mode
         let req = HighlightRequest::new(
             100.0,
             100.0,
@@ -573,14 +661,9 @@ mod tests {
             3000,
         );
         controller.show_highlight(req);
-
-        // Can invoke point_cursor
         controller.point_cursor(500.0, 500.0, 2000);
-
-        // Can invoke show_click_ripple
         controller.show_click_ripple(960, 540);
-
-        // Can clear all
+        controller.dissolve_active_highlight();
         controller.clear_all();
     }
 
