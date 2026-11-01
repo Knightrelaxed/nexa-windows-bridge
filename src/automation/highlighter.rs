@@ -115,10 +115,72 @@ fn apply_stealth_window_styles_with_retry(max_retries: u32, retry_delay_ms: u64)
 
 static LAST_STYLED_HWND: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+unsafe fn resolve_overlay_hwnd() -> windows_sys::Win32::Foundation::HWND {
+    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, FindWindowW, GetClassNameW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId,
+    };
+
+    // 1. First attempt: standard FindWindowW
+    for title_str in &["N.E.X.A Overlay\0", "Nexa Overlay\0"] {
+        let title: Vec<u16> = title_str.encode_utf16().collect();
+        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+        if !hwnd.is_null() {
+            return hwnd;
+        }
+    }
+
+    // 2. Second attempt: Enumerate all top-level windows of this process
+    struct EnumCtx {
+        pid: u32,
+        found: HWND,
+    }
+
+    unsafe extern "system" fn enum_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let ctx = &mut *(lparam as *mut EnumCtx);
+        let mut window_pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut window_pid);
+        if window_pid == ctx.pid {
+            let mut class_buf = [0u16; 64];
+            let class_len = GetClassNameW(hwnd, class_buf.as_mut_ptr(), 64);
+            let class_name = String::from_utf16_lossy(&class_buf[..class_len as usize]);
+
+            let mut text_buf = [0u16; 64];
+            let text_len = GetWindowTextW(hwnd, text_buf.as_mut_ptr(), 64);
+            let text = String::from_utf16_lossy(&text_buf[..text_len as usize]);
+
+            // Skip internal listener windows and main "Nexa Bridge" window
+            if !class_name.contains("Nexa")
+                && !class_name.contains("Event Target")
+                && !class_name.contains("IME")
+                && !text.contains("Nexa Bridge")
+            {
+                let mut rect = std::mem::zeroed();
+                GetWindowRect(hwnd, &mut rect);
+                let w = rect.right - rect.left;
+                let h = rect.bottom - rect.top;
+                // Main window is ~460x64. Overlay window is large (>600x>300) or 0x0 before layout
+                if w > 600 || h > 300 || (w == 0 && h == 0) {
+                    ctx.found = hwnd;
+                    return 0; // Found it!
+                }
+            }
+        }
+        1
+    }
+
+    let mut ctx = EnumCtx {
+        pid: GetCurrentProcessId(),
+        found: std::ptr::null_mut(),
+    };
+    EnumWindows(Some(enum_cb), &mut ctx as *mut _ as LPARAM);
+    ctx.found
+}
+
 fn try_apply_stealth_styles() -> bool {
     unsafe {
-        let title: Vec<u16> = "N.E.X.A Overlay\0".encode_utf16().collect();
-        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+        let hwnd = resolve_overlay_hwnd();
         if hwnd.is_null() {
             debug!("[HIGHLIGHTER] Overlay window HWND not found yet");
             return false;
@@ -166,8 +228,8 @@ fn try_apply_stealth_styles() -> bool {
         );
 
         LAST_STYLED_HWND.store(hwnd_val, Ordering::SeqCst);
-        debug!(
-            "[HIGHLIGHTER] Applied stealth styles (WS_EX_LAYERED + WS_EX_TRANSPARENT + WS_EX_TOOLWINDOW + WDA_EXCLUDEFROMCAPTURE + DWM Glass) to HWND 0x{:X}",
+        info!(
+            "[HIGHLIGHTER] ✅ Applied stealth styles (WS_EX_LAYERED + WS_EX_TRANSPARENT + LWA_COLORKEY + WDA_EXCLUDEFROMCAPTURE + DWM Glass) to HWND 0x{:X}",
             hwnd_val
         );
         true
