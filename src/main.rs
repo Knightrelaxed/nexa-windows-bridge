@@ -28,10 +28,14 @@ use tracing_subscriber::util::SubscriberInitExt;
 use ui::MainWindow;
 
 /// Checks if desktop automation is currently armed and lease is valid (Audit R3).
+/// Supports u64::MAX for permanent armed status until manually disarmed or killswitch is activated.
 fn is_automation_armed(armed_until: &AtomicU64) -> bool {
     let until = armed_until.load(Ordering::SeqCst);
     if until == 0 {
         return false;
+    }
+    if until == u64::MAX {
+        return true;
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -235,9 +239,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let capture_generation = Arc::new(AtomicU64::new(0));
 
     // Session generation epoch & automation armed guard for security isolation (Audit K1, K2, N2, R3)
-    // Default-deny policy: automation starts DISARMED and requires explicit user enablement with 15-minute lease
+    // Auto-arm by default based on config.auto_arm (default: true).
     let session_generation = Arc::new(AtomicU64::new(0));
-    let armed_until = Arc::new(AtomicU64::new(0));
+    let initial_armed = if config.lock().map(|c| c.auto_arm).unwrap_or(true) { u64::MAX } else { 0 };
+    let armed_until = Arc::new(AtomicU64::new(initial_armed));
 
     let toggle_screen_share: Arc<dyn Fn(Option<bool>) + Send + Sync> = {
         let capture_ctrl = Arc::clone(&capture_controller);
@@ -474,6 +479,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let is_speaker_playing_mic = is_speaker_playing.clone();
     let session_gen_conn = Arc::clone(&session_generation);
     let armed_conn = Arc::clone(&armed_until);
+    let auto_arm_enabled = config.lock().map(|c| c.auto_arm).unwrap_or(true);
 
     tokio::spawn(async move {
         let (mic_pcm_tx, mut mic_pcm_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
@@ -615,7 +621,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ConnectionState::Connected => {
                     info!("[MAIN] 🎙️ Connection active: Starting WASAPI Duplex Audio Engine...");
                     automation::reset_automation_abort();
-                    // Audit N2: Do NOT auto-rearm on connection! Armed status is strictly user-controlled.
+                    if auto_arm_enabled {
+                        armed_conn.store(u64::MAX, Ordering::SeqCst);
+                        info!("[MAIN] 🛡️ Desktop automation auto-armed on connection (auto_arm = true).");
+                    }
 
                     if let Some(audio_clone) = audio_engine_conn.as_ref().map(Arc::clone) {
                         let mic_tx = mic_pcm_tx.clone();
@@ -1039,20 +1048,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         toggle_share(None);
                     }
                     TrayEvent::ToggleArmed => {
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0);
                         let currently_armed = is_automation_armed(&armed);
                         let status_text = if currently_armed {
                             armed.store(0, Ordering::SeqCst);
                             info!("[TRAY] 🛡️ Desktop automation DISARMED by user.");
                             "🛡️ Otomasi Desktop: DINONAKTIFKAN (Disarmed)"
                         } else {
-                            let lease_expiry = now + 900; // 15-minute lease (Audit R3)
-                            armed.store(lease_expiry, Ordering::SeqCst);
-                            info!("[TRAY] 🛡️ Desktop automation ARMED for 15 minutes (until unix timestamp {}).", lease_expiry);
-                            "🛡️ Otomasi Desktop: DIIZINKAN (Armed 15 Menit)"
+                            armed.store(u64::MAX, Ordering::SeqCst);
+                            info!("[TRAY] 🛡️ Desktop automation ARMED permanently until manually disarmed or killswitch.");
+                            "🛡️ Otomasi Desktop: DIIZINKAN (Armed)"
                         };
                         win.set_status_message(status_text.into());
                     }
@@ -1794,6 +1798,10 @@ mod tests {
 
         // Active lease in the future
         armed_until.store(now + 900, Ordering::SeqCst);
+        assert!(is_automation_armed(&armed_until));
+
+        // Permanent armed (u64::MAX)
+        armed_until.store(u64::MAX, Ordering::SeqCst);
         assert!(is_automation_armed(&armed_until));
     }
 }
