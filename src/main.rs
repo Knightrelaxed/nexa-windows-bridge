@@ -775,6 +775,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
+            if let ClientMessage::CommandResult { ref command_id, success, ref message, .. } = result {
+                if success {
+                    info!("[MAIN] ✅ Command [{}] succeeded: {}", command_id, message);
+                } else {
+                    warn!("[MAIN] ❌ Command [{}] failed: {}", command_id, message);
+                }
+            }
+
             if session_gen_worker.load(Ordering::SeqCst) == gen {
                 let _ = net_tx_worker.send_message(result).await;
             }
@@ -783,8 +791,139 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     tokio::spawn(async move {
+        struct ConversationTracker {
+            last_logged_user: Option<String>,
+            last_logged_user_time: Option<std::time::Instant>,
+            current_user: Option<String>,
+            last_logged_asst: Option<String>,
+            last_logged_asst_time: Option<std::time::Instant>,
+            current_asst: Option<String>,
+        }
+
+        impl ConversationTracker {
+            fn new() -> Self {
+                Self {
+                    last_logged_user: None,
+                    last_logged_user_time: None,
+                    current_user: None,
+                    last_logged_asst: None,
+                    last_logged_asst_time: None,
+                    current_asst: None,
+                }
+            }
+
+            fn has_pending(&self) -> bool {
+                self.current_user.is_some() || self.current_asst.is_some()
+            }
+
+            fn on_user_transcript(&mut self, text: &str) {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    // Flush previous assistant turn before updating user turn
+                    self.flush_asst();
+                    self.current_user = Some(trimmed.to_string());
+                    tracing::debug!("[CONVERSATION] (User streaming): \"{}\"", trimmed);
+                }
+            }
+
+            fn on_assistant_text(&mut self, text: &str) {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    // Assistant started replying -> flush previous user speech
+                    self.flush_user();
+                    self.current_asst = Some(trimmed.to_string());
+                    tracing::debug!("[CONVERSATION] (Nexa streaming): \"{}\"", trimmed);
+                }
+            }
+
+            fn flush_user(&mut self) {
+                if let Some(u) = self.current_user.take() {
+                    let trimmed = u.trim();
+                    if trimmed.is_empty() {
+                        return;
+                    }
+                    let is_recent_duplicate = if let (Some(ref last), Some(t)) = (&self.last_logged_user, self.last_logged_user_time) {
+                        last == trimmed && t.elapsed() < std::time::Duration::from_millis(2000)
+                    } else {
+                        false
+                    };
+
+                    if !is_recent_duplicate {
+                        info!("[CONVERSATION] 👤 User: \"{}\"", trimmed);
+                        self.last_logged_user = Some(trimmed.to_string());
+                        self.last_logged_user_time = Some(std::time::Instant::now());
+                        self.last_logged_asst = None;
+                        self.last_logged_asst_time = None;
+                    }
+                }
+            }
+
+            fn flush_asst(&mut self) {
+                if let Some(a) = self.current_asst.take() {
+                    let trimmed = a.trim();
+                    if trimmed.is_empty() {
+                        return;
+                    }
+                    let is_recent_duplicate = if let (Some(ref last), Some(t)) = (&self.last_logged_asst, self.last_logged_asst_time) {
+                        last == trimmed && t.elapsed() < std::time::Duration::from_millis(2000)
+                    } else {
+                        false
+                    };
+
+                    if !is_recent_duplicate {
+                        info!("[CONVERSATION] 🤖 Nexa: \"{}\"", trimmed);
+                        self.last_logged_asst = Some(trimmed.to_string());
+                        self.last_logged_asst_time = Some(std::time::Instant::now());
+                        self.last_logged_user = None;
+                        self.last_logged_user_time = None;
+                    }
+                }
+            }
+
+            fn on_interrupted(&mut self) {
+                self.flush_user();
+                if let Some(a) = self.current_asst.take() {
+                    let trimmed = a.trim();
+                    if !trimmed.is_empty() {
+                        info!("[CONVERSATION] ⚡ User interrupted Nexa (Barge-In) while speaking: \"{}\"", trimmed);
+                        self.last_logged_asst = Some(trimmed.to_string());
+                        self.last_logged_asst_time = Some(std::time::Instant::now());
+                        self.last_logged_user = None;
+                        self.last_logged_user_time = None;
+                    }
+                }
+            }
+
+            fn reset_turn(&mut self) {
+                self.flush_all();
+                self.last_logged_user = None;
+                self.last_logged_user_time = None;
+                self.last_logged_asst = None;
+                self.last_logged_asst_time = None;
+            }
+
+            fn flush_all(&mut self) {
+                self.flush_user();
+                self.flush_asst();
+            }
+        }
+
+        let mut tracker = ConversationTracker::new();
+
         loop {
-            let msg = match command_rx.recv().await {
+            let recv_res = if tracker.has_pending() {
+                match tokio::time::timeout(tokio::time::Duration::from_millis(1200), command_rx.recv()).await {
+                    Ok(res) => res,
+                    Err(_) => {
+                        tracker.flush_all();
+                        continue;
+                    }
+                }
+            } else {
+                command_rx.recv().await
+            };
+
+            let msg = match recv_res {
                 Ok(m) => m,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
                     warn!("[MAIN] Command queue lagged by {} messages; continuing dispatch loop", missed);
@@ -800,6 +939,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Audit R4: AudioPlay is dispatched directly via dedicated audio stream channel (subscribe_audio)
                 }
                 ServerMessage::AudioInterrupted => {
+                    tracker.on_interrupted();
                     info!("[MAIN] Server signaled audio interrupted (barge-in).");
                     if let Some(audio_clone) = audio_engine_cmd.as_ref() {
                         let mut engine = audio_clone.lock().await;
@@ -819,6 +959,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     text,
                     user_transcript,
                 } => {
+                    if let Some(ref ut) = user_transcript {
+                        tracker.on_user_transcript(ut);
+                    }
+                    if let Some(ref t) = text {
+                        tracker.on_assistant_text(t);
+                    }
+                    if status == "LISTENING" || status == "IDLE" {
+                        tracker.flush_asst();
+                    } else if status == "SPEAKING" || status == "PROCESSING" {
+                        tracker.flush_user();
+                    }
+
                     let maybe_cog = ui::CognitiveState::try_from_status(&status);
                     let window_weak = window_weak_cmd.clone();
                     let is_speaker_playing_status = is_speaker_playing_cmd.clone();
@@ -856,6 +1008,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                 }
                 ServerMessage::ReplyComplete => {
+                    tracker.reset_turn();
                     let window_weak = window_weak_cmd.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(win) = window_weak.upgrade() {
@@ -867,6 +1020,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                 }
                 ServerMessage::LiveReady { session_id, model } => {
+                    tracker.reset_turn();
                     info!("[MAIN] ⚡ Gemini Live Voice Ready! Session: {:?}, Model: {:?}", session_id, model);
                     let window_weak = window_weak_cmd.clone();
                     let _ = slint::invoke_from_event_loop(move || {
@@ -882,6 +1036,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     params,
                     ..
                 } => {
+                    tracker.reset_turn();
                     info!(
                         "[MAIN] 🛠️ Executing command '{}' [{}] params: {}",
                         action,
