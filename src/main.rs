@@ -205,9 +205,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // do NOT make a Slint window transparent. The overlay window must only be
     // shown momentarily when overlay graphics are active, then hidden again.
     let overlay_window = ui::OverlayWindow::new().ok();
-    // Pre-apply stealth styles so HWND is pre-configured with WS_EX_LAYERED + LWA_COLORKEY transparency
-    automation::apply_stealth_window_styles();
-
     let highlighter_controller = Arc::new(automation::HighlighterController::new(
         overlay_window.as_ref().map(|w| w.as_weak()),
     ));
@@ -793,10 +790,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         struct ConversationTracker {
             last_logged_user: Option<String>,
-            last_logged_user_time: Option<std::time::Instant>,
             current_user: Option<String>,
             last_logged_asst: Option<String>,
-            last_logged_asst_time: Option<std::time::Instant>,
             current_asst: Option<String>,
         }
 
@@ -804,10 +799,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             fn new() -> Self {
                 Self {
                     last_logged_user: None,
-                    last_logged_user_time: None,
                     current_user: None,
                     last_logged_asst: None,
-                    last_logged_asst_time: None,
                     current_asst: None,
                 }
             }
@@ -842,19 +835,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if trimmed.is_empty() {
                         return;
                     }
-                    let is_recent_duplicate = if let (Some(ref last), Some(t)) = (&self.last_logged_user, self.last_logged_user_time) {
-                        last == trimmed && t.elapsed() < std::time::Duration::from_millis(2000)
-                    } else {
-                        false
-                    };
-
-                    if !is_recent_duplicate {
-                        info!("[CONVERSATION] 👤 User: \"{}\"", trimmed);
-                        self.last_logged_user = Some(trimmed.to_string());
-                        self.last_logged_user_time = Some(std::time::Instant::now());
-                        self.last_logged_asst = None;
-                        self.last_logged_asst_time = None;
+                    if self.last_logged_user.as_deref() == Some(trimmed) {
+                        return;
                     }
+
+                    info!("[CONVERSATION] 👤 User: \"{}\"", trimmed);
+                    self.last_logged_user = Some(trimmed.to_string());
+                    self.last_logged_asst = None;
                 }
             }
 
@@ -864,19 +851,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if trimmed.is_empty() {
                         return;
                     }
-                    let is_recent_duplicate = if let (Some(ref last), Some(t)) = (&self.last_logged_asst, self.last_logged_asst_time) {
-                        last == trimmed && t.elapsed() < std::time::Duration::from_millis(2000)
-                    } else {
-                        false
-                    };
-
-                    if !is_recent_duplicate {
-                        info!("[CONVERSATION] 🤖 Nexa: \"{}\"", trimmed);
-                        self.last_logged_asst = Some(trimmed.to_string());
-                        self.last_logged_asst_time = Some(std::time::Instant::now());
-                        self.last_logged_user = None;
-                        self.last_logged_user_time = None;
+                    if self.last_logged_asst.as_deref() == Some(trimmed) {
+                        return;
                     }
+
+                    info!("[CONVERSATION] 🤖 Nexa: \"{}\"", trimmed);
+                    self.last_logged_asst = Some(trimmed.to_string());
+                    self.last_logged_user = None;
                 }
             }
 
@@ -884,22 +865,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 self.flush_user();
                 if let Some(a) = self.current_asst.take() {
                     let trimmed = a.trim();
-                    if !trimmed.is_empty() {
+                    if !trimmed.is_empty() && self.last_logged_asst.as_deref() != Some(trimmed) {
                         info!("[CONVERSATION] ⚡ User interrupted Nexa (Barge-In) while speaking: \"{}\"", trimmed);
                         self.last_logged_asst = Some(trimmed.to_string());
-                        self.last_logged_asst_time = Some(std::time::Instant::now());
-                        self.last_logged_user = None;
-                        self.last_logged_user_time = None;
                     }
                 }
+                self.last_logged_asst = None;
+                self.last_logged_user = None;
             }
 
             fn reset_turn(&mut self) {
                 self.flush_all();
                 self.last_logged_user = None;
-                self.last_logged_user_time = None;
                 self.last_logged_asst = None;
-                self.last_logged_asst_time = None;
             }
 
             fn flush_all(&mut self) {

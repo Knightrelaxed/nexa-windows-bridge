@@ -471,11 +471,37 @@ pub async fn handle_execute_command(
             // Security Policy Guard: Disallow dangerous system keys/combinations (Claude 2, 3 & 4 Audit)
             // Initial fast-path check on normalized string + strict VK-level check inside desktop_press_key
             let key_upper = key.to_uppercase();
+            let key_compact = key_upper.replace(' ', "");
+
+            // If ALT+F4 is requested, intercept and safely execute close_active_window
+            if key_compact.contains("ALT+F4") || key_compact.contains("ALT+FUNCTION4") {
+                let res = tokio::task::spawn_blocking(|| {
+                    close_active_window()
+                })
+                .await
+                .map_err(|e| format!("Join error: {}", e))
+                .and_then(|r| r);
+
+                return match res {
+                    Ok(msg) => ClientMessage::CommandResult {
+                        command_id,
+                        success: true,
+                        message: msg,
+                        data: serde_json::json!({ "action": "closeWindow", "intercepted_key": "ALT+F4" }),
+                    },
+                    Err(err) => ClientMessage::CommandResult {
+                        command_id,
+                        success: false,
+                        message: format!("Gagal menutup jendela: {}", err),
+                        data: serde_json::json!({ "error": err, "key": "ALT+F4" }),
+                    },
+                };
+            }
+
             let is_blocked_str = key_upper.split('+').any(|p| {
                 let p = p.trim();
                 p == "WIN" || p == "WINDOWS" || p == "SUPER" || p == "LWIN" || p == "RWIN"
-            }) || key_upper.replace(' ', "").contains("ALT+F4")
-               || (key_upper.contains("CTRL") && key_upper.contains("ALT") && (key_upper.contains("DEL") || key_upper.contains("DELETE")))
+            }) || (key_upper.contains("CTRL") && key_upper.contains("ALT") && (key_upper.contains("DEL") || key_upper.contains("DELETE")))
                || (key_upper.contains("CTRL") && key_upper.contains("SHIFT") && (key_upper.contains("ESC") || key_upper.contains("ESCAPE")));
 
             if is_blocked_str {
@@ -1072,6 +1098,102 @@ pub async fn handle_execute_command(
         }
 
         // ─────────────────────────────────────────────────────────────
+        // 17. CLOSE_WINDOW (Safe Graceful Window Closure via WM_CLOSE)
+        // ─────────────────────────────────────────────────────────────
+        "CLOSEWINDOW" | "CLOSEAPP" | "CLOSETAB" => {
+            let res = tokio::task::spawn_blocking(|| {
+                close_active_window()
+            })
+            .await
+            .map_err(|e| format!("Join error: {}", e))
+            .and_then(|r| r);
+
+            match res {
+                Ok(msg) => ClientMessage::CommandResult {
+                    command_id,
+                    success: true,
+                    message: msg,
+                    data: serde_json::json!({ "action": "closeWindow" }),
+                },
+                Err(err) => ClientMessage::CommandResult {
+                    command_id,
+                    success: false,
+                    message: format!("Gagal menutup jendela: {}", err),
+                    data: serde_json::json!({ "error": err }),
+                },
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // 18. TASK_VIEW (Win+Tab Persistent Task Switcher)
+        // ─────────────────────────────────────────────────────────────
+        "TASKVIEW" | "SHOWTASKVIEW" | "SWITCHWINDOWS" => {
+            let res = tokio::task::spawn_blocking(|| {
+                show_task_view()
+            })
+            .await
+            .map_err(|e| format!("Join error: {}", e))
+            .and_then(|r| r);
+
+            match res {
+                Ok(_) => ClientMessage::CommandResult {
+                    command_id,
+                    success: true,
+                    message: "Tampilan Task View Windows berhasil dibuka (Win+Tab).".to_string(),
+                    data: serde_json::json!({ "action": "taskView" }),
+                },
+                Err(err) => ClientMessage::CommandResult {
+                    command_id,
+                    success: false,
+                    message: format!("Gagal membuka Task View: {}", err),
+                    data: serde_json::json!({ "error": err }),
+                },
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // 19. GET_OPEN_WINDOWS (EnumWindows Top-Level App Enumeration)
+        // ─────────────────────────────────────────────────────────────
+        "GETOPENWINDOWS" | "LISTWINDOWS" | "OPENWINDOWS" => {
+            let res = tokio::task::spawn_blocking(|| {
+                list_open_windows()
+            })
+            .await
+            .map_err(|e| format!("Join error: {}", e));
+
+            match res {
+                Ok(windows) => {
+                    let count = windows.len();
+                    let summary = if count == 0 {
+                        "Tidak ada jendela aplikasi lain yang sedang terbuka.".to_string()
+                    } else {
+                        let titles: Vec<String> = windows
+                            .iter()
+                            .map(|w| format!("'{}' ({})", w.title, w.process_name))
+                            .collect();
+                        format!("Terdapat {} jendela aplikasi aktif: {}", count, titles.join(", "))
+                    };
+                    ClientMessage::CommandResult {
+                        command_id,
+                        success: true,
+                        message: summary,
+                        data: serde_json::json!({
+                            "action": "getOpenWindows",
+                            "count": count,
+                            "windows": windows
+                        }),
+                    }
+                }
+                Err(err) => ClientMessage::CommandResult {
+                    command_id,
+                    success: false,
+                    message: format!("Gagal mendaftar jendela yang terbuka: {}", err),
+                    data: serde_json::json!({ "error": err }),
+                },
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────
         // UNKNOWN ACTION
         // ─────────────────────────────────────────────────────────────
         _ => {
@@ -1400,15 +1522,15 @@ mod tests {
             _ => panic!("Expected CommandResult"),
         }
 
-        // Block ALT+F4
-        let res_alt_f4 = handle_execute_command(
+        // Block CTRL+ALT+DEL
+        let res_cad = handle_execute_command(
             "cmd_sec2".to_string(),
             "desktopPressKey".to_string(),
-            serde_json::json!({ "key": "ALT+F4" }),
+            serde_json::json!({ "key": "CTRL+ALT+DEL" }),
             None,
         )
         .await;
-        match res_alt_f4 {
+        match res_cad {
             ClientMessage::CommandResult { success, data, .. } => {
                 assert!(!success);
                 assert_eq!(data["error"], "SECURITY_POLICY_VIOLATION");
@@ -1416,15 +1538,15 @@ mod tests {
             _ => panic!("Expected CommandResult"),
         }
 
-        // Block "ALT + F4" with spaces (Audit N3)
-        let res_alt_space_f4 = handle_execute_command(
+        // Block "CTRL + ALT + DELETE" with spaces (Audit N3)
+        let res_cad_space = handle_execute_command(
             "cmd_sec3".to_string(),
             "desktopPressKey".to_string(),
-            serde_json::json!({ "key": "ALT + F4" }),
+            serde_json::json!({ "key": "CTRL + ALT + DELETE" }),
             None,
         )
         .await;
-        match res_alt_space_f4 {
+        match res_cad_space {
             ClientMessage::CommandResult { success, data, .. } => {
                 assert!(!success);
                 assert_eq!(data["error"], "SECURITY_POLICY_VIOLATION");
@@ -1629,6 +1751,61 @@ mod tests {
         match res {
             ClientMessage::CommandResult { command_id, .. } => {
                 assert_eq!(command_id, "cmd_bat_stat");
+            }
+            _ => panic!("Expected CommandResult"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_get_open_windows_execution() {
+        let res = handle_execute_command(
+            "cmd_open_win".to_string(),
+            "GET_OPEN_WINDOWS".to_string(),
+            serde_json::json!({}),
+            None,
+        )
+        .await;
+        match res {
+            ClientMessage::CommandResult { command_id, success, data, .. } => {
+                assert_eq!(command_id, "cmd_open_win");
+                assert!(success);
+                assert_eq!(data["action"], "getOpenWindows");
+                assert!(data["windows"].as_array().is_some());
+            }
+            _ => panic!("Expected CommandResult"),
+        }
+
+        // Test camelCase variant
+        let res_camel = handle_execute_command(
+            "cmd_open_win2".to_string(),
+            "getOpenWindows".to_string(),
+            serde_json::json!({}),
+            None,
+        )
+        .await;
+        match res_camel {
+            ClientMessage::CommandResult { success, data, .. } => {
+                assert!(success);
+                assert_eq!(data["action"], "getOpenWindows");
+            }
+            _ => panic!("Expected CommandResult"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_alt_f4_intercepted_without_security_block() {
+        // ALT+F4 should be intercepted and routed to close_active_window instead of SECURITY_POLICY_VIOLATION
+        let res = handle_execute_command(
+            "cmd_alt_f4".to_string(),
+            "DESKTOP_PRESS_KEY".to_string(),
+            serde_json::json!({ "key": "ALT+F4" }),
+            None,
+        )
+        .await;
+        match res {
+            ClientMessage::CommandResult { data, .. } => {
+                // Must NOT be blocked with SECURITY_POLICY_VIOLATION
+                assert_ne!(data.get("error").and_then(|v| v.as_str()), Some("SECURITY_POLICY_VIOLATION"));
             }
             _ => panic!("Expected CommandResult"),
         }

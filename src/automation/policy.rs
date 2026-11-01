@@ -40,6 +40,9 @@ pub fn requires_arm(action: &str) -> bool {
             | "SYSTEMMETRICS"
             | "GETSYSTEMMETRICS"
             | "TELEMETRY"
+            | "GETOPENWINDOWS"
+            | "LISTWINDOWS"
+            | "OPENWINDOWS"
     )
 }
 
@@ -84,6 +87,10 @@ mod tests {
         assert!(!requires_arm("systemMetrics"));
         assert!(!requires_arm("getSystemMetrics"));
         assert!(!requires_arm("TELEMETRY"));
+        assert!(!requires_arm("GET_OPEN_WINDOWS"));
+        assert!(!requires_arm("getOpenWindows"));
+        assert!(!requires_arm("list_windows"));
+        assert!(!requires_arm("open_windows"));
 
         // Dangerous actions in ALL casing styles strictly require arming
         assert!(requires_arm("DESKTOP_CLICK"));
@@ -101,6 +108,10 @@ mod tests {
         assert!(requires_arm("lockScreen"));
         assert!(requires_arm("SHOW_DESKTOP"));
         assert!(requires_arm("showDesktop"));
+        assert!(requires_arm("CLOSE_WINDOW"));
+        assert!(requires_arm("closeWindow"));
+        assert!(requires_arm("TASK_VIEW"));
+        assert!(requires_arm("taskView"));
         assert!(requires_arm("SET_VOLUME"));
         assert!(requires_arm("setVolume"));
         assert!(requires_arm("MUTE"));

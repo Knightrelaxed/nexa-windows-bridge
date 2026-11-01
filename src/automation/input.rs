@@ -12,7 +12,8 @@ use tracing::{info, warn};
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN,
+    GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId, SM_CXSCREEN,
+    SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN,
 };
 
 /// Global cancellation flag to immediately halt long-running input actions (e.g. typing)
@@ -493,27 +494,19 @@ pub fn desktop_scroll(direction: &str, amount: i32) -> Result<i32, String> {
     Ok(delta)
 }
 
-/// Returns true if the currently active foreground window belongs to a system terminal or sensitive command processor (Audit R3).
-/// Protects against autonomous AI injecting arbitrary terminal commands into an open console window.
-pub fn is_foreground_terminal_active() -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+/// Helper to query process full image path by PID
+pub fn get_process_image_path(pid: u32) -> Option<String> {
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     use windows_sys::Win32::Foundation::CloseHandle;
 
-    unsafe {
-        let hwnd = GetForegroundWindow();
-        if hwnd.is_null() {
-            return false;
-        }
-        let mut pid: u32 = 0;
-        GetWindowThreadProcessId(hwnd, &mut pid);
-        if pid == 0 {
-            return false;
-        }
+    if pid == 0 {
+        return None;
+    }
 
+    unsafe {
         let h_proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if h_proc.is_null() {
-            return false;
+            return None;
         }
 
         extern "system" {
@@ -531,7 +524,36 @@ pub fn is_foreground_terminal_active() -> bool {
         CloseHandle(h_proc);
 
         if ok != 0 && size > 0 {
-            let path = String::from_utf16_lossy(&buf[..size as usize]);
+            Some(String::from_utf16_lossy(&buf[..size as usize]))
+        } else {
+            None
+        }
+    }
+}
+
+/// Helper to get process executable name (e.g. "chrome.exe") by PID
+pub fn get_process_name_by_pid(pid: u32) -> String {
+    if let Some(path) = get_process_image_path(pid) {
+        std::path::Path::new(&path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+/// Helper to detect if the active foreground window belongs to a protected terminal shell (cmd, PowerShell, Windows Terminal)
+pub fn is_foreground_terminal_active() -> bool {
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            return false;
+        }
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if let Some(path) = get_process_image_path(pid) {
             let lower = path.to_lowercase();
             let is_blocked = lower.ends_with("cmd.exe")
                 || lower.ends_with("powershell.exe")
@@ -549,6 +571,200 @@ pub fn is_foreground_terminal_active() -> bool {
         } else {
             false
         }
+    }
+}
+
+/// Information about an open top-level window
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct WindowInfo {
+    pub title: String,
+    pub process_name: String,
+    pub pid: u32,
+    pub is_foreground: bool,
+}
+
+struct WindowEnumState {
+    own_pid: u32,
+    foreground_hwnd: isize,
+    windows: Vec<WindowInfo>,
+}
+
+unsafe extern "system" fn list_windows_callback(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    lparam: windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::Win32::Foundation::BOOL {
+    use windows_sys::Win32::Graphics::Dwm::DwmGetWindowAttribute;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+        IsIconic, IsWindowVisible, GWL_EXSTYLE, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
+        WS_EX_TRANSPARENT,
+    };
+
+    let st = &mut *(lparam as *mut WindowEnumState);
+
+    // Filter out invisible or minimized windows
+    if IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
+        return 1;
+    }
+
+    let mut pid: u32 = 0;
+    GetWindowThreadProcessId(hwnd, &mut pid);
+    if pid == 0 || pid == st.own_pid {
+        return 1; // Skip invalid or Nexa Bridge's own windows
+    }
+
+    // Exclude cloaked windows (suspended UWP apps, virtual desktop hidden windows)
+    const DWMWA_CLOAKED: u32 = 14;
+    let mut cloaked: u32 = 0;
+    let hr = DwmGetWindowAttribute(
+        hwnd,
+        DWMWA_CLOAKED,
+        &mut cloaked as *mut u32 as *mut std::ffi::c_void,
+        4,
+    );
+    if hr >= 0 && cloaked != 0 {
+        return 1;
+    }
+
+    // Exclude tool windows and transparent layered overlays
+    let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+    if ex & WS_EX_TOOLWINDOW != 0 {
+        return 1;
+    }
+    if ex & WS_EX_LAYERED != 0 && ex & WS_EX_TRANSPARENT != 0 {
+        return 1;
+    }
+
+    let len = GetWindowTextLengthW(hwnd);
+    if len <= 0 {
+        return 1;
+    }
+
+    let mut buf = vec![0u16; (len + 1) as usize];
+    let read_len = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+    if read_len <= 0 {
+        return 1;
+    }
+
+    let title = String::from_utf16_lossy(&buf[..read_len as usize]).trim().to_string();
+    if title.is_empty()
+        || title == "Program Manager"
+        || title == "Windows Input Experience"
+        || title == "Windows Shell Experience Host"
+    {
+        return 1;
+    }
+
+    let proc_name = get_process_name_by_pid(pid);
+    let is_foreground = (hwnd as isize) == st.foreground_hwnd;
+
+    st.windows.push(WindowInfo {
+        title,
+        process_name: proc_name,
+        pid,
+        is_foreground,
+    });
+
+    1
+}
+
+/// Enumerate all currently visible top-level user application windows on the desktop.
+pub fn list_open_windows() -> Vec<WindowInfo> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetForegroundWindow};
+
+    let foreground_hwnd = unsafe { GetForegroundWindow() } as isize;
+    let own_pid = std::process::id();
+
+    let mut state = WindowEnumState {
+        own_pid,
+        foreground_hwnd,
+        windows: Vec::new(),
+    };
+
+    unsafe {
+        EnumWindows(
+            Some(list_windows_callback),
+            &mut state as *mut WindowEnumState as isize,
+        );
+    }
+
+    state.windows
+}
+
+/// Trigger Windows Task View (Win+Tab) to show all open tasks/desktops persistently
+pub fn show_task_view() -> Result<(), String> {
+    unsafe {
+        let win_down = make_keyboard_input(VK_LWIN, false);
+        let tab_down = make_keyboard_input(VK_TAB, false);
+        let tab_up = make_keyboard_input(VK_TAB, true);
+        let win_up = make_keyboard_input(VK_LWIN, true);
+        send_inputs(&[win_down, tab_down, tab_up, win_up])
+    }
+}
+
+/// Close the active foreground window gracefully via WM_CLOSE.
+/// Explicitly guards Nexa Bridge's own process and critical OS services.
+pub fn close_active_window() -> Result<String, String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+        PostMessageW, WM_CLOSE,
+    };
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            return Err("Tidak ada jendela aktif di latar depan untuk ditutup.".to_string());
+        }
+
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == 0 {
+            return Err("Jendela aktif tidak memiliki proses yang valid.".to_string());
+        }
+
+        if pid == std::process::id() {
+            return Err("Ditolak oleh kebijakan keamanan: Nexa Bridge dilindungi dari penutupan diri sendiri.".to_string());
+        }
+
+        let proc_name = get_process_name_by_pid(pid);
+        let lower = proc_name.to_lowercase();
+        if lower == "csrss.exe"
+            || lower == "dwm.exe"
+            || lower == "lsass.exe"
+            || lower == "services.exe"
+            || lower == "smss.exe"
+            || lower == "explorer.exe"
+        {
+            return Err(format!(
+                "Penutupan jendela ditolak oleh kebijakan keamanan: proses sistem '{}' dilindungi.",
+                proc_name
+            ));
+        }
+
+        let len = GetWindowTextLengthW(hwnd);
+        let title = if len > 0 {
+            let mut buf = vec![0u16; (len + 1) as usize];
+            let read_len = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+            if read_len > 0 {
+                String::from_utf16_lossy(&buf[..read_len as usize]).trim().to_string()
+            } else {
+                "Jendela Aktif".to_string()
+            }
+        } else {
+            "Jendela Aktif".to_string()
+        };
+
+        let sent = PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        if sent == 0 {
+            return Err("Gagal mengirim sinyal penutupan (WM_CLOSE) ke jendela aktif.".to_string());
+        }
+
+        info!(
+            "[AUTOMATION] 🛑 close_active_window: successfully sent WM_CLOSE to '{}' ({}, pid={})",
+            title, proc_name, pid
+        );
+
+        Ok(format!("Jendela '{}' ({}) berhasil ditutup.", title, proc_name))
     }
 }
 
@@ -906,5 +1122,29 @@ mod tests {
 
         reset_automation_abort();
         assert!(!is_automation_abort_requested());
+    }
+
+    #[test]
+    fn test_get_process_name_and_path() {
+        let own_pid = std::process::id();
+        let name = get_process_name_by_pid(own_pid);
+        assert!(!name.is_empty());
+        assert_ne!(name, "unknown");
+
+        let invalid = get_process_name_by_pid(0);
+        assert_eq!(invalid, "unknown");
+    }
+
+    #[test]
+    fn test_list_open_windows_filtering() {
+        let windows = list_open_windows();
+        let own_pid = std::process::id();
+
+        // Nexa Bridge's own process must never be in the open user window list
+        for w in &windows {
+            assert_ne!(w.pid, own_pid, "Own process found in open windows list");
+            assert!(!w.title.is_empty(), "Window title must not be empty");
+            assert!(!w.process_name.is_empty(), "Process name must not be empty");
+        }
     }
 }
