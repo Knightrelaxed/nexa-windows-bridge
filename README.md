@@ -18,6 +18,12 @@ Dokumentasi lengkap dan arsitektur sistem telah disusun di dalam folder [`docs/`
 * [**Spesifikasi Komponen & Antarmuka UI (Dual-Mode & HUD)**](./docs/UI_COMPONENTS_AND_SPECIFICATION.md)
 * [**Katalog Komponen & Referensi Berkas Lengkap**](./docs/COMPONENTS_AND_FILES.md)
 
+### 🌟 Fitur Unggulan Terbaru:
+* **Native Win32 GDI Stealth Overlay Window:** Bebas kedipan layar hitam (*black screen flickers*) 100% pada DWM Windows saat penyorotan target kursor & bounding box.
+* **Smart Scroll Deadzone Auto-Centering:** Pemulihan kursor otomatis dari area header/tab bar (<220px) ke tengah konten dokumen sebelum putaran mouse wheel diinjeksikan.
+* **Interactive HUD Click Protection:** Perlindungan titik klik otomatis agar agen otomasi tidak dapat mengeklik jendela floating pill HUD miliknya sendiri.
+* **Graceful Window Close with Z-Order Fallback:** Penutupan jendela aplikasi aktif via sinyal resmi Win32 `WM_CLOSE`, lengkap dengan fallback pencarian jendela di Z-order jika jendela HUD sedang terfokus.
+
 ---
 
 ## 🚀 Menjalankan Aplikasi
@@ -26,9 +32,9 @@ Dokumentasi lengkap dan arsitektur sistem telah disusun di dalam folder [`docs/`
 # Jalankan mode pengembangan
 cargo run
 
-# Jalankan pengujian unit (90 tests)
+# Jalankan pengujian unit (118 tests)
 cargo test
 
-# Build binary mandiri (.exe) -> menghasilkan target/release/Nexa Bridge.exe
+# Build binary mandiri (.exe) -> menghasilkan target/release/nexa-bridge.exe
 cargo build --release
 ```

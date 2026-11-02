@@ -304,17 +304,19 @@ Berkas `ui/settings_dialog.slint` mengelola parameter koneksi dan preferensi mod
 
 ---
 
-## 10. Komponen Transparan: Stealth Overlay Window
+## 10. Komponen Transparan: Native Win32 GDI Stealth Overlay Window
 
-Berkas `ui/overlay_window.slint` menangani visualisasi DirectComposition *click-through*:
-* Gaya: `BOX`, `RING`, `POINTER`, `SPOTLIGHT`, dan `RIPPLE`.
+Modul `src/automation/highlighter.rs` mengimplementasikan overlay siluman native murni Win32 GDI (`WS_EX_LAYERED | WS_EX_TRANSPARENT | LWA_COLORKEY 0x00000000`):
+* **Kekebalan Layar Hitam (Immunity from Black Screen):** Tidak lagi menggunakan swapchain grafis Slint OpenGL/DirectComposition layar penuh yang sebelumnya memicu kedipan hitam pada DWM Windows saat ditampilkan/disembunyikan. Native Win32 GDI window render transparan 100% tanpa alokasi swapchain grafis baru dan 100% tembus klik (*click-through*).
+* **Gaya Visual:** `BOX` (cyan neon bounding box), `RING` (cincin konsentris), `POINTER` (laser reticle), dan `SPOTLIGHT` (peredupan fokus).
+* **Click Ripple:** Riak gelombang klik visual kini disederhanakan tanpa memicu fullscreen swapchain re-entry.
 
 ---
 
 ## 11. Menu Konteks Tray & Global Hotkeys
 
 * **Menu Tray:** Buka N.E.X.A, Mute/Unmute, Mulai Layar, Layar Penuh/Jendela, Pengaturan, Keluar.
-* **Global Hotkeys:** `Win+Alt+N` (Boss Key), `Win+Alt+M` (Mute), `Win+Alt+S` (Screen Share), `F11` (Fullscreen Toggle), `Escape` (Exit Fullscreen/Close Modal).
+* **Global Hotkeys:** `Win+Alt+N` (Boss Key), `Win+Alt+M` atau fallback `Ctrl+Shift+M` (Mute/Unmute Mic), `Win+Alt+S` (Toggle Screen Share), `F11` (Fullscreen Toggle), `Escape` (Exit Fullscreen/Close Modal).
 
 ---
 

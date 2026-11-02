@@ -139,22 +139,25 @@ Instruksi dari server AI untuk mengendalikan perangkat Windows. Seluruh nama aks
 ```
 
 ##### Daftar Aksi yang Didukung & Parameter:
-1. `DESKTOP_CLICK`: `x`, `y` (skala 0..1000), `button` (`"LEFT"`, `"RIGHT"`, `"MIDDLE"`), `double_click` (bool).
-2. `DESKTOP_SCROLL`: `direction` (`"UP"`, `"DOWN"`), `amount` / `steps` (default 3 notch).
+1. `DESKTOP_CLICK`: `x`, `y` (skala 0..1000), `button` (`"LEFT"`, `"RIGHT"`, `"MIDDLE"`), `double_click` (bool). *Catatan: Otomatis dilindungi dari klik yang mengenai area HUD / pill Nexa Bridge sendiri.*
+2. `DESKTOP_SCROLL`: `direction` (`"UP"`, `"DOWN"`), `amount` / `steps` (default 3 notch), `x` & `y` (skala 0..1000 opsional). *Catatan: Otomatis memindahkan kursor ke tengah konten bila kursor tertinggal di area deadzone header/tab bar (<220px) atau taskbar.*
 3. `DESKTOP_TYPE_TEXT`: `text` (string Unicode), `press_enter` (bool opsional). *Catatan: Diblokir jika jendela aktif adalah konsol terminal.*
-4. `DESKTOP_PRESS_KEY`: `key` (`"ENTER"`, `"SPACE"`, `"ESCAPE"`, `"TAB"`, `"BACKSPACE"`, `"UP"`, dll.).
-5. `HIGHLIGHT_ELEMENT`: `x`, `y`, `width`, `height` (0..1000), `style` (`"BOX"`, `"RING"`, `"POINTER"`, `"SPOTLIGHT"`), `label` (string opsional).
+4. `DESKTOP_PRESS_KEY`: `key` (`"ENTER"`, `"SPACE"`, `"ESCAPE"`, `"TAB"`, `"BACKSPACE"`, `"UP"`, `"DOWN"`, `"LEFT"`, `"RIGHT"`, `"ALT+TAB"`, dll.).
+5. `HIGHLIGHT_ELEMENT`: `ymin`, `xmin`, `ymax`, `xmax` (atau `x`, `y`, `width`, `height` 0..1000), `style` (`"BOX"`, `"RING"`, `"POINTER"`, `"SPOTLIGHT"`), `label` (string opsional). Menggunakan Native Win32 GDI Stealth Overlay Window bebas layar hitam.
 6. `POINT_CURSOR`: `x`, `y` (0..1000).
 7. `CLEAR_HIGHLIGHTS`: Membersihkan seluruh sorotan visual overlay.
-8. `LAUNCH_APP`: `app` (`"chrome"`, `"notepad"`, `"calc"`, `"explorer"`, `"vscode"`, `"edge"`) atau `url` (`http://`, `https://`).
-9. `LOCK_SCREEN`: Mengunci workstation Windows (`LockWorkStation`).
-10. `SHOW_DESKTOP`: Menampilkan desktop Windows instan (`Win+D`).
-11. `SET_VOLUME`: `volume_level` (0.0..1.0), `direction` (`"UP"`, `"DOWN"`), `steps` (1..25).
-12. `MUTE`, `UNMUTE`, `TOGGLEMUTE`: Kendali pembisuan audio laptop.
-13. `TAKE_SCREENSHOT`: Menangkap layar desktop.
-14. `GET_BATTERY_STATUS`: Meminta laporan status daya baterai laptop.
-15. `GET_SYSTEM_METRICS`: Meminta laporan utilisasi CPU, RAM, dan resolusi.
-16. `ABORT_AUTOMATION` (atau `CANCEL`): Fast-path abort instan yang melompati antrean FIFO dan membatalkan otomasi seketika.
+8. `CLOSE_WINDOW` (atau alias `CLOSE_APP`, `CLOSE_TAB`): Menutup jendela aplikasi yang sedang aktif via sinyal `WM_CLOSE`. Mendukung resolusi Z-order otomatis ke aplikasi di bawahnya jika Nexa Bridge sedang terfokus.
+9. `GET_OPEN_WINDOWS`: Mengembalikan daftar seluruh jendela aplikasi pengguna yang terbuka di desktop (judul, process_name, pid, is_foreground).
+10. `TASK_VIEW`: Menampilkan tampilan Windows Task View (Win+Tab) secara persisten.
+11. `LAUNCH_APP`: `app` (`"chrome"`, `"notepad"`, `"calc"`, `"explorer"`, `"vscode"`, `"edge"`) atau `url` (`http://`, `https://`).
+12. `LOCK_SCREEN`: Mengunci workstation Windows (`LockWorkStation`).
+13. `SHOW_DESKTOP`: Menampilkan desktop Windows instan (`Win+D`).
+14. `SET_VOLUME`: `volume_level` (0.0..1.0), `direction` (`"UP"`, `"DOWN"`), `steps` (1..25).
+15. `MUTE`, `UNMUTE`, `TOGGLEMUTE`: Kendali pembisuan audio laptop.
+16. `TAKE_SCREENSHOT`: Menangkap layar desktop.
+17. `GET_BATTERY_STATUS`: Meminta laporan status daya baterai laptop.
+18. `GET_SYSTEM_METRICS`: Meminta laporan utilisasi CPU, RAM, dan resolusi.
+19. `ABORT_AUTOMATION` (atau `CANCEL`): Fast-path abort instan yang melompati antrean FIFO dan membatalkan otomasi seketika.
 
 #### 3. `CALL_AUDIO_PLAY` & Binary Stream (Stream Audio Balasan Suara AI - Audit N6, R4)
 Dapat dikirimkan dalam bentuk JSON dengan teks Base64 (`ServerMessage::AudioPlay`) atau dikirim langsung sebagai paket biner WebSocket murni (`Message::Binary`).
