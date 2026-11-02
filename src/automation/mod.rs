@@ -369,6 +369,25 @@ pub async fn handle_execute_command(
                                 "details": err.to_string(),
                             }),
                         )
+                    } else if let UiaError::Guard(crate::automation::uia::guard::GuardError::OwnProcess) = err {
+                        (
+                            "Target klik berada di dalam jendela interaktif milik Nexa Bridge (HUD capsule / kontrol sistem). Klik dibatalkan demi keamanan agar tidak menekan antarmuka sendiri.".to_string(),
+                            serde_json::json!({
+                                "error": "GUARD_OWN_PROCESS",
+                                "delivered": "not_delivered",
+                                "retry": "never",
+                                "details": err.to_string(),
+                            }),
+                        )
+                    } else if let UiaError::Guard(crate::automation::uia::guard::GuardError::ForegroundChanged) = err {
+                        (
+                            "Jendela target kehilangan fokus (foreground berpindah ke aplikasi lain saat aksi diproses). Klik dibatalkan demi keamanan agar tidak mengenai jendela yang salah.".to_string(),
+                            serde_json::json!({
+                                "error": "GUARD_FOREGROUND_CHANGED",
+                                "delivered": "not_delivered",
+                                "details": err.to_string(),
+                            }),
+                        )
                     } else {
                         (
                             format!("Gagal mengeklik layar desktop: {}", err),

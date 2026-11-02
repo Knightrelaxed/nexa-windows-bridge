@@ -298,8 +298,11 @@ pub fn degraded_click(
     let target = guard::guard_point(px, py)?;
     if target.is_foreground {
         if let Some(ref snap) = target.snapshot {
-            let _ = guard::verify_unchanged(snap);
+            guard::verify_unchanged(snap)?;
         }
+    }
+    if is_automation_abort_requested() {
+        return Err(UiaError::Cancelled);
     }
     let (rx, ry) = desktop_click(norm_x, norm_y, button, double).map_err(UiaError::InputFailed)?;
     Ok(ClickReport {
@@ -517,10 +520,9 @@ fn run_click(
                     match act_on(&scan, idx, &target, button, double, policy, hint_tag, t0) {
                         Ok(report) => return Ok(report),
                         Err(UiaError::ElevatedTarget) => return Err(UiaError::ElevatedTarget),
-                        Err(UiaError::Guard(g @ guard::GuardError::ElevatedTarget { .. })) => {
-                            return Err(UiaError::Guard(g));
-                        }
-                        Err(UiaError::Guard(g @ guard::GuardError::OccludedByWindow { .. })) => {
+                        Err(UiaError::Guard(g)) => {
+                            // Seluruh pelanggaran guard (ElevatedTarget, OccludedByWindow, OwnProcess, ForegroundChanged, dll.)
+                            // dilarang keras fallback ke klik fisik demi keamanan sistem. Batalkan aksi seketika.
                             return Err(UiaError::Guard(g));
                         }
                         Err(e) if e.is_transient() && attempt == 0 => {
@@ -552,7 +554,7 @@ fn run_click(
     guard::check_target_integrity(target.target_pid).map_err(UiaError::from)?;
     if target.is_foreground {
         if let Some(ref snap) = target.snapshot {
-            let _ = guard::verify_unchanged(snap);
+            guard::verify_unchanged(snap)?;
         }
     }
     if is_automation_abort_requested() {
@@ -620,7 +622,12 @@ fn act_on(
         }
     }
 
-    // Tier-2 fisik di pusat kontrol hasil snap
+    // Tier-2 fisik di pusat kontrol hasil snap: verifikasi kembali foreground jika target awalnya aktif
+    if target.is_foreground {
+        if let Some(ref snap) = target.snapshot {
+            guard::verify_unchanged(snap)?;
+        }
+    }
     physical_click_at_pixel(cx, cy, button, double)?;
     Ok(report(ClickMethod::PhysicalSnapped))
 }

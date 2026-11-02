@@ -323,13 +323,30 @@ pub fn check_target_integrity(target_pid: u32) -> Result<(), GuardError> {
 }
 
 /// Uji oklusi 5-titik Win32: Pusat + 4 kuartal rect hasil snap.
-/// Memastikan kontrol target tidak tertutup jendela lain atau toast notifikasi.
+/// Memastikan kontrol target tidak tertutup jendela lain, popup/menu, atau toast notifikasi.
 pub fn verify_rect_occlusion(
     target_hwnd: usize,
     rect: &PixelRect,
 ) -> Result<(), GuardError> {
-    let target_h = target_hwnd as HWND;
-    let target_root = root_owner_of(target_h);
+    verify_rect_occlusion_with(
+        target_hwnd,
+        rect,
+        is_point_inside_own_interactive_window,
+        top_level_at,
+    )
+}
+
+/// Implementasi uji oklusi 5-titik dengan injeksi callback untuk unit testing deterministik.
+pub fn verify_rect_occlusion_with<FInteractive, FTopLevel>(
+    target_hwnd: usize,
+    rect: &PixelRect,
+    mut is_own_interactive: FInteractive,
+    mut top_level: FTopLevel,
+) -> Result<(), GuardError>
+where
+    FInteractive: FnMut(i32, i32) -> bool,
+    FTopLevel: FnMut(i32, i32) -> Option<usize>,
+{
     let w = rect.right - rect.left;
     let h = rect.bottom - rect.top;
     if w <= 0 || h <= 0 {
@@ -350,9 +367,17 @@ pub fn verify_rect_occlusion(
     ];
 
     for (px, py) in points {
-        if let Some(top) = top_level_at(px, py) {
-            let top_h = top as HWND;
-            if top != target_hwnd && root_owner_of(top_h) != target_root {
+        // 1. Cek apakah titik tertutup jendela interaktif milik Nexa sendiri (HUD pill)
+        if is_own_interactive(px, py) {
+            return Err(GuardError::OwnProcess);
+        }
+
+        // 2. Cek jendela top-level di titik tersebut.
+        // Wajib == target_hwnd secara ketat. Popup, menu konteks, atau dropdown Chromium
+        // yang memiliki HWND berbeda dianggap menutupi elemen target di bawahnya.
+        if let Some(top) = top_level(px, py) {
+            if top != target_hwnd {
+                let top_h = top as HWND;
                 return Err(GuardError::OccludedByWindow {
                     occluding_hwnd: top,
                     occluding_pid: pid_of(top_h),
@@ -528,6 +553,74 @@ mod tests {
             bottom: 100,
         };
         assert_eq!(verify_rect_occlusion(0, &empty), Ok(()));
+    }
+
+    #[test]
+    fn test_verify_rect_occlusion_passes_when_all_points_match_target() {
+        let rect = PixelRect {
+            left: 100,
+            top: 100,
+            right: 200,
+            bottom: 160,
+        };
+        let target_hwnd = 0x1234;
+        let res = verify_rect_occlusion_with(
+            target_hwnd,
+            &rect,
+            |_px, _py| false,
+            |_px, _py| Some(target_hwnd),
+        );
+        assert_eq!(res, Ok(()));
+    }
+
+    #[test]
+    fn test_verify_rect_occlusion_fails_when_own_interactive_window_covers_point() {
+        let rect = PixelRect {
+            left: 100,
+            top: 100,
+            right: 200,
+            bottom: 160,
+        };
+        let target_hwnd = 0x1234;
+        // Misal HUD pill Nexa menutupi pusat elemen (150, 130)
+        let res = verify_rect_occlusion_with(
+            target_hwnd,
+            &rect,
+            |px, py| px == 150 && py == 130,
+            |_px, _py| Some(target_hwnd),
+        );
+        assert_eq!(res, Err(GuardError::OwnProcess));
+    }
+
+    #[test]
+    fn test_verify_rect_occlusion_fails_when_foreign_top_level_or_popup_covers_point() {
+        let rect = PixelRect {
+            left: 100,
+            top: 100,
+            right: 200,
+            bottom: 160,
+        };
+        let target_hwnd = 0x1234;
+        let popup_hwnd = 0x9999;
+        // Misal popup Chromium atau toast menutupi salah satu kuartal
+        let res = verify_rect_occlusion_with(
+            target_hwnd,
+            &rect,
+            |_px, _py| false,
+            |px, py| {
+                if px > 150 && py > 130 {
+                    Some(popup_hwnd)
+                } else {
+                    Some(target_hwnd)
+                }
+            },
+        );
+        match res {
+            Err(GuardError::OccludedByWindow { occluding_hwnd, .. }) => {
+                assert_eq!(occluding_hwnd, popup_hwnd);
+            }
+            other => panic!("Expected OccludedByWindow, got {:?}", other),
+        }
     }
 
     #[test]
