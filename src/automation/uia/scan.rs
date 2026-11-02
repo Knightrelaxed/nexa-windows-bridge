@@ -21,9 +21,10 @@ use windows::Win32::UI::Accessibility::{
     IUIAutomationInvokePattern, IUIAutomationSelectionItemPattern, IUIAutomationTogglePattern,
     IUIAutomationValuePattern, TreeScope_Descendants, UIA_AutomationIdPropertyId,
     UIA_BoundingRectanglePropertyId, UIA_ControlTypePropertyId, UIA_ExpandCollapsePatternId,
-    UIA_InvokePatternId, UIA_IsControlElementPropertyId, UIA_IsEnabledPropertyId,
-    UIA_IsOffscreenPropertyId, UIA_NamePropertyId, UIA_PATTERN_ID, UIA_ProcessIdPropertyId,
-    UIA_PROPERTY_ID, UIA_SelectionItemPatternId, UIA_TogglePatternId, UIA_ValuePatternId,
+    UIA_HelpTextPropertyId, UIA_InvokePatternId, UIA_IsControlElementPropertyId,
+    UIA_IsEnabledPropertyId, UIA_IsOffscreenPropertyId, UIA_NamePropertyId, UIA_PATTERN_ID,
+    UIA_ProcessIdPropertyId, UIA_PROPERTY_ID, UIA_SelectionItemPatternId, UIA_TogglePatternId,
+    UIA_ValuePatternId,
 };
 
 /// Batas elemen per scan (sama dengan UFO: `min(com_elem_array.Length, 500)`).
@@ -150,6 +151,7 @@ fn build_cache(uia: &IUIAutomation) -> Result<IUIAutomationCacheRequest, UiaErro
             UIA_BoundingRectanglePropertyId,
             UIA_AutomationIdPropertyId,
             UIA_ProcessIdPropertyId,
+            UIA_HelpTextPropertyId,
         ] {
             cache.AddProperty(p).map_err(|e| classify(&e))?;
         }
@@ -166,8 +168,16 @@ fn read_cached(el: &IUIAutomationElement) -> Option<ControlInfo> {
     unsafe {
         let kind = ControlKind::from_uia_id(el.CachedControlType().ok()?.0)?;
         let rect = sanitize(el.CachedBoundingRectangle().ok()?);
-        let name = el.CachedName().map(|b| b.to_string()).unwrap_or_default();
+        let mut name = el.CachedName().map(|b| b.to_string()).unwrap_or_default();
         let automation_id = el.CachedAutomationId().map(|b| b.to_string()).unwrap_or_default();
+        if name.trim().is_empty() {
+            if let Ok(help) = el.CachedHelpText() {
+                let h = help.to_string();
+                if !h.trim().is_empty() {
+                    name = h;
+                }
+            }
+        }
         let pid = el.CachedProcessId().ok()?.max(0) as u32;
         Some(ControlInfo {
             kind,

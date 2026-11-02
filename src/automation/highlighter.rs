@@ -106,28 +106,28 @@ const WM_HIDE_HIGHLIGHT: u32 = WM_USER + 202;
 const WM_STOP_OVERLAY: u32 = WM_USER + 203;
 
 #[derive(Clone)]
-struct OverlayDrawState {
-    visible: bool,
-    rect: RECT,
-    style: HighlightStyle,
-    label: String,
-    ripple_radius: f32,
+pub struct ActiveHighlight {
+    pub rect: RECT,
+    pub style: HighlightStyle,
+    pub label: String,
 }
 
-impl Default for OverlayDrawState {
-    fn default() -> Self {
-        Self {
-            visible: false,
-            rect: RECT {
-                left: 0,
-                top: 0,
-                right: 0,
-                bottom: 0,
-            },
-            style: HighlightStyle::Box,
-            label: String::new(),
-            ripple_radius: 0.0,
-        }
+#[derive(Clone)]
+pub struct ActiveRipple {
+    pub cx: i32,
+    pub cy: i32,
+    pub radius: i32,
+}
+
+#[derive(Clone, Default)]
+struct OverlayDrawState {
+    highlight: Option<ActiveHighlight>,
+    ripple: Option<ActiveRipple>,
+}
+
+impl OverlayDrawState {
+    pub fn is_empty(&self) -> bool {
+        self.highlight.is_none() && self.ripple.is_none()
     }
 }
 
@@ -151,25 +151,26 @@ unsafe extern "system" fn overlay_wnd_proc(
             // 1. Fill entire window with pure black (0x00000000) which is colorkeyed out to 100% transparent
             FillRect(hdc, &cr, GetStockObject(BLACK_BRUSH as i32) as HBRUSH);
 
-            // 2. Draw active highlight if visible
+            // 2. Draw active highlight & ripple independently (Dual-Layer Isolation)
             if let Ok(guard) = GLOBAL_OVERLAY_STATE.lock() {
                 if let Some(ref state_arc) = *guard {
                     if let Ok(state) = state_arc.lock() {
-                        if state.visible {
-                            let cyan_color: u32 = 0x00FFE500; // BGR: RGB(0, 229, 255)
-                            let white_color: u32 = 0x00FFFFFF;
+                        let cyan_color: u32 = 0x00FFE500; // BGR: RGB(0, 229, 255)
+                        let white_color: u32 = 0x00FFFFFF;
 
-                            match state.style {
+                        // Layer 1: Persistent Highlight (Box, Ring, Pointer, Spotlight)
+                        if let Some(ref hl) = state.highlight {
+                            match hl.style {
                                 HighlightStyle::Box | HighlightStyle::Spotlight => {
                                     let pen = CreatePen(PS_SOLID as i32, 3, cyan_color);
                                     let null_brush = GetStockObject(NULL_BRUSH as i32);
                                     let old_pen = SelectObject(hdc, pen as HGDIOBJ);
                                     let old_brush = SelectObject(hdc, null_brush);
 
-                                    let l = state.rect.left;
-                                    let t = state.rect.top;
-                                    let r = state.rect.right.max(l + 16);
-                                    let b = state.rect.bottom.max(t + 16);
+                                    let l = hl.rect.left;
+                                    let t = hl.rect.top;
+                                    let r = hl.rect.right.max(l + 16);
+                                    let b = hl.rect.bottom.max(t + 16);
 
                                     RoundRect(hdc, l, t, r, b, 8, 8);
 
@@ -185,11 +186,11 @@ unsafe extern "system" fn overlay_wnd_proc(
                                     DeleteObject(tick_pen as HGDIOBJ);
 
                                     // Floating label badge
-                                    if !state.label.is_empty() {
+                                    if !hl.label.is_empty() {
                                         let label_h = 22;
                                         let label_top = (t - label_h - 4).max(2);
                                         let wide_label: Vec<u16> =
-                                            state.label.encode_utf16().collect();
+                                            hl.label.encode_utf16().collect();
                                         let label_w =
                                             (wide_label.len() as i32 * 8 + 18).clamp(44, 380);
 
@@ -241,10 +242,10 @@ unsafe extern "system" fn overlay_wnd_proc(
 
                                     Ellipse(
                                         hdc,
-                                        state.rect.left,
-                                        state.rect.top,
-                                        state.rect.right,
-                                        state.rect.bottom,
+                                        hl.rect.left,
+                                        hl.rect.top,
+                                        hl.rect.right,
+                                        hl.rect.bottom,
                                     );
 
                                     SelectObject(hdc, old_pen);
@@ -252,8 +253,8 @@ unsafe extern "system" fn overlay_wnd_proc(
                                     DeleteObject(pen as HGDIOBJ);
                                 }
                                 HighlightStyle::Pointer => {
-                                    let cx = (state.rect.left + state.rect.right) / 2;
-                                    let cy = (state.rect.top + state.rect.bottom) / 2;
+                                    let cx = (hl.rect.left + hl.rect.right) / 2;
+                                    let cy = (hl.rect.top + hl.rect.bottom) / 2;
                                     let pen = CreatePen(PS_SOLID as i32, 2, cyan_color);
                                     let null_brush = GetStockObject(NULL_BRUSH as i32);
                                     let old_pen = SelectObject(hdc, pen as HGDIOBJ);
@@ -274,6 +275,26 @@ unsafe extern "system" fn overlay_wnd_proc(
                                     DeleteObject(dot_brush as HGDIOBJ);
                                 }
                             }
+                        }
+
+                        // Layer 2: Click Ripple Indicator (Concentric pulse rings)
+                        if let Some(ref rip) = state.ripple {
+                            let cx = rip.cx;
+                            let cy = rip.cy;
+                            let r = rip.radius;
+
+                            let pen = CreatePen(PS_SOLID as i32, 2, cyan_color);
+                            let null_brush = GetStockObject(NULL_BRUSH as i32);
+                            let old_pen = SelectObject(hdc, pen as HGDIOBJ);
+                            let old_brush = SelectObject(hdc, null_brush);
+
+                            Ellipse(hdc, cx - r, cy - r, cx + r, cy + r);
+                            let inner_r = (r / 2).max(4);
+                            Ellipse(hdc, cx - inner_r, cy - inner_r, cx + inner_r, cy + inner_r);
+
+                            SelectObject(hdc, old_pen);
+                            SelectObject(hdc, old_brush);
+                            DeleteObject(pen as HGDIOBJ);
                         }
                     }
                 }
@@ -381,7 +402,17 @@ impl NativeOverlay {
                         UpdateWindow(hwnd);
                         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
                     } else if msg.message == WM_HIDE_HIGHLIGHT {
-                        ShowWindow(hwnd, SW_HIDE);
+                        let is_empty = GLOBAL_OVERLAY_STATE
+                            .lock()
+                            .ok()
+                            .and_then(|g| g.as_ref().map(|arc| arc.lock().map(|s| s.is_empty()).unwrap_or(true)))
+                            .unwrap_or(true);
+                        if is_empty {
+                            ShowWindow(hwnd, SW_HIDE);
+                        } else {
+                            InvalidateRect(hwnd, std::ptr::null(), 1);
+                            UpdateWindow(hwnd);
+                        }
                     } else if msg.message == WM_STOP_OVERLAY {
                         DestroyWindow(hwnd);
                         break;
@@ -397,12 +428,9 @@ impl NativeOverlay {
         Self { hwnd, state }
     }
 
-    pub fn show(&self, rect: RECT, style: HighlightStyle, label: String) {
+    pub fn show_highlight(&self, rect: RECT, style: HighlightStyle, label: String) {
         if let Ok(mut st) = self.state.lock() {
-            st.visible = true;
-            st.rect = rect;
-            st.style = style;
-            st.label = label;
+            st.highlight = Some(ActiveHighlight { rect, style, label });
         }
         if let Some(h) = self.hwnd {
             unsafe {
@@ -411,15 +439,57 @@ impl NativeOverlay {
         }
     }
 
-    pub fn hide(&self) {
+    pub fn hide_highlight(&self) {
         if let Ok(mut st) = self.state.lock() {
-            st.visible = false;
+            st.highlight = None;
         }
         if let Some(h) = self.hwnd {
             unsafe {
                 PostMessageW(h as HWND, WM_HIDE_HIGHLIGHT, 0, 0);
             }
         }
+    }
+
+    pub fn show_ripple(&self, cx: i32, cy: i32, radius: i32) {
+        if let Ok(mut st) = self.state.lock() {
+            st.ripple = Some(ActiveRipple { cx, cy, radius });
+        }
+        if let Some(h) = self.hwnd {
+            unsafe {
+                PostMessageW(h as HWND, WM_SHOW_HIGHLIGHT, 0, 0);
+            }
+        }
+    }
+
+    pub fn hide_ripple(&self) {
+        if let Ok(mut st) = self.state.lock() {
+            st.ripple = None;
+        }
+        if let Some(h) = self.hwnd {
+            unsafe {
+                PostMessageW(h as HWND, WM_HIDE_HIGHLIGHT, 0, 0);
+            }
+        }
+    }
+
+    pub fn clear_all(&self) {
+        if let Ok(mut st) = self.state.lock() {
+            st.highlight = None;
+            st.ripple = None;
+        }
+        if let Some(h) = self.hwnd {
+            unsafe {
+                PostMessageW(h as HWND, WM_HIDE_HIGHLIGHT, 0, 0);
+            }
+        }
+    }
+
+    pub fn show(&self, rect: RECT, style: HighlightStyle, label: String) {
+        self.show_highlight(rect, style, label);
+    }
+
+    pub fn hide(&self) {
+        self.hide_highlight();
     }
 }
 
@@ -498,12 +568,12 @@ impl HighlighterController {
                     snapped.is_snapped
                 );
 
-                overlay.show(target_rect, req.style, req.label);
+                overlay.show_highlight(target_rect, req.style, req.label);
 
                 // Auto-dissolve timer for the current epoch
                 tokio::time::sleep(Duration::from_millis(req.duration_ms)).await;
                 if active_epoch.load(Ordering::SeqCst) == epoch {
-                    overlay.hide();
+                    overlay.hide_highlight();
                     debug!("[HIGHLIGHTER] Auto-dissolved highlight epoch {}", epoch);
                 }
             });
@@ -523,14 +593,14 @@ impl HighlighterController {
                 bottom: py1.max(py0 + 16),
             };
 
-            overlay.show(target_rect, req.style, req.label);
+            overlay.show_highlight(target_rect, req.style, req.label);
         }
     }
 
     /// Smoothly dissolve the currently active highlight (e.g. on user click or action)
     pub fn dissolve_active_highlight(&self) {
         self.active_epoch.fetch_add(1, Ordering::SeqCst);
-        self.overlay.hide();
+        self.overlay.hide_highlight();
     }
 
     /// Point cursor at specific normalized coordinates (0..=1000)
@@ -549,14 +619,7 @@ impl HighlighterController {
 
     /// Display expanding click ripple indicator at physical screen coordinates (px, py)
     pub fn show_click_ripple(&self, px: i32, py: i32) {
-        let target_rect = RECT {
-            left: px - 12,
-            top: py - 12,
-            right: px + 12,
-            bottom: py + 12,
-        };
-        self.overlay
-            .show(target_rect, HighlightStyle::Ring, String::new());
+        self.overlay.show_ripple(px, py, 18);
         let overlay = Arc::clone(&self.overlay);
         let ripple_epoch = self.active_ripple_epoch.fetch_add(1, Ordering::SeqCst) + 1;
         let active_ripple_epoch = Arc::clone(&self.active_ripple_epoch);
@@ -565,7 +628,7 @@ impl HighlighterController {
             handle.spawn(async move {
                 tokio::time::sleep(Duration::from_millis(300)).await;
                 if active_ripple_epoch.load(Ordering::SeqCst) == ripple_epoch {
-                    overlay.hide();
+                    overlay.hide_ripple();
                 }
             });
         }
@@ -575,7 +638,7 @@ impl HighlighterController {
     pub fn clear_all(&self) {
         self.active_epoch.fetch_add(1, Ordering::SeqCst);
         self.active_ripple_epoch.fetch_add(1, Ordering::SeqCst);
-        self.overlay.hide();
+        self.overlay.clear_all();
         info!("[HIGHLIGHTER] 🧹 Cleared all screen highlights and overlays");
     }
 }
@@ -674,5 +737,38 @@ mod tests {
         controller.dissolve_active_highlight();
         let ep1 = controller.active_epoch.load(Ordering::SeqCst);
         assert_eq!(ep1, ep0 + 1);
+    }
+
+    #[test]
+    fn test_dual_layer_state_isolation() {
+        let mut state = OverlayDrawState::default();
+        assert!(state.is_empty());
+
+        state.highlight = Some(ActiveHighlight {
+            rect: RECT { left: 10, top: 10, right: 100, bottom: 100 },
+            style: HighlightStyle::Box,
+            label: "Test".to_string(),
+        });
+        assert!(!state.is_empty());
+        assert!(state.highlight.is_some());
+        assert!(state.ripple.is_none());
+
+        state.ripple = Some(ActiveRipple {
+            cx: 50,
+            cy: 50,
+            radius: 18,
+        });
+        assert!(!state.is_empty());
+        assert!(state.highlight.is_some());
+        assert!(state.ripple.is_some());
+
+        // Dissolving ripple does NOT destroy the active highlight
+        state.ripple = None;
+        assert!(!state.is_empty());
+        assert!(state.highlight.is_some());
+
+        // Dissolving highlight now leaves state empty
+        state.highlight = None;
+        assert!(state.is_empty());
     }
 }

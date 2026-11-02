@@ -13,7 +13,7 @@ use super::guard;
 use super::scan::{
     activate_semantic, pick_among, revalidate, set_value_semantic, Scan, Semantic, UiaContext,
 };
-use super::snap::{default_radius_px, pick_best, SnapQuery};
+use super::snap::{self, default_radius_px, pick_best, SnapQuery};
 use super::types::{
     ClickMethod, ClickReport, ControlKind, ControlSummary, SetTextReport, UiaError,
 };
@@ -69,6 +69,7 @@ enum Request {
         button: MouseButton,
         double: bool,
         policy: ClickPolicy,
+        target_hint: Option<String>,
     },
     SnapBox {
         ymin: f64,
@@ -202,7 +203,32 @@ impl UiaHandle {
         }
     }
 
+    /// Klik hybrid dengan dukungan target_hint: Window Guard → scan interaktif → hinted re-ranker → semantik → fisik.
+    pub async fn click_with_hint(
+        &self,
+        norm_x: f64,
+        norm_y: f64,
+        button: MouseButton,
+        double: bool,
+        policy: ClickPolicy,
+        target_hint: Option<String>,
+    ) -> Result<ClickReport, UiaError> {
+        let req = Request::Click {
+            norm_x,
+            norm_y,
+            button,
+            double,
+            policy,
+            target_hint,
+        };
+        match self.call(req, CLICK_BUDGET).await? {
+            Response::Click(r) => Ok(r),
+            _ => Err(UiaError::Internal("tipe respons tidak cocok".into())),
+        }
+    }
+
     /// Klik hybrid: Window Guard → scan interaktif → snap → semantik (UIA pattern) → fisik.
+    #[allow(dead_code)]
     pub async fn click(
         &self,
         norm_x: f64,
@@ -211,17 +237,7 @@ impl UiaHandle {
         double: bool,
         policy: ClickPolicy,
     ) -> Result<ClickReport, UiaError> {
-        let req = Request::Click {
-            norm_x,
-            norm_y,
-            button,
-            double,
-            policy,
-        };
-        match self.call(req, CLICK_BUDGET).await? {
-            Response::Click(r) => Ok(r),
-            _ => Err(UiaError::Internal("tipe respons tidak cocok".into())),
-        }
+        self.click_with_hint(norm_x, norm_y, button, double, policy, None).await
     }
 
     /// Magnet-snap untuk highlight. TIDAK PERNAH gagal: error/timeout → box visi apa adanya.
@@ -292,6 +308,7 @@ pub fn degraded_click(
         py: ry,
         snapped: false,
         control: None,
+        hint_match: None,
         elapsed_ms: t0.elapsed().as_millis() as u64,
     })
 }
@@ -384,8 +401,19 @@ fn run_job(ctx: &UiaContext, job: &Job) -> Result<Response, UiaError> {
             button,
             double,
             policy,
-        } => run_click(ctx, *norm_x, *norm_y, *button, *double, *policy, deadline, cancel)
-            .map(Response::Click),
+            target_hint,
+        } => run_click(
+            ctx,
+            *norm_x,
+            *norm_y,
+            *button,
+            *double,
+            *policy,
+            target_hint.as_deref(),
+            deadline,
+            cancel,
+        )
+        .map(Response::Click),
         Request::SnapBox {
             ymin,
             xmin,
@@ -439,6 +467,7 @@ fn run_click(
     button: MouseButton,
     double: bool,
     policy: ClickPolicy,
+    target_hint: Option<&str>,
     deadline: Instant,
     cancel: &AtomicBool,
 ) -> Result<ClickReport, UiaError> {
@@ -455,9 +484,45 @@ fn run_click(
     for attempt in 0..2 {
         match ctx.scan_window(target.target_hwnd, deadline, cancel) {
             Ok(scan) => {
-                if let Some(m) = pick_best(&scan.infos, &query) {
-                    match act_on(&scan, m.index, &target, button, double, policy, t0) {
+                let chosen_candidate = match target_hint {
+                    Some(hint) if !hint.trim().is_empty() => match snap::pick_hinted(&scan.infos, &query, hint) {
+                        snap::HintedPick::Chosen { index, sim, .. } => {
+                            let match_tag = if sim >= 0.95 {
+                                "exact".to_string()
+                            } else {
+                                format!("fuzzy ({:.0}%)", sim * 100.0)
+                            };
+                            Some((index, Some(match_tag)))
+                        }
+                        snap::HintedPick::Ambiguous(candidates) => {
+                            let desc: Vec<String> = candidates
+                                .iter()
+                                .map(|c| format!("'{}' ({:.0}px)", c.name, c.distance_px))
+                                .collect();
+                            return Err(UiaError::AmbiguousTarget(desc.join(", ")));
+                        }
+                        snap::HintedPick::Vetoed { best_name, best_sim } => {
+                            return Err(UiaError::TargetHintMismatch {
+                                hint: hint.to_string(),
+                                best_match: best_name,
+                                similarity_pct: (best_sim * 100.0).round() as u32,
+                            });
+                        }
+                        snap::HintedPick::None => None,
+                    },
+                    _ => snap::pick_best(&scan.infos, &query).map(|m| (m.index, None)),
+                };
+
+                if let Some((idx, hint_tag)) = chosen_candidate {
+                    match act_on(&scan, idx, &target, button, double, policy, hint_tag, t0) {
                         Ok(report) => return Ok(report),
+                        Err(UiaError::ElevatedTarget) => return Err(UiaError::ElevatedTarget),
+                        Err(UiaError::Guard(g @ guard::GuardError::ElevatedTarget { .. })) => {
+                            return Err(UiaError::Guard(g));
+                        }
+                        Err(UiaError::Guard(g @ guard::GuardError::OccludedByWindow { .. })) => {
+                            return Err(UiaError::Guard(g));
+                        }
                         Err(e) if e.is_transient() && attempt == 0 => {
                             debug!("[UIA] transient ({}), scan ulang", e);
                             std::thread::sleep(Duration::from_millis(60));
@@ -483,6 +548,8 @@ fn run_click(
     if !policy.allow_unsnapped_fallback {
         return Err(UiaError::NoTarget);
     }
+    // Strict UIPI guard before physical fallback
+    guard::check_target_integrity(target.target_pid).map_err(UiaError::from)?;
     if target.is_foreground {
         if let Some(ref snap) = target.snapshot {
             let _ = guard::verify_unchanged(snap);
@@ -498,6 +565,7 @@ fn run_click(
         py: ry,
         snapped: false,
         control: None,
+        hint_match: None,
         elapsed_ms: t0.elapsed().as_millis() as u64,
     })
 }
@@ -509,6 +577,7 @@ fn act_on(
     button: MouseButton,
     double: bool,
     policy: ClickPolicy,
+    hint_match: Option<String>,
     t0: Instant,
 ) -> Result<ClickReport, UiaError> {
     let info = scan.infos.get(idx).ok_or(UiaError::StaleElement)?;
@@ -527,10 +596,14 @@ fn act_on(
         py: cy,
         snapped: true,
         control: summary(),
+        hint_match: hint_match.clone(),
         elapsed_ms: t0.elapsed().as_millis() as u64,
     };
 
     revalidate(info, el)?;
+
+    // 5-Point Win32 Occlusion Gate: pastikan pusat dan 4 kuartal kontrol tidak tertutup jendela lain/toast
+    guard::verify_rect_occlusion(target.target_hwnd, &info.rect)?;
 
     // Tier-1 semantik: HANYA dilakukan jika jendela target saat ini adalah foreground,
     // klik kiri tunggal, dan foreground belum berubah.

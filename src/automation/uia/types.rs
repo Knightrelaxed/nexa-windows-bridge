@@ -162,6 +162,7 @@ pub struct ClickReport {
     pub py: i32,
     pub snapped: bool,
     pub control: Option<ControlSummary>,
+    pub hint_match: Option<String>,
     pub elapsed_ms: u64,
 }
 
@@ -178,6 +179,7 @@ impl ClickReport {
             "pattern": self.method.pattern(),
             "confirmed": !matches!(self.method, ClickMethod::SemanticUnconfirmed(_)),
             "snapped": self.snapped,
+            "hint_match": self.hint_match,
             "control": self.control.as_ref().map(|c| serde_json::json!({
                 "kind": c.kind.as_str(),
                 "name": c.name,
@@ -212,6 +214,12 @@ pub enum UiaError {
     StaleElement,
     NotEnabled,
     ElevatedTarget,
+    AmbiguousTarget(String),
+    TargetHintMismatch {
+        hint: String,
+        best_match: String,
+        similarity_pct: u32,
+    },
     ProviderUnavailable(i32),
     NoTarget,
     Guard(GuardError),
@@ -224,6 +232,7 @@ impl From<GuardError> for UiaError {
     fn from(g: GuardError) -> Self {
         match g {
             GuardError::NotResponding => UiaError::TargetNotResponding,
+            GuardError::ElevatedTarget { .. } => UiaError::ElevatedTarget,
             other => UiaError::Guard(other),
         }
     }
@@ -242,6 +251,8 @@ impl UiaError {
             UiaError::StaleElement => "STALE_ELEMENT",
             UiaError::NotEnabled => "ELEMENT_DISABLED",
             UiaError::ElevatedTarget => "ELEVATED_TARGET",
+            UiaError::AmbiguousTarget(_) => "AMBIGUOUS_TARGET",
+            UiaError::TargetHintMismatch { .. } => "TARGET_HINT_MISMATCH",
             UiaError::ProviderUnavailable(_) => "PROVIDER_UNAVAILABLE",
             UiaError::NoTarget => "NO_TARGET",
             UiaError::Guard(g) => g.code(),
@@ -300,6 +311,11 @@ impl fmt::Display for UiaError {
             UiaError::ElevatedTarget => write!(
                 f,
                 "Aplikasi target berjalan sebagai Administrator; akses UIA/input ditolak (UIPI)"
+            ),
+            UiaError::AmbiguousTarget(msg) => write!(f, "Target klik ambigu: {msg}"),
+            UiaError::TargetHintMismatch { hint, best_match, similarity_pct } => write!(
+                f,
+                "Target hint '{hint}' tidak cocok dengan elemen terdekat '{best_match}' (kemiripan {similarity_pct}% < 30%)"
             ),
             UiaError::ProviderUnavailable(hr) => write!(
                 f,

@@ -356,7 +356,7 @@ pub(crate) unsafe fn send_inputs(inputs: &[INPUT]) -> Result<(), String> {
     if sent as usize != inputs.len() {
         let err = GetLastError();
         return Err(format!(
-            "SendInput failed: sent {}/{} events (error code {}). Target window may be elevated (UIPI) or secure desktop",
+            "SendInput failed: sent {}/{} events (error code {}). Desktop may be locked, secure desktop active, or BlockInput engaged",
             sent,
             inputs.len(),
             err

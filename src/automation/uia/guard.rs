@@ -9,10 +9,18 @@
 //! `verify_unchanged` dipanggil sedekat mungkin dengan SendInput, dan di dalam loop mengetik.
 
 use super::types::UiaError;
+use crate::automation::element_finder::PixelRect;
 use crate::automation::input::{desktop_press_key, desktop_type_text, is_foreground_terminal_active};
 use std::ffi::c_void;
-use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, BOOL, HWND, LPARAM, RECT};
 use windows_sys::Win32::Graphics::Dwm::DwmGetWindowAttribute;
+use windows_sys::Win32::Security::{
+    GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, PSID,
+    TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TokenIntegrityLevel,
+};
+use windows_sys::Win32::System::Threading::{
+    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetAncestor, GetForegroundWindow, GetWindowLongW, GetWindowRect,
     GetWindowThreadProcessId, IsHungAppWindow, IsIconic, IsWindow, IsWindowVisible,
@@ -32,6 +40,8 @@ pub enum GuardError {
     TargetNotForeground { foreground_pid: u32, target_pid: u32 },
     NoWindowAtPoint,
     NotResponding,
+    ElevatedTarget { target_pid: u32, caller_rid: u32, target_rid: u32 },
+    OccludedByWindow { occluding_hwnd: usize, occluding_pid: u32 },
 }
 
 impl GuardError {
@@ -45,6 +55,8 @@ impl GuardError {
             GuardError::TargetNotForeground { .. } => "GUARD_TARGET_NOT_FOREGROUND",
             GuardError::NoWindowAtPoint => "GUARD_NO_WINDOW_AT_POINT",
             GuardError::NotResponding => "TARGET_NOT_RESPONDING",
+            GuardError::ElevatedTarget { .. } => "ELEVATED_TARGET_BLOCKED",
+            GuardError::OccludedByWindow { .. } => "OCCLUDED_BY_WINDOW",
         }
     }
 }
@@ -110,6 +122,8 @@ pub fn capture_foreground() -> Result<WindowSnapshot, GuardError> {
     if is_foreground_terminal_active() {
         return Err(GuardError::ProtectedProcess);
     }
+    // UIPI Elevation Guard: Foreground running at strictly higher integrity blocks input silently
+    check_target_integrity(pid)?;
     Ok(WindowSnapshot {
         hwnd: hwnd as usize,
         pid,
@@ -210,6 +224,146 @@ pub fn is_responsive(hwnd: usize, timeout_ms: u32) -> bool {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// UIPI Token Integrity Level Detection (Claude & Vercel Audit)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static SELF_INTEGRITY_RID: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+
+/// Mandatory-label RID proses Nexa Bridge saat ini (di-cache sekali seumur hidup proses)
+pub fn get_self_integrity_rid() -> Option<u32> {
+    *SELF_INTEGRITY_RID.get_or_init(current_process_integrity_rid)
+}
+
+/// Baca mandatory-label RID proses sendiri via Win32 Token Query
+pub fn current_process_integrity_rid() -> Option<u32> {
+    token_integrity_rid(unsafe { GetCurrentProcess() })
+}
+
+/// Baca mandatory-label RID proses target via PID
+pub fn process_integrity_rid(pid: u32) -> Option<u32> {
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return None;
+    }
+    let rid = token_integrity_rid(process);
+    unsafe { CloseHandle(process) };
+    rid
+}
+
+fn token_integrity_rid(process: HANDLE) -> Option<u32> {
+    let mut token: HANDLE = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+        return None;
+    }
+    let rid = read_token_integrity_rid(token);
+    unsafe { CloseHandle(token) };
+    rid
+}
+
+fn read_token_integrity_rid(token: HANDLE) -> Option<u32> {
+    let mut required: u32 = 0;
+    unsafe {
+        GetTokenInformation(
+            token,
+            TokenIntegrityLevel,
+            std::ptr::null_mut(),
+            0,
+            &mut required,
+        );
+    }
+    if required == 0 {
+        return None;
+    }
+    let mut buffer = vec![0_u64; (required as usize).div_ceil(std::mem::size_of::<u64>())];
+    let fetched = unsafe {
+        GetTokenInformation(
+            token,
+            TokenIntegrityLevel,
+            buffer.as_mut_ptr().cast(),
+            required,
+            &mut required,
+        )
+    };
+    if fetched == 0 {
+        return None;
+    }
+    let label: TOKEN_MANDATORY_LABEL = unsafe { std::ptr::read(buffer.as_ptr().cast()) };
+    sid_last_sub_authority(label.Label.Sid)
+}
+
+fn sid_last_sub_authority(sid: PSID) -> Option<u32> {
+    if sid.is_null() {
+        return None;
+    }
+    let count = unsafe { *GetSidSubAuthorityCount(sid) };
+    if count == 0 {
+        return None;
+    }
+    let sub_authority = unsafe { GetSidSubAuthority(sid, count as u32 - 1) };
+    if sub_authority.is_null() {
+        return None;
+    }
+    Some(unsafe { *sub_authority })
+}
+
+/// Memastikan proses target tidak memiliki level integritas lebih tinggi dari proses sendiri.
+/// Jika target elevated (misal Admin vs Medium), UIPI Windows membuang input tanpa kode error.
+pub fn check_target_integrity(target_pid: u32) -> Result<(), GuardError> {
+    if let (Some(caller_rid), Some(target_rid)) = (get_self_integrity_rid(), process_integrity_rid(target_pid)) {
+        if target_rid > caller_rid {
+            return Err(GuardError::ElevatedTarget {
+                target_pid,
+                caller_rid,
+                target_rid,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Uji oklusi 5-titik Win32: Pusat + 4 kuartal rect hasil snap.
+/// Memastikan kontrol target tidak tertutup jendela lain atau toast notifikasi.
+pub fn verify_rect_occlusion(
+    target_hwnd: usize,
+    rect: &PixelRect,
+) -> Result<(), GuardError> {
+    let target_h = target_hwnd as HWND;
+    let target_root = root_owner_of(target_h);
+    let w = rect.right - rect.left;
+    let h = rect.bottom - rect.top;
+    if w <= 0 || h <= 0 {
+        return Ok(());
+    }
+
+    let qx = (w / 4).max(1);
+    let qy = (h / 4).max(1);
+
+    let points = [
+        // Center
+        (rect.left + w / 2, rect.top + h / 2),
+        // 4 quarters
+        (rect.left + qx, rect.top + qy),
+        (rect.right - qx, rect.top + qy),
+        (rect.left + qx, rect.bottom - qy),
+        (rect.right - qx, rect.bottom - qy),
+    ];
+
+    for (px, py) in points {
+        if let Some(top) = top_level_at(px, py) {
+            let top_h = top as HWND;
+            if top != target_hwnd && root_owner_of(top_h) != target_root {
+                return Err(GuardError::OccludedByWindow {
+                    occluding_hwnd: top,
+                    occluding_pid: pid_of(top_h),
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Deteksi apakah titik (px, py) berada di dalam jendela interaktif milik Nexa Bridge
 /// (seperti floating capsule HUD pill atau dialog pengaturan).
 /// Jendela transparan/click-through (seperti overlay stealth highlighter WS_EX_TRANSPARENT) dikecualikan.
@@ -278,6 +432,9 @@ pub fn guard_point(px: i32, py: i32) -> Result<GuardedTarget, GuardError> {
         return Err(GuardError::OwnProcess);
     }
 
+    // UIPI Elevation Guard: Target running at higher integrity than Nexa Bridge will drop input silently
+    check_target_integrity(target_pid)?;
+
     // 500ms timeout prevents false "Not Responding" rejections during heavy browser renders (e.g. Chrome/Edge)
     if !is_responsive(target, 500) {
         return Err(GuardError::NotResponding);
@@ -335,6 +492,42 @@ mod tests {
     fn codes_are_stable() {
         assert_eq!(GuardError::OwnProcess.code(), "GUARD_OWN_PROCESS");
         assert_eq!(GuardError::NotResponding.code(), "TARGET_NOT_RESPONDING");
+        assert_eq!(
+            GuardError::ElevatedTarget {
+                target_pid: 1,
+                caller_rid: 0x2000,
+                target_rid: 0x3000
+            }
+            .code(),
+            "ELEVATED_TARGET_BLOCKED"
+        );
+        assert_eq!(
+            GuardError::OccludedByWindow {
+                occluding_hwnd: 1,
+                occluding_pid: 2
+            }
+            .code(),
+            "OCCLUDED_BY_WINDOW"
+        );
+    }
+
+    #[test]
+    fn self_process_integrity_rid_reads_successfully() {
+        let rid = get_self_integrity_rid();
+        assert!(rid.is_some(), "Nexa Bridge process integrity RID should be readable");
+        // Check integrity against self PID must succeed
+        assert_eq!(check_target_integrity(std::process::id()), Ok(()));
+    }
+
+    #[test]
+    fn occlusion_empty_rect_returns_ok() {
+        let empty = PixelRect {
+            left: 100,
+            top: 100,
+            right: 100,
+            bottom: 100,
+        };
+        assert_eq!(verify_rect_occlusion(0, &empty), Ok(()));
     }
 
     #[test]

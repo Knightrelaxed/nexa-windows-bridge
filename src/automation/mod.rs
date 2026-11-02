@@ -18,6 +18,8 @@ pub use highlighter::*;
 pub use input::*;
 #[allow(unused_imports)]
 pub use policy::*;
+#[allow(unused_imports)]
+pub use uia::UiaError;
 
 use crate::network::ClientMessage;
 use tracing::{info, warn};
@@ -240,13 +242,20 @@ pub async fn handle_execute_command(
                 .or_else(|| params.get("doubleClick"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            let target_hint = params
+                .get("target_hint")
+                .or_else(|| params.get("hint"))
+                .or_else(|| params.get("target"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
 
-            // Execute hybrid UIA click (Window Guard -> Interactive Scan -> Semantic Pattern -> Physical Snapped/Raw)
+            // Execute hybrid UIA click (Window Guard -> Interactive Scan -> Hinted Re-Ranker -> Semantic Pattern -> Physical Snapped/Raw)
             let uia_handle_res = uia::UiaHandle::global();
             let click_res = match uia_handle_res {
                 Ok(handle) => {
                     handle
-                        .click(x, y, button, double_click, uia::ClickPolicy::default())
+                        .click_with_hint(x, y, button, double_click, uia::ClickPolicy::default(), target_hint)
                         .await
                 }
                 Err(e) => Err(e),
@@ -313,14 +322,67 @@ pub async fn handle_execute_command(
                 }
                 Err(err) => {
                     warn!("[AUTOMATION] desktop_click failed: {}", err);
+                    let is_elevated = matches!(
+                        err,
+                        UiaError::ElevatedTarget
+                            | UiaError::Guard(crate::automation::uia::guard::GuardError::ElevatedTarget { .. })
+                    );
+                    let (message, data) = if is_elevated {
+                        (
+                            "Aplikasi target berjalan dengan hak Administrator (Elevated/UIPI). Nexa Bridge dilarang menyuntikkan input ke jendela berpangkat lebih tinggi demi keamanan sistem. Silakan Tuan klik langsung elemen tersebut di layar.".to_string(),
+                            serde_json::json!({
+                                "error": "ELEVATED_TARGET_BLOCKED",
+                                "delivered": "not_delivered",
+                                "retry": "never",
+                                "raw_input_emitted": false,
+                                "details": err.to_string(),
+                            }),
+                        )
+                    } else if let UiaError::AmbiguousTarget(ref desc) = err {
+                        (
+                            format!("Target klik ambigu karena ada beberapa kontrol serupa di sekitar titik: {}. Mohon berikan koordinat atau petunjuk yang lebih spesifik.", desc),
+                            serde_json::json!({
+                                "error": "AMBIGUOUS_TARGET",
+                                "delivered": "not_delivered",
+                                "details": desc,
+                            }),
+                        )
+                    } else if let UiaError::TargetHintMismatch { ref hint, ref best_match, similarity_pct } = err {
+                        (
+                            format!("Petunjuk target '{}' tidak cocok dengan elemen terdekat '{}' (kemiripan {}% < 30%). Klik dibatalkan demi mencegah salah sasaran.", hint, best_match, similarity_pct),
+                            serde_json::json!({
+                                "error": "TARGET_HINT_MISMATCH",
+                                "hint": hint,
+                                "best_match": best_match,
+                                "similarity_pct": similarity_pct,
+                                "delivered": "not_delivered",
+                            }),
+                        )
+                    } else if let UiaError::Guard(crate::automation::uia::guard::GuardError::OccludedByWindow { occluding_hwnd, occluding_pid }) = err {
+                        (
+                            format!("Target klik terhalang oleh jendela lain (HWND 0x{:X}, PID {}). Aksi dibatalkan demi keamanan.", occluding_hwnd, occluding_pid),
+                            serde_json::json!({
+                                "error": "OCCLUDED_BY_WINDOW",
+                                "occluding_hwnd": occluding_hwnd,
+                                "occluding_pid": occluding_pid,
+                                "delivered": "not_delivered",
+                                "details": err.to_string(),
+                            }),
+                        )
+                    } else {
+                        (
+                            format!("Gagal mengeklik layar desktop: {}", err),
+                            serde_json::json!({
+                                "error": err.code(),
+                                "details": err.to_string(),
+                            }),
+                        )
+                    };
                     ClientMessage::CommandResult {
                         command_id,
                         success: false,
-                        message: format!("Gagal mengeklik layar desktop: {}", err),
-                        data: serde_json::json!({
-                            "error": err.code(),
-                            "details": err.to_string(),
-                        }),
+                        message,
+                        data,
                     }
                 }
             }
