@@ -22,6 +22,7 @@ static AUTOMATION_ABORT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// Signal an abort to any running automation loops
 pub fn request_automation_abort() {
     AUTOMATION_ABORT_REQUESTED.store(true, Ordering::SeqCst);
+    crate::automation::CursorController::global().hide();
 }
 
 /// Reset the abort signal before starting new automation actions

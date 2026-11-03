@@ -639,6 +639,7 @@ impl HighlighterController {
         self.active_epoch.fetch_add(1, Ordering::SeqCst);
         self.active_ripple_epoch.fetch_add(1, Ordering::SeqCst);
         self.overlay.clear_all();
+        crate::automation::CursorController::global().hide();
         info!("[HIGHLIGHTER] 🧹 Cleared all screen highlights and overlays");
     }
 }

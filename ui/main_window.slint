@@ -16,8 +16,10 @@ import { TelemetryCard } from "components/telemetry_card.slint";
 import { HotkeysCard } from "components/hotkeys_card.slint";
 import { ColSplitter, RowSplitter } from "components/splitter.slint";
 import { FloatingPill } from "components/floating_pill.slint";
+import { AgentCursor, CursorOverlayWindow } from "cursor/agent-cursor.slint";
+import { CursorMode } from "cursor/theme.slint";
 
-export { OverlayWindow }
+export { OverlayWindow, CursorOverlayWindow, CursorMode }
 
 export component MainWindow inherits Window {
     title: "Nexa Bridge";

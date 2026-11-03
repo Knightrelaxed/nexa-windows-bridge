@@ -225,6 +225,42 @@ mod tests {
         assert_eq!(main_window.get_split_left_width(), 320.0);
         main_window.set_split_center_h(480.0);
         assert_eq!(main_window.get_split_center_h(), 480.0);
+
+        // 16. Verify Virtual Cursor Overlay Window & Mode Bindings
+        let cursor_win = CursorOverlayWindow::new().expect("Failed to initialize CursorOverlayWindow");
+        assert_eq!(cursor_win.get_mode(), CursorMode::Idle);
+        assert!(cursor_win.get_show_badge());
+        assert_eq!(cursor_win.get_badge_text().as_str(), "");
+        assert_eq!(cursor_win.get_cursor_size(), 128.0);
+        assert_eq!(cursor_win.get_glow(), 1.0);
+        assert!(cursor_win.get_follow_state_color());
+        assert_eq!(cursor_win.get_hotspot_x(), 64.0);
+        assert_eq!(cursor_win.get_hotspot_y(), 64.0);
+
+        cursor_win.set_mode(CursorMode::Thinking);
+        assert_eq!(cursor_win.get_mode(), CursorMode::Thinking);
+        cursor_win.set_mode(CursorMode::Hover);
+        assert_eq!(cursor_win.get_mode(), CursorMode::Hover);
+        cursor_win.set_mode(CursorMode::Clicking);
+        assert_eq!(cursor_win.get_mode(), CursorMode::Clicking);
+        cursor_win.set_mode(CursorMode::Dragging);
+        assert_eq!(cursor_win.get_mode(), CursorMode::Dragging);
+        cursor_win.set_mode(CursorMode::Typing);
+        assert_eq!(cursor_win.get_mode(), CursorMode::Typing);
+        cursor_win.set_mode(CursorMode::Executing);
+        assert_eq!(cursor_win.get_mode(), CursorMode::Executing);
+        cursor_win.set_mode(CursorMode::Success);
+        assert_eq!(cursor_win.get_mode(), CursorMode::Success);
+        cursor_win.set_mode(CursorMode::Error);
+        assert_eq!(cursor_win.get_mode(), CursorMode::Error);
+
+        cursor_win.set_badge_text("NEXA // ACT".into());
+        assert_eq!(cursor_win.get_badge_text().as_str(), "NEXA // ACT");
+
+        cursor_win.set_cursor_size(96.0);
+        assert_eq!(cursor_win.get_cursor_size(), 96.0);
+        assert_eq!(cursor_win.get_hotspot_x(), 48.0);
+        assert_eq!(cursor_win.get_hotspot_y(), 48.0);
     }
 
     #[test]

@@ -4,12 +4,15 @@
 //! screen element smart-snapping (Windows UI Automation),
 //! transparent visual overlays, and the central command dispatcher for EXECUTE_COMMAND.
 
+pub mod cursor;
 pub mod element_finder;
 pub mod highlighter;
 pub mod input;
 pub mod policy;
 pub mod uia;
 
+#[allow(unused_imports)]
+pub use cursor::*;
 #[allow(unused_imports)]
 pub use element_finder::*;
 #[allow(unused_imports)]
@@ -250,6 +253,12 @@ pub async fn handle_execute_command(
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty());
 
+            // 1. Zero-Latency Glide Overlap:
+            // Immediately start gliding toward target coordinates while UIA element scan and Window Guard run in parallel
+            let screen = get_primary_screen_dimensions();
+            let (raw_px, raw_py) = denormalize_to_pixels(x, y, screen.width, screen.height);
+            CursorController::global().glide_to(raw_px, raw_py, 180, crate::ui::CursorMode::Hover);
+
             // Execute hybrid UIA click (Window Guard -> Interactive Scan -> Hinted Re-Ranker -> Semantic Pattern -> Physical Snapped/Raw)
             let uia_handle_res = uia::UiaHandle::global();
             let click_res = match uia_handle_res {
@@ -283,6 +292,9 @@ pub async fn handle_execute_command(
 
             match click_res {
                 Ok(report) => {
+                    // Zero-Latency Virtual Cursor: Trigger click ripple at the exact actuation location
+                    CursorController::global().trigger_click(report.px, report.py);
+
                     // Auto-dissolve active highlight after click succeeds (do NOT spawn fullscreen overlay ripple which flashes black screen)
                     if let Some(hl) = highlighter {
                         hl.dissolve_active_highlight();
@@ -322,6 +334,7 @@ pub async fn handle_execute_command(
                 }
                 Err(err) => {
                     warn!("[AUTOMATION] desktop_click failed: {}", err);
+                    CursorController::global().set_mode(crate::ui::CursorMode::Error);
                     let is_elevated = matches!(
                         err,
                         UiaError::ElevatedTarget
@@ -508,6 +521,7 @@ pub async fn handle_execute_command(
 
             let text_owned = text.to_string();
             reset_automation_abort();
+            CursorController::global().set_mode(crate::ui::CursorMode::Typing);
             let type_res = tokio::task::spawn_blocking(move || {
                 desktop_type_text(&text_owned, press_enter)
             })
@@ -516,17 +530,21 @@ pub async fn handle_execute_command(
             .and_then(|r| r);
 
             match type_res {
-                Ok(chars_typed) => ClientMessage::CommandResult {
-                    command_id,
-                    success: true,
-                    message: format!("Teks berhasil diketik di desktop ({} karakter).", chars_typed),
-                    data: serde_json::json!({
-                        "action": "desktopTypeText",
-                        "chars_typed": chars_typed,
-                        "press_enter": press_enter
-                    }),
-                },
+                Ok(chars_typed) => {
+                    CursorController::global().set_mode(crate::ui::CursorMode::Idle);
+                    ClientMessage::CommandResult {
+                        command_id,
+                        success: true,
+                        message: format!("Teks berhasil diketik di desktop ({} karakter).", chars_typed),
+                        data: serde_json::json!({
+                            "action": "desktopTypeText",
+                            "chars_typed": chars_typed,
+                            "press_enter": press_enter
+                        }),
+                    }
+                }
                 Err(err) => {
+                    CursorController::global().set_mode(crate::ui::CursorMode::Error);
                     warn!("[AUTOMATION] desktop_type_text failed: {}", err);
                     ClientMessage::CommandResult {
                         command_id,
@@ -786,6 +804,10 @@ pub async fn handle_execute_command(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(3000);
 
+            let screen = get_primary_screen_dimensions();
+            let (px, py) = denormalize_to_pixels(x, y, screen.width, screen.height);
+            CursorController::global().glide_to_with_rest(px, py, 200, crate::ui::CursorMode::Hover, duration_ms);
+
             if let Some(hl) = highlighter {
                 hl.point_cursor(x, y, duration_ms);
             }
@@ -807,6 +829,7 @@ pub async fn handle_execute_command(
         // 7. CLEAR_HIGHLIGHTS
         // ─────────────────────────────────────────────────────────────
         "CLEARHIGHLIGHTS" | "CLEARHIGHLIGHT" => {
+            CursorController::global().hide();
             if let Some(hl) = highlighter {
                 hl.clear_all();
             }
@@ -825,6 +848,7 @@ pub async fn handle_execute_command(
         // 8. ABORT_AUTOMATION (Audit N1, N13, R2)
         // ─────────────────────────────────────────────────────────────
         "ABORTAUTOMATION" | "ABORT" | "CANCELAUTOMATION" | "STOPAUTOMATION" => {
+            CursorController::global().hide();
             request_automation_abort();
             info!("[AUTOMATION] 🛑 Abort signal triggered via command {}", command_id);
             ClientMessage::CommandResult {
@@ -1481,6 +1505,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatcher_point_cursor_valid() {
+        let e1 = CursorController::global().active_epoch();
         let res = handle_execute_command(
             "cmd_pt".to_string(),
             "POINT_CURSOR".to_string(),
@@ -1494,6 +1519,8 @@ mod tests {
                 assert!(success);
                 assert_eq!(data["x"], 500.0);
                 assert_eq!(data["y"], 600.0);
+                let e2 = CursorController::global().active_epoch();
+                assert!(e2 > e1, "POINT_CURSOR must increment cursor epoch");
             }
             _ => panic!("Expected CommandResult"),
         }
@@ -1501,6 +1528,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatcher_clear_highlights() {
+        CursorController::global().set_visible_for_test(true);
         let res = handle_execute_command(
             "cmd_clear".to_string(),
             "CLEAR_HIGHLIGHTS".to_string(),
@@ -1512,6 +1540,7 @@ mod tests {
         match res {
             ClientMessage::CommandResult { success, .. } => {
                 assert!(success);
+                assert!(!CursorController::global().is_visible());
             }
             _ => panic!("Expected CommandResult"),
         }
@@ -1719,6 +1748,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatcher_abort_automation() {
+        CursorController::global().set_visible_for_test(true);
         let res_abort = handle_execute_command(
             "cmd_abort".to_string(),
             "abortAutomation".to_string(),
@@ -1730,6 +1760,7 @@ mod tests {
             ClientMessage::CommandResult { success, data, .. } => {
                 assert!(success);
                 assert_eq!(data["action"], "abortAutomation");
+                assert!(!CursorController::global().is_visible());
             }
             _ => panic!("Expected CommandResult"),
         }

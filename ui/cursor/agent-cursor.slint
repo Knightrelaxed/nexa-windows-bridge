@@ -1,0 +1,575 @@
+import { Neon, CursorMode } from "theme.slint";
+import { StrokePath, GlowDot, Ring } from "primitives.slint";
+import { HandGlyph } from "hand-glyph.slint";
+
+// Aegis — AI agent cursor.
+//
+// The component is a square box of `size`. The HOTSPOT (the exact pixel the agent
+// acts on) is the centre of that box: place it with
+//     x: target-x - cursor.hotspot-x;   y: target-y - cursor.hotspot-y;
+//
+// Colour: `accent` is used when `follow-state-color` is false, otherwise the colour
+// is derived from `mode`. Either way the change is animated.
+export component AgentCursor {
+    // ── Public API ───────────────────────────────────────────────
+    in property <CursorMode> mode: CursorMode.idle;
+    in property <color> accent: Neon.cyan;
+    in property <bool> follow-state-color: true;
+    in property <length> size: 128px;
+    in property <float> glow: 1.0;
+    in property <bool> animated: true;
+    in property <bool> show-badge: true;
+    in property <string> badge-text: "";
+
+    out property <color> current-color: root.tint;
+    out property <length> hotspot-x: root.size / 2;
+    out property <length> hotspot-y: root.size / 2;
+
+    width: root.size;
+    height: root.size;
+
+    // ── State predicates ─────────────────────────────────────────
+    private property <bool> is-thinking: root.mode == CursorMode.thinking;
+    private property <bool> is-hover: root.mode == CursorMode.hover;
+    private property <bool> is-click: root.mode == CursorMode.clicking;
+    private property <bool> is-drag: root.mode == CursorMode.dragging;
+    private property <bool> is-typing: root.mode == CursorMode.typing;
+    private property <bool> is-exec: root.mode == CursorMode.executing;
+    private property <bool> is-ok: root.mode == CursorMode.success;
+    private property <bool> is-err: root.mode == CursorMode.error;
+
+    // ── Colour ───────────────────────────────────────────────────
+    private property <color> mode-color:
+        root.is-thinking ? Neon.violet
+        : root.is-exec ? Neon.amber
+        : root.is-ok ? Neon.emerald
+        : root.is-err ? Neon.crimson
+        : root.is-typing ? Neon.cyan-bright
+        : root.is-drag ? Neon.blue
+        : Neon.cyan;
+    private property <color> tint: root.follow-state-color ? root.mode-color : root.accent;
+    animate tint { duration: 380ms; easing: ease-in-out; }
+
+    // ── Clock (no ticking at all when `animated` is false) ──────
+    private property <duration> clock: root.animated ? animation-tick() : 0ms;
+    private property <float> ph-breath: Math.mod(root.clock / 4200ms, 1.0);
+    private property <float> breath: 0.5 - 0.5 * Math.cos(root.ph-breath * 360deg);
+    private property <angle> spin-cw: Math.mod(root.clock / 9s, 1.0) * 360deg;
+    private property <angle> spin-ccw: (1.0 - Math.mod(root.clock / 6s, 1.0)) * 360deg;
+    private property <angle> spin-fast: Math.mod(root.clock / 1300ms, 1.0) * 360deg;
+    private property <angle> orbit: Math.mod(root.clock / 3200ms, 1.0) * 360deg;
+    private property <float> blink: 0.35 + 0.65 * (0.5 + 0.5 * Math.cos(Math.mod(root.clock / 1100ms, 1.0) * 360deg));
+    private property <float> typing-ph: Math.mod(root.clock / 900ms, 1.0);
+
+    // ── Geometry helpers ─────────────────────────────────────────
+    private property <length> u: root.size / 100;
+    private property <length> cx: root.size / 2;
+    private property <length> cy: root.size / 2;
+    private property <length> hu: root.u * 1.1 * (0.72 + 0.28 * root.hand-opacity);
+
+    // ── Per-state visual parameters (all animated) ───────────────
+    private property <float> pointer-scale: root.is-hover ? 1.16 : root.is-click ? 0.84 : 1.0;
+    animate pointer-scale { duration: 180ms; easing: ease-out; }
+
+    private property <float> pointer-opacity: (root.is-drag || root.is-typing) ? 0.0 : 1.0;
+    animate pointer-opacity { duration: 200ms; }
+
+    private property <float> hand-opacity: root.is-drag ? 1.0 : 0.0;
+    animate hand-opacity { duration: 220ms; easing: ease-out; }
+
+    private property <float> beam-opacity: root.is-typing ? 1.0 : 0.0;
+    animate beam-opacity { duration: 200ms; }
+
+    private property <float> ring-opacity:
+        root.is-thinking ? 0.95
+        : root.is-drag ? 0.85
+        : root.is-click ? 0.55
+        : root.is-ok ? 0.55
+        : root.is-err ? 0.5
+        : root.is-typing ? 0.16
+        : root.is-exec ? 0.0
+        : root.is-hover ? 0.2
+        : 0.3;
+    animate ring-opacity { duration: 320ms; easing: ease-in-out; }
+
+    private property <float> ring-scale: root.is-drag ? 0.66 : root.is-typing ? 0.6 : root.is-click ? 0.92 : 1.0;
+    animate ring-scale { duration: 300ms; easing: ease-out; }
+
+    private property <float> inner-opacity: root.is-thinking ? 0.8 : 0.0;
+    animate inner-opacity { duration: 320ms; }
+
+    private property <float> orbit-opacity: root.is-thinking ? 1.0 : 0.0;
+    animate orbit-opacity { duration: 360ms; }
+
+    private property <float> exec-opacity: root.is-exec ? 1.0 : 0.0;
+    animate exec-opacity { duration: 280ms; }
+
+    private property <float> bracket-opacity: root.is-hover ? 1.0 : 0.0;
+    animate bracket-opacity { duration: 240ms; }
+    private property <float> bracket-scale: root.is-hover ? 1.0 : 1.4;
+    animate bracket-scale { duration: 260ms; easing: ease-out; }
+
+    private property <float> glow-level:
+        (root.is-thinking || root.is-exec) ? 1.0
+        : (root.is-ok || root.is-err) ? 0.9
+        : root.is-hover ? 0.85
+        : 0.6;
+    animate glow-level { duration: 320ms; }
+
+    private property <float> halo-alpha: Math.min(1.0, 0.30 * root.glow * root.glow-level * (0.75 + 0.25 * root.breath));
+    private property <color> halo-core: root.tint.with-alpha(root.halo-alpha);
+    private property <color> halo-edge: root.tint.with-alpha(0.0);
+
+    // ── One-shot effects, driven by state transitions ────────────
+    private property <float> ripple: 0.0;
+    private property <float> ripple2: 0.0;
+    private property <float> burst: 0.0;
+    private property <float> pop-ok: 0.0;
+    private property <float> pop-err: 0.0;
+
+    states [
+        on-click when root.is-click: {
+            ripple: 1.0;
+            ripple2: 1.0;
+            in {
+                animate ripple { duration: 700ms; easing: ease-out; }
+                animate ripple2 { duration: 700ms; delay: 150ms; easing: ease-out; }
+            }
+            out {
+                animate ripple, ripple2 { duration: 0ms; }
+            }
+        }
+        on-success when root.is-ok: {
+            pop-ok: 1.0;
+            burst: 1.0;
+            in {
+                animate pop-ok { duration: 420ms; easing: ease-out; }
+                animate burst { duration: 1000ms; easing: ease-out; }
+            }
+            out {
+                animate pop-ok { duration: 150ms; }
+                animate burst { duration: 0ms; }
+            }
+        }
+        on-error when root.is-err: {
+            pop-err: 1.0;
+            in {
+                animate pop-err { duration: 380ms; easing: ease-out; }
+            }
+            out {
+                animate pop-err { duration: 150ms; }
+            }
+        }
+    ]
+
+    // ════════════════════════ LAYERS (back to front) ════════════════════════
+
+    // Ambient halo
+    Rectangle {
+        width: root.size * (0.78 + 0.1 * root.breath);
+        height: self.width;
+        x: root.cx - self.width / 2;
+        y: root.cy - self.height / 2;
+        border-radius: self.width / 2;
+        background: @radial-gradient(circle, root.halo-core 0%, root.halo-edge 72%);
+    }
+
+    // Hairline orbit track
+    Ring {
+        width: root.size * 0.92 * root.ring-scale;
+        height: self.width;
+        x: root.cx - self.width / 2;
+        y: root.cy - self.height / 2;
+        color: root.tint.with-alpha(0.1 + 0.12 * root.ring-opacity);
+        thickness: 1px;
+    }
+
+    // Click ripples (Double concentric rings)
+    Ring {
+        width: root.size * (0.18 + 0.82 * root.ripple);
+        height: self.width;
+        x: root.cx - self.width / 2;
+        y: root.cy - self.height / 2;
+        color: root.tint.with-alpha(Math.min(root.ripple * 10.0, 1.0) * (1.0 - root.ripple) * 0.9);
+        thickness: 2px;
+    }
+    Ring {
+        width: root.size * (0.18 + 0.82 * root.ripple2);
+        height: self.width;
+        x: root.cx - self.width / 2;
+        y: root.cy - self.height / 2;
+        color: root.tint.with-alpha(Math.min(root.ripple2 * 10.0, 1.0) * (1.0 - root.ripple2) * 0.6);
+        thickness: 1.5px;
+    }
+
+    // Success burst
+    Ring {
+        width: root.size * (0.3 + 0.7 * root.burst);
+        height: self.width;
+        x: root.cx - self.width / 2;
+        y: root.cy - self.height / 2;
+        color: root.tint.with-alpha(Math.min(root.burst * 8.0, 1.0) * (1.0 - root.burst) * 0.75);
+        thickness: 3px;
+    }
+
+    // Error: slow, quiet warning pulse
+    if root.is-err : Ring {
+        property <float> p: Math.mod(root.clock / 1800ms, 1.0);
+        width: root.size * (0.5 + 0.45 * self.p);
+        height: self.width;
+        x: root.cx - self.width / 2;
+        y: root.cy - self.height / 2;
+        color: root.tint.with-alpha(0.55 * (1.0 - self.p) * Math.min(self.p * 6.0, 1.0));
+        thickness: 1.5px;
+    }
+
+    // Executing: track + spinner + energy pulse
+    Ring {
+        width: root.size * 0.8;
+        height: self.width;
+        x: root.cx - self.width / 2;
+        y: root.cy - self.height / 2;
+        color: root.tint.with-alpha(0.22 * root.exec-opacity);
+        thickness: 1.5px;
+    }
+    StrokePath {
+        width: root.size;
+        height: root.size;
+        x: root.cx - self.width / 2;
+        y: root.cy - self.height / 2;
+        commands: "M 90 50 A 40 40 0 0 1 36.32 87.59 M 10 50 A 40 40 0 0 1 24.29 19.36";
+        color: root.tint.with-alpha(root.exec-opacity);
+        thickness: 2.6px;
+        angle: root.spin-fast;
+    }
+    Ring {
+        property <float> p: Math.mod(root.clock / 1600ms, 1.0);
+        width: root.size * (0.25 + 0.6 * self.p);
+        height: self.width;
+        x: root.cx - self.width / 2;
+        y: root.cy - self.height / 2;
+        color: root.tint.with-alpha(root.exec-opacity * 0.5 * (1.0 - self.p) * Math.min(self.p * 6.0, 1.0));
+        thickness: 1.5px;
+    }
+
+    // Energy ring: three arcs, clockwise
+    StrokePath {
+        width: root.size * root.ring-scale;
+        height: self.width;
+        x: root.cx - self.width / 2;
+        y: root.cy - self.height / 2;
+        commands: "M 96 50 A 46 46 0 0 1 57.99 95.3 M 27 89.84 A 46 46 0 0 1 6.78 34.27 M 27 10.16 A 46 46 0 0 1 85.24 20.43";
+        color: root.tint.with-alpha(root.ring-opacity);
+        thickness: 1.6px;
+        angle: root.spin-cw;
+    }
+
+    // Inner arcs, counter-clockwise (thinking)
+    StrokePath {
+        width: root.size * root.ring-scale;
+        height: self.width;
+        x: root.cx - self.width / 2;
+        y: root.cy - self.height / 2;
+        commands: "M 86 50 A 36 36 0 0 1 68 81.18 M 14 50 A 36 36 0 0 1 32 18.82";
+        color: root.tint.with-alpha(root.inner-opacity);
+        thickness: 1.2px;
+        angle: root.spin-ccw;
+    }
+
+    // Orbiting particles (thinking)
+    for i in 3 : GlowDot {
+        property <angle> a: root.orbit + i * 120deg;
+        diameter: 3.4 * root.u;
+        blur: 7px;
+        color: root.tint;
+        opacity: root.orbit-opacity;
+        x: root.cx + Math.cos(self.a) * root.size * 0.42 - self.width / 2;
+        y: root.cy + Math.sin(self.a) * root.size * 0.42 - self.height / 2;
+    }
+
+    // Hover lock-on brackets
+    StrokePath {
+        width: root.size * root.bracket-scale;
+        height: self.width;
+        x: root.cx - self.width / 2;
+        y: root.cy - self.height / 2;
+        commands: "M 16 27 L 16 16 L 27 16 M 73 16 L 84 16 L 84 27 M 84 73 L 84 84 L 73 84 M 27 84 L 16 84 L 16 73";
+        color: root.tint.with-alpha(root.bracket-opacity);
+        thickness: 2px;
+    }
+
+    // ── Pointer: tailless delta arrowhead with dual facets (glass + solid) sharing the tip at the hotspot ──
+    Path {
+        x: root.cx;
+        y: root.cy;
+        width: 48 * root.u * root.pointer-scale;
+        height: self.width;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 40;
+        viewbox-height: 40;
+        commands: "M 0 0 L 10.5 20.5 L 20.5 18 Z";
+        fill: root.tint.with-alpha(0.28);
+        opacity: root.pointer-opacity;
+    }
+    Path {
+        x: root.cx;
+        y: root.cy;
+        width: 48 * root.u * root.pointer-scale;
+        height: self.width;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 40;
+        viewbox-height: 40;
+        commands: "M 0 0 L 5 27 L 10.5 20.5 Z";
+        fill: root.tint;
+        opacity: root.pointer-opacity;
+    }
+    Path {
+        x: root.cx;
+        y: root.cy;
+        width: 48 * root.u * root.pointer-scale;
+        height: self.width;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 40;
+        viewbox-height: 40;
+        commands: "M 2 6 L 4.6 20";
+        stroke: #03101a;
+        stroke-width: 0.9px;
+        stroke-line-cap: round;
+        opacity: root.pointer-opacity * 0.55;
+    }
+    Path {
+        x: root.cx;
+        y: root.cy;
+        width: 48 * root.u * root.pointer-scale;
+        height: self.width;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 40;
+        viewbox-height: 40;
+        commands: "M 0 0 L 5 27 L 10.5 20.5 L 20.5 18 Z";
+        stroke: root.tint.brighter(0.55);
+        stroke-width: 1.1px;
+        stroke-line-join: round;
+        opacity: root.pointer-opacity;
+    }
+
+    // ── Dragging: robotic hand + held object ──
+    HandGlyph {
+        u: root.hu;
+        x: root.cx - 20 * root.hu;
+        y: root.cy - 27 * root.hu;
+        tint: root.tint;
+        opacity: root.hand-opacity;
+    }
+    Rectangle {
+        property <length> bob: Math.sin(root.ph-breath * 360deg * 2) * 1.2 * root.u;
+        x: root.cx + 10 * root.hu;
+        y: root.cy + 4 * root.hu + self.bob;
+        width: 13 * root.hu;
+        height: self.width;
+        border-radius: 3 * root.hu;
+        border-width: 1.3px;
+        border-color: root.tint;
+        background: root.tint.with-alpha(0.14);
+        transform-rotation: 9deg;
+        opacity: root.hand-opacity;
+        drop-shadow-blur: 10px * root.glow;
+        drop-shadow-color: root.tint.with-alpha(0.55);
+        drop-shadow-offset-x: 0px;
+        drop-shadow-offset-y: 0px;
+
+        Rectangle {
+            x: parent.width * 0.25;
+            y: parent.height * 0.5;
+            width: parent.width * 0.5;
+            height: 1px;
+            background: root.tint.with-alpha(0.7);
+        }
+    }
+
+    // ── Typing: I-beam with soft blink + keystroke dots ──
+    Rectangle {
+        x: root.cx - 1 * root.u;
+        y: root.cy - 15 * root.u;
+        width: 2 * root.u;
+        height: 30 * root.u;
+        border-radius: 1 * root.u;
+        background: root.tint;
+        opacity: root.beam-opacity * root.blink;
+        drop-shadow-blur: 8px * root.glow;
+        drop-shadow-color: root.tint.with-alpha(0.8);
+        drop-shadow-offset-x: 0px;
+        drop-shadow-offset-y: 0px;
+    }
+    Rectangle {
+        x: root.cx - 5.5 * root.u;
+        y: root.cy - 15 * root.u;
+        width: 11 * root.u;
+        height: 2 * root.u;
+        border-radius: 1 * root.u;
+        background: root.tint;
+        opacity: root.beam-opacity * root.blink;
+    }
+    Rectangle {
+        x: root.cx - 5.5 * root.u;
+        y: root.cy + 13 * root.u;
+        width: 11 * root.u;
+        height: 2 * root.u;
+        border-radius: 1 * root.u;
+        background: root.tint;
+        opacity: root.beam-opacity * root.blink;
+    }
+    for i in 3 : GlowDot {
+        property <float> wave: Math.max(0.0, 1.0 - Math.mod(root.typing-ph - i * 0.18 + 1.0, 1.0) * 2.2);
+        diameter: 3 * root.u;
+        blur: 5px;
+        color: root.tint;
+        opacity: root.beam-opacity * (0.25 + 0.75 * self.wave);
+        x: root.cx + (15 + i * 5.5) * root.u - self.width / 2;
+        y: root.cy + 21 * root.u - self.height / 2;
+    }
+
+    // Core node: the exact aim point
+    GlowDot {
+        diameter: 4.4 * root.u;
+        blur: 8px * root.glow;
+        color: root.tint.brighter(0.4);
+        opacity: root.pointer-opacity;
+        x: root.cx - self.width / 2;
+        y: root.cy - self.height / 2;
+    }
+
+    // ── Badges ──
+    // Success: check
+    Rectangle {
+        property <length> d: 15 * root.u * root.pop-ok;
+        width: self.d;
+        height: self.d;
+        x: root.cx + 24 * root.u - self.width / 2;
+        y: root.cy + 27 * root.u - self.height / 2;
+        border-radius: self.width / 2;
+        background: root.tint;
+        drop-shadow-blur: 8px * root.glow;
+        drop-shadow-color: root.tint.with-alpha(0.7);
+        drop-shadow-offset-x: 0px;
+        drop-shadow-offset-y: 0px;
+
+        Path {
+            width: parent.width * 0.64;
+            height: self.width;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: 20;
+            viewbox-height: 20;
+            commands: "M 4 10.5 L 8.5 15 L 16 5.5";
+            stroke: #03130d;
+            stroke-width: 1.8px;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+        }
+    }
+    // Error: exclamation
+    Rectangle {
+        property <length> d: 15 * root.u * root.pop-err;
+        width: self.d;
+        height: self.d;
+        x: root.cx + 24 * root.u - self.width / 2;
+        y: root.cy + 27 * root.u - self.height / 2;
+        border-radius: self.width / 2;
+        background: root.tint;
+        drop-shadow-blur: 8px * root.glow;
+        drop-shadow-color: root.tint.with-alpha(0.6);
+        drop-shadow-offset-x: 0px;
+        drop-shadow-offset-y: 0px;
+
+        Rectangle {
+            width: parent.width * 0.14;
+            height: parent.width * 0.42;
+            x: (parent.width - self.width) / 2;
+            y: parent.width * 0.2;
+            border-radius: self.width / 2;
+            background: #2a0610;
+        }
+        Rectangle {
+            width: parent.width * 0.16;
+            height: self.width;
+            x: (parent.width - self.width) / 2;
+            y: parent.width * 0.68;
+            border-radius: self.width / 2;
+            background: #2a0610;
+        }
+    }
+
+    // ── Floating AI Telemetry / Identity HUD Tag ──
+    if root.show-badge : Rectangle {
+        x: root.cx + 26 * root.u;
+        y: root.cy + 18 * root.u;
+        height: 18px * (root.size / 128px);
+        width: badge-label.preferred-width + 14px * (root.size / 128px);
+        border-radius: 4px * (root.size / 128px);
+        background: #04070f.with-alpha(0.88);
+        border-width: 1px;
+        border-color: root.tint.with-alpha(0.65);
+        drop-shadow-blur: 6px * root.glow;
+        drop-shadow-color: root.tint.with-alpha(0.35);
+
+        badge-label := Text {
+            text: root.badge-text != "" ? root.badge-text : (
+                root.is-thinking ? "NEXA // THK" :
+                root.is-hover ? "NEXA // LCK" :
+                root.is-click ? "NEXA // ACT" :
+                root.is-drag ? "NEXA // DRG" :
+                root.is-typing ? "NEXA // TYP" :
+                root.is-exec ? "NEXA // EXE" :
+                root.is-ok ? "NEXA // OK" :
+                root.is-err ? "NEXA // ERR" : "NEXA"
+            );
+            color: root.tint;
+            font-size: 9px * (root.size / 128px);
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// ── Standalone Window Wrapper for the AI Cursor ──
+export component CursorOverlayWindow inherits Window {
+    title: "N.E.X.A Virtual Cursor";
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+    width: root.cursor-size;
+    height: root.cursor-size;
+
+    in-out property <CursorMode> mode: CursorMode.idle;
+    in-out property <color> accent: Neon.cyan;
+    in-out property <bool> follow-state-color: true;
+    in-out property <length> cursor-size: 128px;
+    in-out property <float> glow: 1.0;
+    in-out property <bool> animated: true;
+    in-out property <bool> show-badge: true;
+    in-out property <string> badge-text: "";
+
+    out property <color> current-color: cursor.current-color;
+    out property <length> hotspot-x: cursor.hotspot-x;
+    out property <length> hotspot-y: cursor.hotspot-y;
+
+    cursor := AgentCursor {
+        x: 0px;
+        y: 0px;
+        mode: root.mode;
+        accent: root.accent;
+        follow-state-color: root.follow-state-color;
+        size: root.cursor-size;
+        glow: root.glow;
+        animated: root.animated;
+        show-badge: root.show-badge;
+        badge-text: root.badge-text;
+    }
+}

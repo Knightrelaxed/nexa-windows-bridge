@@ -1,0 +1,60 @@
+// Small reusable drawing primitives for the cursor.
+
+// Stroke-only vector on a 100 x 100 viewbox (arc rings, brackets, spinners).
+// Set width/height at the call site; rotation is around the centre.
+export component StrokePath {
+    in property <string> commands;
+    in property <color> color: #ffffff;
+    in property <length> thickness: 1.5px;
+    in property <angle> angle: 0deg;
+
+    Path {
+        width: root.width;
+        height: root.height;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 100;
+        viewbox-height: 100;
+        commands: root.commands;
+        stroke: root.color;
+        stroke-width: root.thickness;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+        transform-rotation: root.angle;
+    }
+}
+
+// Solid dot with a soft glow.
+export component GlowDot {
+    in property <color> color: #ffffff;
+    in property <length> diameter: 6px;
+    in property <length> blur: 8px;
+
+    width: root.diameter;
+    height: root.diameter;
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: self.width / 2;
+        background: root.color;
+        drop-shadow-blur: root.blur;
+        drop-shadow-color: root.color;
+        drop-shadow-offset-x: 0px;
+        drop-shadow-offset-y: 0px;
+    }
+}
+
+// Circle outline.
+export component Ring {
+    in property <color> color: #ffffff;
+    in property <length> thickness: 1.5px;
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: self.width / 2;
+        border-width: root.thickness;
+        border-color: root.color;
+    }
+}

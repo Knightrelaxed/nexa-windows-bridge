@@ -1,0 +1,40 @@
+// Aegis — shared tokens, cursor state enum and metadata types.
+
+export enum CursorMode {
+    idle,
+    thinking,
+    hover,
+    clicking,
+    dragging,
+    typing,
+    executing,
+    success,
+    error
+}
+
+// Colour presets. Nothing inside AgentCursor hard-codes a colour:
+// the host passes `accent`, or lets the cursor derive one from its mode.
+export global Neon {
+    out property <color> cyan: #22d3ee;
+    out property <color> cyan-bright: #8cf6ff;
+    out property <color> blue: #5aa2ff;
+    out property <color> violet: #a98bff;
+    out property <color> emerald: #34e6a5;
+    out property <color> amber: #ffa23a;
+    out property <color> crimson: #ff4a68;
+    out property <color> silver: #e8eef8;
+
+    out property <color> bg-deep: #04070f;
+    out property <color> bg-panel: #0a1020;
+    out property <color> bg-raised: #121b33;
+    out property <color> line: #1c2742;
+    out property <color> ink: #e6ecf8;
+    out property <color> ink-dim: #8794b3;
+}
+
+export struct ModeEntry {
+    mode: CursorMode,
+    title: string,
+    tone: string,
+    blurb: string,
+}

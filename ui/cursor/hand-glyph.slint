@@ -1,0 +1,77 @@
+import { Neon } from "theme.slint";
+import { GlowDot } from "primitives.slint";
+
+// Digital robotic hand (closed grip). Drawn in a 40 x 40 grid scaled by `u`.
+// The palm LED sits at (20, 27) in that grid.
+export component HandGlyph {
+    in property <length> u: 1px;
+    in property <color> tint: Neon.cyan;
+
+    private property <[float]> finger-h: [10.0, 12.5, 11.0, 9.0];
+
+    width: 40 * root.u;
+    height: 40 * root.u;
+
+    // Thumb
+    Rectangle {
+        x: 1.5 * root.u;
+        y: 22 * root.u;
+        width: 5 * root.u;
+        height: 11 * root.u;
+        border-radius: 2.5 * root.u;
+        border-width: 1.2px;
+        border-color: root.tint;
+        background: root.tint.with-alpha(0.16);
+        transform-rotation: -38deg;
+    }
+
+    // Four segmented fingers, each with a joint line
+    for h[i] in root.finger-h : Rectangle {
+        x: (8.5 + i * 6.0) * root.u;
+        y: (19.0 - h) * root.u;
+        width: 5 * root.u;
+        height: h * root.u;
+        border-radius: 2.5 * root.u;
+        border-width: 1.2px;
+        border-color: root.tint;
+        background: root.tint.with-alpha(0.16);
+
+        Rectangle {
+            x: 1.4 * root.u;
+            y: parent.height * 0.5;
+            width: parent.width - 2.8 * root.u;
+            height: 0.9 * root.u;
+            border-radius: 0.45 * root.u;
+            background: root.tint.with-alpha(0.7);
+        }
+    }
+
+    // Palm
+    Rectangle {
+        x: 8 * root.u;
+        y: 20 * root.u;
+        width: 24 * root.u;
+        height: 14 * root.u;
+        border-radius: 5 * root.u;
+        border-width: 1.2px;
+        border-color: root.tint;
+        background: root.tint.with-alpha(0.16);
+    }
+
+    // Core LED and a data line
+    GlowDot {
+        x: 18 * root.u;
+        y: 25 * root.u;
+        diameter: 4 * root.u;
+        blur: 8px;
+        color: root.tint.brighter(0.4);
+    }
+    Rectangle {
+        x: 13 * root.u;
+        y: 31 * root.u;
+        width: 14 * root.u;
+        height: 0.9 * root.u;
+        border-radius: 0.45 * root.u;
+        background: root.tint.with-alpha(0.55);
+    }
+}
