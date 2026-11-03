@@ -258,13 +258,14 @@ pub async fn handle_execute_command(
             let screen = get_primary_screen_dimensions();
             let (raw_px, raw_py) = denormalize_to_pixels(x, y, screen.width, screen.height);
             CursorController::global().glide_to(raw_px, raw_py, 180, crate::ui::CursorMode::Hover);
+            let not_before = std::time::Instant::now() + std::time::Duration::from_millis(180);
 
             // Execute hybrid UIA click (Window Guard -> Interactive Scan -> Hinted Re-Ranker -> Semantic Pattern -> Physical Snapped/Raw)
             let uia_handle_res = uia::UiaHandle::global();
             let click_res = match uia_handle_res {
                 Ok(handle) => {
                     handle
-                        .click_with_hint(x, y, button, double_click, uia::ClickPolicy::default(), target_hint)
+                        .click_with_hint(x, y, button, double_click, uia::ClickPolicy::default(), target_hint, Some(not_before))
                         .await
                 }
                 Err(e) => Err(e),
@@ -520,8 +521,7 @@ pub async fn handle_execute_command(
                 .unwrap_or(false);
 
             let text_owned = text.to_string();
-            reset_automation_abort();
-            CursorController::global().set_mode(crate::ui::CursorMode::Typing);
+            let _cursor_hold = CursorController::global().hold(crate::ui::CursorMode::Typing);
             let type_res = tokio::task::spawn_blocking(move || {
                 desktop_type_text(&text_owned, press_enter)
             })
@@ -531,7 +531,6 @@ pub async fn handle_execute_command(
 
             match type_res {
                 Ok(chars_typed) => {
-                    CursorController::global().set_mode(crate::ui::CursorMode::Idle);
                     ClientMessage::CommandResult {
                         command_id,
                         success: true,

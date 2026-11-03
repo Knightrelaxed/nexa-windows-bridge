@@ -141,7 +141,7 @@ impl NativeCursorSprite {
                 let mut canvas = SpriteCanvas::new(SPRITE_WIDTH, SPRITE_HEIGHT);
 
                 // Initial render
-                render_cursor_frame(&mut canvas, CursorMode::Idle, None, None);
+                render_cursor_frame(&mut canvas, CursorMode::Idle, None, None, None);
                 if !bits_ptr.is_null() {
                     std::ptr::copy_nonoverlapping(
                         canvas.pixels.as_ptr() as *const u8,
@@ -170,7 +170,7 @@ impl NativeCursorSprite {
                             }
 
                             // Re-render frame
-                            render_cursor_frame(&mut canvas, mode, ripple, badge.as_deref());
+                            render_cursor_frame(&mut canvas, mode, ripple, badge.as_deref(), Some((x, y)));
 
                             if !bits_ptr.is_null() {
                                 std::ptr::copy_nonoverlapping(

@@ -6,10 +6,10 @@
 
 use crate::ui::CursorMode;
 
-pub const SPRITE_WIDTH: usize = 160;
-pub const SPRITE_HEIGHT: usize = 128;
-pub const HOTSPOT_X: i32 = 48;
-pub const HOTSPOT_Y: i32 = 48;
+pub const SPRITE_WIDTH: usize = 256;
+pub const SPRITE_HEIGHT: usize = 160;
+pub const HOTSPOT_X: i32 = 128;
+pub const HOTSPOT_Y: i32 = 64;
 
 /// RGBA color representation (non-premultiplied inputs)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -285,27 +285,63 @@ impl SpriteCanvas {
     }
 }
 
-/// 5x7 ASCII Bitmap Glyphs
+/// 5x7 ASCII Bitmap Glyphs (Full Uppercase A-Z, Digits 0-9, and Common Symbols)
 fn get_glyph_bitmap(c: char) -> [u8; 7] {
-    match c {
-        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
-        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
-        'X' => [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
+    match c.to_ascii_uppercase() {
+        // Uppercase Latin Alphabet (A-Z)
         'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'B' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
         'C' => [0b01111, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b01111],
-        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+        'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
+        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
+        'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
+        'G' => [0b01111, 0b10000, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111],
         'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'I' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111],
+        'J' => [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
         'K' => [0b10010, 0b10100, 0b11000, 0b11100, 0b10110, 0b10010, 0b10001],
         'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
-        'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
-        'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
-        'G' => [0b01111, 0b10000, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111],
-        'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
-        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+        'M' => [0b10001, 0b11011, 0b10101, 0b10001, 0b10001, 0b10001, 0b10001],
+        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
         'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-        '/' => [0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000],
+        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+        'Q' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
+        'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
+        'S' => [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
+        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+        'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
+        'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
+        'X' => [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
+        'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
+        'Z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
+
+        // Digits (0-9)
+        '0' => [0b01110, 0b10011, 0b10101, 0b10101, 0b11001, 0b10001, 0b01110],
+        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
+        '3' => [0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110],
+        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+        '5' => [0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110],
+        '6' => [0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110],
+
+        // Punctuation & Symbols
         ' ' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000],
         '-' => [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
+        '+' => [0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000],
+        '/' => [0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000],
+        ':' => [0b00000, 0b01100, 0b01100, 0b00000, 0b01100, 0b01100, 0b00000],
+        '.' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b01100, 0b01100],
+        ',' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00100, 0b00100, 0b01000],
+        '_' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b11111],
+        '!' => [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100],
+        '?' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b00000, 0b00100],
+        '%' => [0b11001, 0b11010, 0b00100, 0b01000, 0b01011, 0b10011, 0b00000],
+
+        // Fallback placeholder box
         _ => [0b11111, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11111],
     }
 }
@@ -316,6 +352,7 @@ pub fn render_cursor_frame(
     mode: CursorMode,
     ripple_progress: Option<f32>,
     badge_override: Option<&str>,
+    screen_pos: Option<(i32, i32)>,
 ) {
     canvas.clear();
 
@@ -371,7 +408,7 @@ pub fn render_cursor_frame(
     // ─────────────────────────────────────────────────────────────
     // 3. Tailless Delta Arrowhead Pointer (Aegis Dual-Facet)
     // ─────────────────────────────────────────────────────────────
-    // Hotspot is exact apex tip: V0 = (hx, hy) = (48, 48)
+    // Hotspot is exact apex tip: V0 = (hx, hy)
     let v0 = (hx, hy);
     let v1 = (hx + 6, hy + 28);  // Left wing
     let v2 = (hx + 12, hy + 21); // Inward notch
@@ -416,11 +453,33 @@ pub fn render_cursor_frame(
         CursorMode::Idle => "NEXA",
     });
 
+    let (flip_x, flip_y) = if let Some((sx, sy)) = screen_pos {
+        let (screen_w, screen_h) = {
+            let sw = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(windows_sys::Win32::UI::WindowsAndMessaging::SM_CXSCREEN) };
+            let sh = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(windows_sys::Win32::UI::WindowsAndMessaging::SM_CYSCREEN) };
+            (if sw > 0 { sw } else { 1920 }, if sh > 0 { sh } else { 1080 })
+        };
+        // Flip badge left if close to right edge of screen; flip up if close to bottom
+        (sx + 120 > screen_w, sy + 50 > screen_h)
+    } else {
+        (false, false)
+    };
+
     let text_chars = badge_text.chars().count();
     let badge_w = (text_chars as i32 * 6 + 12).clamp(42, 100);
     let badge_h = 16;
-    let badge_x = hx + 28;
-    let badge_y = hy + 18;
+
+    let badge_x = if flip_x {
+        hx - 24 - badge_w
+    } else {
+        hx + 24
+    };
+
+    let badge_y = if flip_y {
+        hy - 18 - badge_h
+    } else {
+        hy + 18
+    };
 
     let badge_bg = Color::rgba(4, 7, 15, 224); // 88% dark navy glass
     let badge_border = Color::rgba(accent.r, accent.g, accent.b, 160);
@@ -453,14 +512,14 @@ mod tests {
     #[test]
     fn test_render_cursor_frame_produces_valid_pixels() {
         let mut canvas = SpriteCanvas::new(SPRITE_WIDTH, SPRITE_HEIGHT);
-        render_cursor_frame(&mut canvas, CursorMode::Idle, None, None);
+        render_cursor_frame(&mut canvas, CursorMode::Idle, None, None, None);
 
         // Verify apex pixel is painted with high luminance
         let apex_idx = HOTSPOT_Y as usize * SPRITE_WIDTH + HOTSPOT_X as usize;
         let apex_pixel = canvas.pixels[apex_idx];
         assert_ne!(apex_pixel, 0, "Apex pixel must be rendered");
 
-        // Verify badge area has pixels
+        // Verify badge area has pixels (unflipped: badge is to the right and below hotspot)
         let badge_idx = (HOTSPOT_Y as usize + 22) * SPRITE_WIDTH + (HOTSPOT_X as usize + 35);
         let badge_pixel = canvas.pixels[badge_idx];
         assert_ne!(badge_pixel, 0, "Badge area must be rendered");
@@ -482,13 +541,13 @@ mod tests {
     #[test]
     fn test_concentric_ripples_render_rings() {
         let mut canvas = SpriteCanvas::new(SPRITE_WIDTH, SPRITE_HEIGHT);
-        render_cursor_frame(&mut canvas, CursorMode::Clicking, Some(0.4), None);
+        render_cursor_frame(&mut canvas, CursorMode::Clicking, Some(0.4), None, None);
 
         // Count non-zero pixels with ripple vs without ripple
         let ripple_pixels = canvas.pixels.iter().filter(|&&p| p != 0).count();
 
         let mut idle_canvas = SpriteCanvas::new(SPRITE_WIDTH, SPRITE_HEIGHT);
-        render_cursor_frame(&mut idle_canvas, CursorMode::Idle, None, None);
+        render_cursor_frame(&mut idle_canvas, CursorMode::Idle, None, None, None);
         let idle_pixels = idle_canvas.pixels.iter().filter(|&&p| p != 0).count();
 
         assert!(
@@ -497,5 +556,36 @@ mod tests {
             ripple_pixels,
             idle_pixels
         );
+    }
+
+    #[test]
+    fn test_font_glyph_coverage() {
+        let chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!?:.,_+-/ ";
+        let fallback = get_glyph_bitmap('#');
+        for c in chars.chars() {
+            let glyph = get_glyph_bitmap(c);
+            assert_ne!(glyph, fallback, "Character '{}' must have a dedicated glyph, not fallback", c);
+        }
+    }
+
+    #[test]
+    fn test_badge_screen_boundary_flip() {
+        let mut normal_canvas = SpriteCanvas::new(SPRITE_WIDTH, SPRITE_HEIGHT);
+        let mut flipped_canvas = SpriteCanvas::new(SPRITE_WIDTH, SPRITE_HEIGHT);
+
+        // Normal middle of screen: (960, 540)
+        render_cursor_frame(&mut normal_canvas, CursorMode::Idle, None, None, Some((960, 540)));
+        // Near bottom right screen edge: (1910, 1070)
+        render_cursor_frame(&mut flipped_canvas, CursorMode::Idle, None, None, Some((1910, 1070)));
+
+        // Unflipped badge has pixels to the right (x > HOTSPOT_X)
+        let right_sample = (HOTSPOT_Y as usize + 22) * SPRITE_WIDTH + (HOTSPOT_X as usize + 35);
+        assert_ne!(normal_canvas.pixels[right_sample], 0);
+
+        // Flipped badge has pixels to the left (x < HOTSPOT_X) and above (y < HOTSPOT_Y)
+        // badge_x = hx - 24 - badge_w (where hx = 128, badge_w approx 42-60 -> badge_x approx 44..86)
+        // badge_y = hy - 18 - 16 = 64 - 34 = 30
+        let left_sample = (HOTSPOT_Y as usize - 26) * SPRITE_WIDTH + (HOTSPOT_X as usize - 40);
+        assert_ne!(flipped_canvas.pixels[left_sample], 0, "Flipped badge must be rendered to the top-left");
     }
 }

@@ -5,7 +5,7 @@
 
 #![allow(dead_code)]
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::thread::sleep;
 use std::time::Duration;
 use tracing::{info, warn};
@@ -18,6 +18,52 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 /// Global cancellation flag to immediately halt long-running input actions (e.g. typing)
 static AUTOMATION_ABORT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Tracks whether AI is currently injecting SendInput actions (moves/clicks/typing)
+static AI_INPUT_ACTIVE: AtomicU32 = AtomicU32::new(0);
+
+/// Monotonically increasing sequence number for AI input completions
+static AI_INPUT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Flag set when physical human mouse interference is detected
+static HUMAN_INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+/// RAII Scope that marks when AI is injecting input via SendInput to prevent self-triggering yield
+pub struct AiInputScope;
+
+impl AiInputScope {
+    pub fn enter() -> Self {
+        AI_INPUT_ACTIVE.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for AiInputScope {
+    fn drop(&mut self) {
+        AI_INPUT_SEQ.fetch_add(1, Ordering::SeqCst);
+        AI_INPUT_ACTIVE.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Check if AI is currently actively injecting input
+pub fn is_ai_input_active() -> bool {
+    AI_INPUT_ACTIVE.load(Ordering::SeqCst) > 0
+}
+
+/// Retrieve the current sequence counter for AI input completions
+pub fn ai_input_sequence() -> u64 {
+    AI_INPUT_SEQ.load(Ordering::SeqCst)
+}
+
+/// Flag whether a human intervention has occurred
+pub fn set_human_interrupted(interrupted: bool) {
+    HUMAN_INTERRUPTED.store(interrupted, Ordering::SeqCst);
+}
+
+/// Check if a human has touched the mouse
+pub fn is_human_interrupted() -> bool {
+    HUMAN_INTERRUPTED.load(Ordering::SeqCst)
+}
 
 /// Signal an abort to any running automation loops
 pub fn request_automation_abort() {
@@ -374,6 +420,9 @@ pub fn desktop_click(
     button: MouseButton,
     double_click: bool,
 ) -> Result<(i32, i32), String> {
+    let _ai_scope = AiInputScope::enter();
+    set_human_interrupted(false);
+
     if !(0.0..=1000.0).contains(&norm_x) || !(0.0..=1000.0).contains(&norm_y) {
         return Err(format!(
             "Coordinates out of bounds: ({:.1}, {:.1}) must be between 0 and 1000",
@@ -420,6 +469,10 @@ pub fn desktop_click(
 
         // Helper closure to trigger a single down/up sequence with position lock & RAII guard (Audit N2)
         let trigger_click = |guard: &mut HeldMouseGuard| -> Result<(), String> {
+            if is_human_interrupted() || is_automation_abort_requested() {
+                return Err("Aksi klik dibatalkan karena terdeteksi intervensi kursor fisik manusia atau sinyal pembatalan.".into());
+            }
+
             let down_input = INPUT {
                 r#type: INPUT_MOUSE,
                 Anonymous: INPUT_0 {
@@ -485,6 +538,7 @@ pub fn desktop_scroll(
     target_x: Option<f64>,
     target_y: Option<f64>,
 ) -> Result<i32, String> {
+    let _ai_scope = AiInputScope::enter();
     let delta = calculate_scroll_wheel_delta(direction, amount);
     let screen = get_primary_screen_dimensions();
 
@@ -917,6 +971,7 @@ pub fn close_active_window() -> Result<String, String> {
 /// Supports immediate cancellation if an abort signal is received (Audit N13).
 /// Returns the number of characters typed.
 pub fn desktop_type_text(text: &str, press_enter: bool) -> Result<usize, String> {
+    let _ai_scope = AiInputScope::enter();
     if text.is_empty() {
         return Err("Text to type cannot be empty".to_string());
     }
@@ -1027,6 +1082,7 @@ pub fn desktop_type_text(text: &str, press_enter: bool) -> Result<usize, String>
 /// Verifies parsed VK sequences against security policies (Audit N3).
 /// Returns the primary/last VK code pressed.
 pub fn desktop_press_key(key: &str) -> Result<u16, String> {
+    let _ai_scope = AiInputScope::enter();
     let trimmed = key.trim();
     if trimmed.is_empty() {
         return Err("Key name cannot be empty".to_string());
@@ -1306,5 +1362,18 @@ mod tests {
     #[test]
     fn test_own_interactive_window_guard_offscreen() {
         assert!(!crate::automation::uia::guard::is_point_inside_own_interactive_window(-9999, -9999));
+    }
+
+    #[test]
+    fn test_ai_input_scope_lifecycle() {
+        assert!(!is_ai_input_active());
+        let seq_before = ai_input_sequence();
+        {
+            let _scope = AiInputScope::enter();
+            assert!(is_ai_input_active());
+        }
+        assert!(!is_ai_input_active());
+        let seq_after = ai_input_sequence();
+        assert_eq!(seq_after, seq_before + 1);
     }
 }

@@ -70,6 +70,7 @@ enum Request {
         double: bool,
         policy: ClickPolicy,
         target_hint: Option<String>,
+        not_before: Option<Instant>,
     },
     SnapBox {
         ymin: f64,
@@ -212,6 +213,7 @@ impl UiaHandle {
         double: bool,
         policy: ClickPolicy,
         target_hint: Option<String>,
+        not_before: Option<Instant>,
     ) -> Result<ClickReport, UiaError> {
         let req = Request::Click {
             norm_x,
@@ -220,6 +222,7 @@ impl UiaHandle {
             double,
             policy,
             target_hint,
+            not_before,
         };
         match self.call(req, CLICK_BUDGET).await? {
             Response::Click(r) => Ok(r),
@@ -237,7 +240,7 @@ impl UiaHandle {
         double: bool,
         policy: ClickPolicy,
     ) -> Result<ClickReport, UiaError> {
-        self.click_with_hint(norm_x, norm_y, button, double, policy, None).await
+        self.click_with_hint(norm_x, norm_y, button, double, policy, None, None).await
     }
 
     /// Magnet-snap untuk highlight. TIDAK PERNAH gagal: error/timeout → box visi apa adanya.
@@ -405,6 +408,7 @@ fn run_job(ctx: &UiaContext, job: &Job) -> Result<Response, UiaError> {
             double,
             policy,
             target_hint,
+            not_before,
         } => run_click(
             ctx,
             *norm_x,
@@ -413,6 +417,7 @@ fn run_job(ctx: &UiaContext, job: &Job) -> Result<Response, UiaError> {
             *double,
             *policy,
             target_hint.as_deref(),
+            *not_before,
             deadline,
             cancel,
         )
@@ -449,6 +454,25 @@ fn snap_query(px: i32, py: i32, hint: Option<i64>) -> SnapQuery {
     }
 }
 
+fn precommit(
+    cancel: &AtomicBool,
+    deadline: Instant,
+    not_before: Option<Instant>,
+) -> Result<(), UiaError> {
+    if let Some(nb) = not_before {
+        while Instant::now() < nb {
+            if cancel.load(Ordering::SeqCst) || is_automation_abort_requested() {
+                return Err(UiaError::Cancelled);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    if cancel.load(Ordering::SeqCst) || Instant::now() >= deadline || is_automation_abort_requested() {
+        return Err(UiaError::Cancelled);
+    }
+    Ok(())
+}
+
 fn physical_click_at_pixel(px: i32, py: i32, button: MouseButton, double: bool) -> Result<(), UiaError> {
     if is_automation_abort_requested() {
         return Err(UiaError::Cancelled);
@@ -471,6 +495,7 @@ fn run_click(
     double: bool,
     policy: ClickPolicy,
     target_hint: Option<&str>,
+    not_before: Option<Instant>,
     deadline: Instant,
     cancel: &AtomicBool,
 ) -> Result<ClickReport, UiaError> {
@@ -517,6 +542,13 @@ fn run_click(
                 };
 
                 if let Some((idx, hint_tag)) = chosen_candidate {
+                    let (snap_cx, snap_cy) = scan.infos[idx].center();
+                    // Retarget virtual cursor to exact center of snapped button in flight
+                    crate::automation::CursorController::global().retarget(snap_cx, snap_cy);
+
+                    // Wait until cursor arrives at target before actuating
+                    precommit(cancel, deadline, not_before)?;
+
                     match act_on(&scan, idx, &target, button, double, policy, hint_tag, t0) {
                         Ok(report) => return Ok(report),
                         Err(UiaError::ElevatedTarget) => return Err(UiaError::ElevatedTarget),
@@ -557,6 +589,7 @@ fn run_click(
             guard::verify_unchanged(snap)?;
         }
     }
+    precommit(cancel, deadline, not_before)?;
     if is_automation_abort_requested() {
         return Err(UiaError::Cancelled);
     }
