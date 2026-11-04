@@ -396,7 +396,7 @@ impl NativeOverlay {
                             0,
                             cur_screen.width,
                             cur_screen.height,
-                            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+                            SWP_NOACTIVATE,
                         );
                         InvalidateRect(hwnd, std::ptr::null(), 1);
                         UpdateWindow(hwnd);
@@ -498,6 +498,28 @@ pub fn apply_stealth_window_styles() -> bool {
     true
 }
 
+/// Expands a bounding box symmetrically to a minimum 16x16 size around its center
+/// so point clicks and small controls do not shift their visual center (Audit Y4b).
+pub fn rect_min16(px0: i32, py0: i32, px1: i32, py1: i32) -> RECT {
+    let (mut l, mut t, mut r, mut b) = (px0, py0, px1, py1);
+    if r - l < 16 {
+        let c = (l + r) / 2;
+        l = c - 8;
+        r = c + 8;
+    }
+    if b - t < 16 {
+        let c = (t + b) / 2;
+        t = c - 8;
+        b = c + 8;
+    }
+    RECT {
+        left: l,
+        top: t,
+        right: r,
+        bottom: b,
+    }
+}
+
 /// Controller managing the lifetime, geometry, animations, and auto-dismiss of overlays
 #[derive(Clone)]
 pub struct HighlighterController {
@@ -549,12 +571,7 @@ impl HighlighterController {
                     screen.height,
                 );
 
-                let target_rect = RECT {
-                    left: px0,
-                    top: py0,
-                    right: px1.max(px0 + 16),
-                    bottom: py1.max(py0 + 16),
-                };
+                let target_rect = rect_min16(px0, py0, px1, py1);
 
                 info!(
                     "[HIGHLIGHTER] 🌟 show_highlight [style={}, label='{}']: rect=({}, {} - {}x{}) duration={}ms (snapped={})",
@@ -586,12 +603,7 @@ impl HighlighterController {
             let (px1, py1) =
                 denormalize_to_pixels(snapped.xmax, snapped.ymax, screen.width, screen.height);
 
-            let target_rect = RECT {
-                left: px0,
-                top: py0,
-                right: px1.max(px0 + 16),
-                bottom: py1.max(py0 + 16),
-            };
+            let target_rect = rect_min16(px0, py0, px1, py1);
 
             overlay.show_highlight(target_rect, req.style, req.label);
         }
@@ -771,5 +783,24 @@ mod tests {
         // Dissolving highlight now leaves state empty
         state.highlight = None;
         assert!(state.is_empty());
+    }
+
+    #[test]
+    fn test_rect_min16_preserves_center() {
+        // Point coordinates: px0 == px1, py0 == py1
+        let r_point = rect_min16(500, 300, 500, 300);
+        assert_eq!(r_point.left, 492);
+        assert_eq!(r_point.right, 508);
+        assert_eq!(r_point.top, 292);
+        assert_eq!(r_point.bottom, 308);
+        assert_eq!((r_point.left + r_point.right) / 2, 500);
+        assert_eq!((r_point.top + r_point.bottom) / 2, 300);
+
+        // Box larger than 16x16: unmodified
+        let r_large = rect_min16(100, 100, 200, 200);
+        assert_eq!(r_large.left, 100);
+        assert_eq!(r_large.top, 100);
+        assert_eq!(r_large.right, 200);
+        assert_eq!(r_large.bottom, 200);
     }
 }

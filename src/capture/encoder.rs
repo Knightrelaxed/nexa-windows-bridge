@@ -36,6 +36,11 @@ impl FrameRateLimiter {
         }
     }
 
+    /// Reset interval timer on forced frame capture
+    pub fn force_capture(&mut self) {
+        self.last_capture = Some(Instant::now());
+    }
+
     #[allow(dead_code)]
     pub fn interval(&self) -> Duration {
         self.interval

@@ -44,22 +44,6 @@ fn is_automation_armed(armed_until: &AtomicU64) -> bool {
     now < until
 }
 
-/// Identifies if a desktop command produces visual side effects on screen
-fn is_screen_changing_action(action: &str) -> bool {
-    let act = action.to_uppercase().replace(['_', '-'], "");
-    matches!(
-        act.as_str(),
-        "DESKTOPCLICK"
-            | "DESKTOPSCROLL"
-            | "DESKTOPTYPETEXT"
-            | "DESKTOPPRESSKEY"
-            | "LAUNCHAPP"
-            | "CLOSEWINDOW"
-            | "CLOSETAB"
-            | "CLOSEAPP"
-    )
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 0. Single-Instance Mutex Arbiter (Milestone 7.4 / Claude Bug #4)
@@ -736,8 +720,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let net_tx_worker = net_client_cmd.clone();
     let session_gen_worker = Arc::clone(&session_generation);
     let armed_worker = Arc::clone(&armed_until);
-    let is_capture_desired_worker = Arc::clone(&is_capture_desired);
-    let capture_frame_seq_worker = Arc::clone(&capture_frame_seq);
 
     tokio::spawn(async move {
         while let Some((gen, cmd_id, action_name, action_params)) = fifo_cmd_rx.recv().await {
@@ -794,18 +776,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             };
-
-            // Hold briefly if command modified the screen (click, scroll, type, press key, etc.)
-            // to allow Windows to repaint and the fresh video frame to be transmitted to Gemini (Audit A1)
-            if let ClientMessage::CommandResult { success: true, .. } = &result {
-                if is_screen_changing_action(&action_name) && is_capture_desired_worker.load(Ordering::Relaxed) {
-                    let seq0 = capture_frame_seq_worker.load(Ordering::SeqCst);
-                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(800);
-                    while capture_frame_seq_worker.load(Ordering::SeqCst) == seq0 && tokio::time::Instant::now() < deadline {
-                        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
-                    }
-                }
-            }
 
             if let ClientMessage::CommandResult { ref command_id, success, ref message, .. } = result {
                 if success {

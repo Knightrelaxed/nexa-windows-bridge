@@ -13,7 +13,7 @@ use super::guard;
 use super::scan::{
     activate_semantic, pick_among, revalidate, set_value_semantic, Scan, Semantic, UiaContext,
 };
-use super::snap::{self, default_radius_px, pick_best, SnapQuery};
+use super::snap::{self, default_radius_px, pick_best, pick_by_box, SnapQuery};
 use super::types::{
     ClickMethod, ClickReport, ControlKind, ControlSummary, SetTextReport, UiaError,
 };
@@ -697,10 +697,17 @@ fn run_snap(
     let area = ((x1 - x0).max(0) as i64) * ((y1 - y0).max(0) as i64);
 
     let scan = ctx.scan_window(target, deadline, cancel)?;
-    let q = snap_query(px, py, if area > 0 { Some(area) } else { None });
-    Ok(pick_best(&scan.infos, &q)
-        .and_then(|m| scan.infos.get(m.index))
-        .map(|c| c.rect))
+    if area > 0 {
+        let bx = PixelRect::new(x0, y0, x1, y1);
+        Ok(pick_by_box(&scan.infos, &bx, s.width, s.height)
+            .and_then(|idx| scan.infos.get(idx))
+            .map(|c| c.rect))
+    } else {
+        let q = snap_query(px, py, None);
+        Ok(pick_best(&scan.infos, &q)
+            .and_then(|m| scan.infos.get(m.index))
+            .map(|c| c.rect))
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

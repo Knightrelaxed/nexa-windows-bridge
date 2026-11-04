@@ -56,11 +56,38 @@ impl GraphicsCaptureApiHandler for ScreenCaptureHandler {
             return Ok(());
         }
 
-        if !self.rate_limiter.should_capture() {
+        let forced = super::FORCE_NEXT_CAPTURE.swap(false, Ordering::SeqCst);
+        if !forced && !self.rate_limiter.should_capture() {
             return Ok(());
         }
+        if forced {
+            self.rate_limiter.force_capture();
+        }
+        super::LAST_CAPTURE_MS.store(super::now_ms(), Ordering::SeqCst);
 
         let buffer = frame.buffer()?;
+
+        static CHECK: std::sync::Once = std::sync::Once::new();
+        CHECK.call_once(|| {
+            let s = crate::automation::get_primary_screen_dimensions();
+            if (buffer.width() as i32, buffer.height() as i32) != (s.width, s.height) {
+                warn!(
+                    "[CAPTURE] ⚠️ Frame {}x{} != layar {}x{}: DPI awareness/skala salah, semua koordinat akan meleset",
+                    buffer.width(),
+                    buffer.height(),
+                    s.width,
+                    s.height
+                );
+            } else {
+                info!(
+                    "[CAPTURE] ✅ Frame dimensions {}x{} verified matching primary screen {}x{}",
+                    buffer.width(),
+                    buffer.height(),
+                    s.width,
+                    s.height
+                );
+            }
+        });
         match self.encoder.encode_frame_buffer(&buffer) {
             Ok(base64_str) => {
                 // Non-blocking try_send: drops frame if previous frame is still transmitting
@@ -86,6 +113,7 @@ impl GraphicsCaptureApiHandler for ScreenCaptureHandler {
     fn on_closed(&mut self) -> Result<(), Self::Error> {
         info!("[CAPTURE] Direct3D 11 screen capture session closed.");
         self.is_active.store(false, Ordering::SeqCst);
+        super::IS_CAPTURE_RUNNING.store(false, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -123,6 +151,7 @@ impl ScreenCaptureController {
         let control = ScreenCaptureHandler::start_free_threaded(settings)
             .map_err(|e| format!("Failed to start screen capture: {}", e))?;
 
+        super::IS_CAPTURE_RUNNING.store(true, Ordering::SeqCst);
         info!("[CAPTURE] ✅ Direct3D 11 screen capture active (1 FPS, Borderless, WithoutCursor).");
 
         Ok(Self {
@@ -134,6 +163,7 @@ impl ScreenCaptureController {
     /// Stop screen capture session cleanly
     pub fn stop(&mut self) {
         self.is_active.store(false, Ordering::SeqCst);
+        super::IS_CAPTURE_RUNNING.store(false, Ordering::SeqCst);
         if let Some(control) = self.control.take() {
             let _ = control.stop();
             info!("[CAPTURE] Screen capture stopped.");

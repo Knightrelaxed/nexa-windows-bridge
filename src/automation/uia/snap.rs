@@ -32,9 +32,28 @@ pub struct SnapMatch {
     pub contained: bool,
 }
 
-/// Radius snap default: 4% tinggi layar, dibatasi 24..=96 px.
+/// Radius snap default: 2% tinggi layar, dibatasi 16..=40 px.
 pub fn default_radius_px(screen_h: i32) -> i32 {
-    (((screen_h.max(1) as f64) * 0.04).round() as i32).clamp(24, 96)
+    (((screen_h.max(1) as f64) * 0.02).round() as i32).clamp(16, 40)
+}
+
+/// Pilih kontrol yang paling cocok dengan bounding box dari visi berdasarkan IoU (Intersection-over-Union >= 0.3).
+pub fn pick_by_box(controls: &[ControlInfo], bx: &PixelRect, sw: i32, sh: i32) -> Option<usize> {
+    let ba = bx.width() as i64 * bx.height() as i64;
+    controls.iter().enumerate()
+        .filter(|(_, c)| c.rect.is_valid_control(sw, sh))
+        .filter_map(|(i, c)| {
+            let l = c.rect.left.max(bx.left) as i64;
+            let t = c.rect.top.max(bx.top) as i64;
+            let r = c.rect.right.min(bx.right) as i64;
+            let b = c.rect.bottom.min(bx.bottom) as i64;
+            let inter = (r - l).max(0) * (b - t).max(0);
+            let uni = ba + c.area() - inter;
+            let iou = if uni > 0 { inter as f64 / uni as f64 } else { 0.0 };
+            (iou >= 0.3).then_some((i, iou))
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(i, _)| i)
 }
 
 /// `RECT` Win32 bersifat right/bottom-eksklusif.
@@ -464,10 +483,25 @@ mod tests {
 
     #[test]
     fn radius_scales_and_clamps() {
-        assert_eq!(default_radius_px(1080), 43);
-        assert_eq!(default_radius_px(2160), 86);
-        assert_eq!(default_radius_px(400), 24);
-        assert_eq!(default_radius_px(10_000), 96);
+        assert_eq!(default_radius_px(1080), 22);
+        assert_eq!(default_radius_px(2160), 40);
+        assert_eq!(default_radius_px(400), 16);
+        assert_eq!(default_radius_px(10_000), 40);
+    }
+
+    #[test]
+    fn test_pick_by_box_iou() {
+        let btn = ctl(ControlKind::Button, 100, 100, 200, 150);
+        let icon = ctl(ControlKind::Button, 105, 105, 125, 125);
+        let controls = vec![btn, icon];
+
+        // Query box closely matches btn (100, 100, 200, 150)
+        let bx_btn = PixelRect::new(98, 98, 202, 152);
+        assert_eq!(pick_by_box(&controls, &bx_btn, SW, SH), Some(0));
+
+        // Query box too far (IoU < 0.3)
+        let bx_far = PixelRect::new(50, 50, 80, 80);
+        assert_eq!(pick_by_box(&controls, &bx_far, SW, SH), None);
     }
 
     #[test]

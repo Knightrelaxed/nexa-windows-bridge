@@ -178,6 +178,23 @@ pub fn launch_desktop_app(
     }
 }
 
+/// Ensures Windows UI animations settle and forces an immediate fresh frame capture
+/// for Gemini Vision so the next action operates on post-action screen state (Audit Y1, Y2).
+pub async fn settle_and_fresh_frame(settle_ms: u64, max_wait_ms: u64) {
+    tokio::time::sleep(std::time::Duration::from_millis(settle_ms)).await;
+    if !crate::capture::IS_CAPTURE_RUNNING.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let t0 = crate::capture::now_ms();
+    crate::capture::FORCE_NEXT_CAPTURE.store(true, std::sync::atomic::Ordering::SeqCst);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(max_wait_ms);
+    while crate::capture::LAST_CAPTURE_MS.load(std::sync::atomic::Ordering::SeqCst) < t0
+        && std::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    }
+}
+
 /// Central command dispatcher for ServerMessage::ExecuteCommand.
 /// Maps standard actions to native Windows automation, UI Automation snapping,
 /// and DirectComposition/Slint overlays, returning strongly-typed CommandResult messages.
@@ -323,6 +340,8 @@ pub async fn handle_execute_command(
                         String::new()
                     };
 
+                    settle_and_fresh_frame(250, 1200).await;
+
                     ClientMessage::CommandResult {
                         command_id,
                         success: true,
@@ -454,23 +473,26 @@ pub async fn handle_execute_command(
             .and_then(|r| r);
 
             match scroll_res {
-                Ok(delta) => ClientMessage::CommandResult {
-                    command_id,
-                    success: true,
-                    message: format!(
-                        "Layar desktop berhasil digulir ke {} (delta: {}).",
-                        direction.to_uppercase(),
-                        delta
-                    ),
-                    data: serde_json::json!({
-                        "action": "desktopScroll",
-                        "direction": direction,
-                        "amount": amount,
-                        "delta": delta,
-                        "x": target_x,
-                        "y": target_y
-                    }),
-                },
+                Ok(delta) => {
+                    settle_and_fresh_frame(450, 1500).await;
+                    ClientMessage::CommandResult {
+                        command_id,
+                        success: true,
+                        message: format!(
+                            "Layar desktop berhasil digulir ke {} (delta: {}).",
+                            direction.to_uppercase(),
+                            delta
+                        ),
+                        data: serde_json::json!({
+                            "action": "desktopScroll",
+                            "direction": direction,
+                            "amount": amount,
+                            "delta": delta,
+                            "x": target_x,
+                            "y": target_y
+                        }),
+                    }
+                }
                 Err(err) => {
                     warn!("[AUTOMATION] desktop_scroll failed: {}", err);
                     ClientMessage::CommandResult {
@@ -531,6 +553,7 @@ pub async fn handle_execute_command(
 
             match type_res {
                 Ok(chars_typed) => {
+                    settle_and_fresh_frame(250, 1200).await;
                     ClientMessage::CommandResult {
                         command_id,
                         success: true,
@@ -591,12 +614,15 @@ pub async fn handle_execute_command(
                 .and_then(|r| r);
 
                 return match res {
-                    Ok(msg) => ClientMessage::CommandResult {
-                        command_id,
-                        success: true,
-                        message: msg,
-                        data: serde_json::json!({ "action": "closeWindow", "intercepted_key": "ALT+F4" }),
-                    },
+                    Ok(msg) => {
+                        settle_and_fresh_frame(250, 1200).await;
+                        ClientMessage::CommandResult {
+                            command_id,
+                            success: true,
+                            message: msg,
+                            data: serde_json::json!({ "action": "closeWindow", "intercepted_key": "ALT+F4" }),
+                        }
+                    }
                     Err(err) => ClientMessage::CommandResult {
                         command_id,
                         success: false,
@@ -631,16 +657,19 @@ pub async fn handle_execute_command(
             .and_then(|r| r);
 
             match press_res {
-                Ok(vk) => ClientMessage::CommandResult {
-                    command_id,
-                    success: true,
-                    message: format!("Tombol '{}' (0x{:04X}) berhasil ditekan di desktop.", key, vk),
-                    data: serde_json::json!({
-                        "action": "desktopPressKey",
-                        "key": key,
-                        "virtual_key": vk
-                    }),
-                },
+                Ok(vk) => {
+                    settle_and_fresh_frame(250, 1200).await;
+                    ClientMessage::CommandResult {
+                        command_id,
+                        success: true,
+                        message: format!("Tombol '{}' (0x{:04X}) berhasil ditekan di desktop.", key, vk),
+                        data: serde_json::json!({
+                            "action": "desktopPressKey",
+                            "key": key,
+                            "virtual_key": vk
+                        }),
+                    }
+                }
                 Err(err) => {
                     warn!("[AUTOMATION] desktop_press_key failed: {}", err);
                     let err_code = if err.contains("kebijakan keamanan") || err.contains("diblokir") {
@@ -891,15 +920,18 @@ pub async fn handle_execute_command(
             .and_then(|r| r);
 
             match launch_res {
-                Ok(msg) => ClientMessage::CommandResult {
-                    command_id,
-                    success: true,
-                    message: msg,
-                    data: serde_json::json!({
-                        "action": "launchApp",
-                        "app_name": app_name
-                    }),
-                },
+                Ok(msg) => {
+                    settle_and_fresh_frame(700, 2000).await;
+                    ClientMessage::CommandResult {
+                        command_id,
+                        success: true,
+                        message: msg,
+                        data: serde_json::json!({
+                            "action": "launchApp",
+                            "app_name": app_name
+                        }),
+                    }
+                }
                 Err(err) => {
                     warn!("[AUTOMATION] launch_app failed: {}", err);
                     ClientMessage::CommandResult {
@@ -1223,12 +1255,15 @@ pub async fn handle_execute_command(
             .and_then(|r| r);
 
             match res {
-                Ok(_) => ClientMessage::CommandResult {
-                    command_id,
-                    success: true,
-                    message: "Tab aktif berhasil ditutup (CTRL+W).".to_string(),
-                    data: serde_json::json!({ "action": "closeTab" }),
-                },
+                Ok(_) => {
+                    settle_and_fresh_frame(250, 1200).await;
+                    ClientMessage::CommandResult {
+                        command_id,
+                        success: true,
+                        message: "Tab aktif berhasil ditutup (CTRL+W).".to_string(),
+                        data: serde_json::json!({ "action": "closeTab" }),
+                    }
+                }
                 Err(err) => ClientMessage::CommandResult {
                     command_id,
                     success: false,
@@ -1250,12 +1285,15 @@ pub async fn handle_execute_command(
             .and_then(|r| r);
 
             match res {
-                Ok(msg) => ClientMessage::CommandResult {
-                    command_id,
-                    success: true,
-                    message: msg,
-                    data: serde_json::json!({ "action": "closeWindow" }),
-                },
+                Ok(msg) => {
+                    settle_and_fresh_frame(250, 1200).await;
+                    ClientMessage::CommandResult {
+                        command_id,
+                        success: true,
+                        message: msg,
+                        data: serde_json::json!({ "action": "closeWindow" }),
+                    }
+                }
                 Err(err) => ClientMessage::CommandResult {
                     command_id,
                     success: false,
