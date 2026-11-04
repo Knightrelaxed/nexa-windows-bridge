@@ -288,9 +288,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             cfg.capture_fps.max(1)
                         };
 
-                        // Channel capacity 1: only ever buffers 1 frame to prevent queue backlog
+                        // Watch channel: Latest frame replaces previous, zero queue backlog, never blocked
                         let (frame_tx, mut frame_rx) =
-                            tokio::sync::mpsc::channel::<String>(1);
+                            tokio::sync::watch::channel::<Option<(u64, String)>>(None);
                         let net_client_frame = net_client.clone();
                         let is_capture_desired_tx = Arc::clone(&is_capture_desired);
                         let capture_gen_tx = Arc::clone(&capture_generation);
@@ -306,20 +306,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
 
                         tokio::spawn(async move {
-                            while let Some(image_base64) = frame_rx.recv().await {
+                            while frame_rx.changed().await.is_ok() {
                                 if !is_capture_desired_tx.load(Ordering::SeqCst)
                                     || capture_gen_tx.load(Ordering::SeqCst) != gen
                                 {
                                     info!("[MAIN] Screen capture gen {} stopped, terminating frame transmitter loop.", gen);
                                     break;
                                 }
-                                if net_client_frame.is_connected() {
-                                    let frame_msg = ClientMessage::VideoFrame {
-                                        command_id: session_id.clone(),
-                                        image_chunk: image_base64,
-                                    };
-                                    if net_client_frame.send_message(frame_msg).await.is_ok() {
-                                        capture_frame_seq_tx.fetch_add(1, Ordering::SeqCst);
+                                let frame_data = frame_rx.borrow_and_update().clone();
+                                if let Some((arrival_ms, image_base64)) = frame_data {
+                                    if net_client_frame.is_connected() {
+                                        let frame_msg = ClientMessage::VideoFrame {
+                                            command_id: session_id.clone(),
+                                            image_chunk: image_base64,
+                                        };
+                                        if net_client_frame.send_message(frame_msg).await.is_ok() {
+                                            capture_frame_seq_tx.fetch_add(1, Ordering::SeqCst);
+                                            crate::capture::LAST_SENT_ARRIVAL_MS.store(arrival_ms, Ordering::SeqCst);
+                                        }
                                     }
                                 }
                             }

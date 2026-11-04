@@ -178,19 +178,26 @@ pub fn launch_desktop_app(
     }
 }
 
-/// Ensures Windows UI animations settle and forces an immediate fresh frame capture
-/// for Gemini Vision so the next action operates on post-action screen state (Audit Y1, Y2).
+/// Ensures Windows UI animations settle and forces fresh frame capture with burst mode
+/// and transmitter acknowledgement for Gemini Vision (Audit N3).
 pub async fn settle_and_fresh_frame(settle_ms: u64, max_wait_ms: u64) {
-    tokio::time::sleep(std::time::Duration::from_millis(settle_ms)).await;
-    if !crate::capture::IS_CAPTURE_RUNNING.load(std::sync::atomic::Ordering::Relaxed) {
+    use crate::capture::*;
+    use std::sync::atomic::Ordering::SeqCst;
+    if !IS_CAPTURE_RUNNING.load(SeqCst) {
         return;
     }
-    let t0 = crate::capture::now_ms();
-    crate::capture::FORCE_NEXT_CAPTURE.store(true, std::sync::atomic::Ordering::SeqCst);
+    BURST_UNTIL_MS.store(now_ms() + settle_ms + max_wait_ms + 300, SeqCst);
+    tokio::time::sleep(std::time::Duration::from_millis(settle_ms)).await;
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(max_wait_ms);
-    while crate::capture::LAST_CAPTURE_MS.load(std::sync::atomic::Ordering::SeqCst) < t0
-        && std::time::Instant::now() < deadline
-    {
+    loop {
+        let arr = LAST_ARRIVAL_MS.load(SeqCst);
+        let quiet = now_ms().saturating_sub(arr) >= 200;
+        if quiet && LAST_SENT_ARRIVAL_MS.load(SeqCst) >= arr {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
         tokio::time::sleep(std::time::Duration::from_millis(40)).await;
     }
 }
@@ -218,39 +225,83 @@ pub async fn handle_execute_command(
         // 1. DESKTOP_CLICK
         // ─────────────────────────────────────────────────────────────
         "DESKTOPCLICK" => {
-            let x = match params
-                .get("x")
-                .or_else(|| params.get("norm_x"))
-                .or_else(|| params.get("pixel_x"))
-                .and_then(|v| v.as_f64())
-            {
-                Some(val) if (0.0..=1000.0).contains(&val) => val,
-                _ => {
-                    return ClientMessage::CommandResult {
-                        command_id,
-                        success: false,
-                        message: "Koordinat x harus berupa angka dalam rentang 0-1000".to_string(),
-                        data: serde_json::json!({ "error": "INVALID_COORDINATE_X" }),
-                    };
-                }
-            };
+            let use_highlight = params
+                .get("use_highlight")
+                .or_else(|| params.get("useHighlight"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
-            let y = match params
-                .get("y")
-                .or_else(|| params.get("norm_y"))
-                .or_else(|| params.get("pixel_y"))
-                .and_then(|v| v.as_f64())
-            {
-                Some(val) if (0.0..=1000.0).contains(&val) => val,
-                _ => {
-                    return ClientMessage::CommandResult {
-                        command_id,
-                        success: false,
-                        message: "Koordinat y harus berupa angka dalam rentang 0-1000".to_string(),
-                        data: serde_json::json!({ "error": "INVALID_COORDINATE_Y" }),
+            let (target_x, target_y) = if use_highlight {
+                if let Some(lock) = HighlighterController::get_last_highlight_lock() {
+                    ((lock.xmin + lock.xmax) / 2.0, (lock.ymin + lock.ymax) / 2.0)
+                } else {
+                    let x = match params
+                        .get("x")
+                        .or_else(|| params.get("norm_x"))
+                        .and_then(|v| v.as_f64())
+                    {
+                        Some(val) if (0.0..=1000.0).contains(&val) => val,
+                        _ => {
+                            return ClientMessage::CommandResult {
+                                command_id,
+                                success: false,
+                                message: "Koordinat x harus berupa angka dalam rentang 0-1000 (atau gunakan use_highlight setelah highlight_element)".to_string(),
+                                data: serde_json::json!({ "error": "INVALID_COORDINATE_X" }),
+                            };
+                        }
                     };
+                    let y = match params
+                        .get("y")
+                        .or_else(|| params.get("norm_y"))
+                        .and_then(|v| v.as_f64())
+                    {
+                        Some(val) if (0.0..=1000.0).contains(&val) => val,
+                        _ => {
+                            return ClientMessage::CommandResult {
+                                command_id,
+                                success: false,
+                                message: "Koordinat y harus berupa angka dalam rentang 0-1000 (atau gunakan use_highlight setelah highlight_element)".to_string(),
+                                data: serde_json::json!({ "error": "INVALID_COORDINATE_Y" }),
+                            };
+                        }
+                    };
+                    (x, y)
                 }
+            } else {
+                let x = match params
+                    .get("x")
+                    .or_else(|| params.get("norm_x"))
+                    .and_then(|v| v.as_f64())
+                {
+                    Some(val) if (0.0..=1000.0).contains(&val) => val,
+                    _ => {
+                        return ClientMessage::CommandResult {
+                            command_id,
+                            success: false,
+                            message: "Koordinat x harus berupa angka dalam rentang 0-1000".to_string(),
+                            data: serde_json::json!({ "error": "INVALID_COORDINATE_X" }),
+                        };
+                    }
+                };
+
+                let y = match params
+                    .get("y")
+                    .or_else(|| params.get("norm_y"))
+                    .and_then(|v| v.as_f64())
+                {
+                    Some(val) if (0.0..=1000.0).contains(&val) => val,
+                    _ => {
+                        return ClientMessage::CommandResult {
+                            command_id,
+                            success: false,
+                            message: "Koordinat y harus berupa angka dalam rentang 0-1000".to_string(),
+                            data: serde_json::json!({ "error": "INVALID_COORDINATE_Y" }),
+                        };
+                    }
+                };
+                (x, y)
             };
+            let (x, y) = (target_x, target_y);
 
             let button_str = params
                 .get("button")
@@ -265,10 +316,10 @@ pub async fn handle_execute_command(
             let target_hint = params
                 .get("target_hint")
                 .or_else(|| params.get("hint"))
-                .or_else(|| params.get("target"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty());
+            let hint_present = target_hint.is_some();
 
             // 1. Zero-Latency Glide Overlap:
             // Immediately start gliding toward target coordinates while UIA element scan and Window Guard run in parallel
@@ -289,10 +340,10 @@ pub async fn handle_execute_command(
             };
 
             // If the job never started (e.g. queue full, circuit breaker open, actor uninitialized),
-            // safely degrade to degraded_click (Window Guard + physical SendInput) without risk of double action.
+            // safely degrade to degraded_click ONLY if no target hint was specified (Audit N1).
             let click_res = match click_res {
                 Ok(report) => Ok(report),
-                Err(e) if e.job_never_started() => {
+                Err(e) if e.job_never_started() && !hint_present => {
                     warn!(
                         "[AUTOMATION] UIA job never started ({}); falling back to degraded click",
                         e
@@ -305,6 +356,9 @@ pub async fn handle_execute_command(
                         Err(uia::UiaError::Internal(format!("Join error: {}", join_err)))
                     })
                 }
+                Err(e) if e.job_never_started() => Err(uia::UiaError::Unavailable(
+                    "UIA sedang tidak tersedia; klik berpetunjuk tidak bisa diverifikasi. Coba lagi sebentar.".into(),
+                )),
                 Err(e) => Err(e),
             };
 
@@ -398,6 +452,15 @@ pub async fn handle_execute_command(
                                 "error": "OCCLUDED_BY_WINDOW",
                                 "occluding_hwnd": occluding_hwnd,
                                 "occluding_pid": occluding_pid,
+                                "delivered": "not_delivered",
+                                "details": err.to_string(),
+                            }),
+                        )
+                    } else if let UiaError::OccludedInPage = err {
+                        (
+                            "Target klik terhalang oleh elemen antarmuka lain di dalam halaman yang sama (misalnya modal dialog, banner, atau header). Klik dibatalkan demi keamanan.".to_string(),
+                            serde_json::json!({
+                                "error": "OCCLUDED_IN_PAGE",
                                 "delivered": "not_delivered",
                                 "details": err.to_string(),
                             }),
@@ -761,28 +824,38 @@ pub async fn handle_execute_command(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(4000);
 
-            let req = HighlightRequest::new(ymin, xmin, ymax, xmax, style, label.clone(), duration_ms);
+            // Magnet-snap bounding box immediately so actual snapped coordinates are reported back to model (Audit N5)
+            let snapped = match uia::UiaHandle::global() {
+                Ok(handle) => handle.snap_box(ymin, xmin, ymax, xmax).await,
+                Err(_) => smart_snap_bounding_box(ymin, xmin, ymax, xmax),
+            };
 
             if let Some(hl) = highlighter {
-                hl.show_highlight(req.clone());
+                hl.show_snapped(snapped, style, label.clone(), duration_ms);
+            } else {
+                HighlighterController::set_last_highlight_lock(snapped);
             }
 
+            let snap_str = if snapped.is_snapped { " (snapped)" } else { "" };
             ClientMessage::CommandResult {
                 command_id,
                 success: true,
                 message: format!(
-                    "Elemen [ymin={:.1}, xmin={:.1}, ymax={:.1}, xmax={:.1}] berhasil disorot dengan gaya {}.",
-                    req.ymin, req.xmin, req.ymax, req.xmax, req.style.as_str()
+                    "Elemen [ymin={:.1}, xmin={:.1}, ymax={:.1}, xmax={:.1}] berhasil disorot{} dengan gaya {}.",
+                    snapped.ymin, snapped.xmin, snapped.ymax, snapped.xmax, snap_str, style.as_str()
                 ),
                 data: serde_json::json!({
                     "action": "highlightElement",
-                    "ymin": req.ymin,
-                    "xmin": req.xmin,
-                    "ymax": req.ymax,
-                    "xmax": req.xmax,
-                    "style": req.style.as_str(),
+                    "ymin": snapped.ymin,
+                    "xmin": snapped.xmin,
+                    "ymax": snapped.ymax,
+                    "xmax": snapped.xmax,
+                    "center_x": (snapped.xmin + snapped.xmax) / 2.0,
+                    "center_y": (snapped.ymin + snapped.ymax) / 2.0,
+                    "snapped": snapped.is_snapped,
+                    "style": style.as_str(),
                     "label": label,
-                    "duration_ms": req.duration_ms
+                    "duration_ms": duration_ms
                 }),
             }
         }
@@ -794,7 +867,6 @@ pub async fn handle_execute_command(
             let x = match params
                 .get("x")
                 .or_else(|| params.get("norm_x"))
-                .or_else(|| params.get("pixel_x"))
                 .and_then(|v| v.as_f64())
             {
                 Some(v) if (0.0..=1000.0).contains(&v) => v,
@@ -811,7 +883,6 @@ pub async fn handle_execute_command(
             let y = match params
                 .get("y")
                 .or_else(|| params.get("norm_y"))
-                .or_else(|| params.get("pixel_y"))
                 .and_then(|v| v.as_f64())
             {
                 Some(v) if (0.0..=1000.0).contains(&v) => v,

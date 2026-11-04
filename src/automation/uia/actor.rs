@@ -29,7 +29,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
+use windows::Win32::Foundation::POINT;
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+use windows::Win32::UI::Accessibility::{IUIAutomation, IUIAutomationElement};
 
 const CLICK_BUDGET: Duration = Duration::from_millis(2500);
 #[allow(dead_code)]
@@ -487,6 +489,45 @@ fn physical_click_at_pixel(px: i32, py: i32, button: MouseButton, double: bool) 
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Verifies whether the chosen element is actually top-most at (cx, cy) within the application window (Audit N2).
+/// Prevents invoking elements occluded in-page by modals, popups, cookie banners, or sticky overlays.
+fn hit_matches(auto: &IUIAutomation, chosen: &IUIAutomationElement, cx: i32, cy: i32) -> bool {
+    let Ok(hit) = (unsafe { auto.ElementFromPoint(POINT { x: cx, y: cy }) }) else {
+        return true; // Fail-open on COM error to avoid blocking valid clicks
+    };
+    let Ok(walker) = (unsafe { auto.ControlViewWalker() }) else {
+        return true;
+    };
+    let same = |a: &IUIAutomationElement, b: &IUIAutomationElement| {
+        unsafe { auto.CompareElements(a, b) }
+            .map(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    // 1) hit is chosen or a descendant of chosen (e.g. inner label or icon)
+    let mut n = hit.clone();
+    for _ in 0..8 {
+        if same(&n, chosen) {
+            return true;
+        }
+        match unsafe { walker.GetParentElement(&n) } {
+            Ok(p) => n = p,
+            Err(_) => break,
+        }
+    }
+    // 2) chosen is a descendant of hit (e.g. non-hit-testable control inside parent container)
+    let mut m = chosen.clone();
+    for _ in 0..3 {
+        match unsafe { walker.GetParentElement(&m) } {
+            Ok(p) => m = p,
+            Err(_) => break,
+        }
+        if same(&m, &hit) {
+            return true;
+        }
+    }
+    false
+}
+
 fn run_click(
     ctx: &UiaContext,
     norm_x: f64,
@@ -507,11 +548,22 @@ fn run_click(
     let target = guard::guard_point(px, py)?;
     let query = snap_query(px, py, None);
 
+    // N6 Click Trace: Initial coordinates and target window
+    info!(
+        "[CLICK-TRACE] raw_norm=({:.1},{:.1}) raw_px=({},{}) screen={}x{} hint={:?} hwnd=0x{:X}",
+        norm_x, norm_y, px, py, screen.width, screen.height, target_hint, target.target_hwnd
+    );
+
     // 2) Scan + snap (+ 1x ulang bila elemen stale)
     // Scan pada target_hwnd; jika gagal/timeout, operasi baca murni ini tidak boleh mengaborsi klik
     for attempt in 0..2 {
         match ctx.scan_window(target.target_hwnd, deadline, cancel) {
             Ok(scan) => {
+                info!(
+                    "[CLICK-TRACE] scan_n={} for hwnd=0x{:X}",
+                    scan.infos.len(), target.target_hwnd
+                );
+
                 let chosen_candidate = match target_hint {
                     Some(hint) if !hint.trim().is_empty() => match snap::pick_hinted(&scan.infos, &query, hint) {
                         snap::HintedPick::Chosen { index, sim, .. } => {
@@ -543,6 +595,24 @@ fn run_click(
 
                 if let Some((idx, hint_tag)) = chosen_candidate {
                     let (snap_cx, snap_cy) = scan.infos[idx].center();
+                    let c = &scan.infos[idx];
+                    info!(
+                        "[CLICK-TRACE] chosen kind={:?} name='{}' rect=({},{},{},{}) d_raw=({},{}) hint_tag={:?}",
+                        c.kind, c.short_name(40), c.rect.left, c.rect.top, c.rect.right, c.rect.bottom,
+                        snap_cx - px, snap_cy - py, hint_tag
+                    );
+
+                    // N2: In-page occlusion verification via UIA hit-test
+                    if let Some(el) = scan.elements.get(idx) {
+                        if !hit_matches(&ctx.uia, el, snap_cx, snap_cy) {
+                            warn!(
+                                "[AUTOMATION] ⛔ Element '{}' is occluded in-page by another element at ({}, {})",
+                                c.name, snap_cx, snap_cy
+                            );
+                            return Err(UiaError::OccludedInPage);
+                        }
+                    }
+
                     // Retarget virtual cursor to exact center of snapped button in flight
                     crate::automation::CursorController::global().retarget(snap_cx, snap_cy);
 

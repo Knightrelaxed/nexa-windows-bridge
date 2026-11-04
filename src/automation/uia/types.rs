@@ -222,6 +222,7 @@ pub enum UiaError {
     },
     ProviderUnavailable(i32),
     NoTarget,
+    OccludedInPage,
     Guard(GuardError),
     InputFailed(String),
     Com(i32),
@@ -255,6 +256,7 @@ impl UiaError {
             UiaError::TargetHintMismatch { .. } => "TARGET_HINT_MISMATCH",
             UiaError::ProviderUnavailable(_) => "PROVIDER_UNAVAILABLE",
             UiaError::NoTarget => "NO_TARGET",
+            UiaError::OccludedInPage => "OCCLUDED_IN_PAGE",
             UiaError::Guard(g) => g.code(),
             UiaError::InputFailed(_) => "INPUT_FAILED",
             UiaError::Com(_) => "COM_ERROR",
@@ -323,6 +325,7 @@ impl fmt::Display for UiaError {
                 *hr as u32
             ),
             UiaError::NoTarget => write!(f, "Tidak ada kontrol interaktif di sekitar titik tersebut"),
+            UiaError::OccludedInPage => write!(f, "Elemen terhalang oleh elemen antarmuka lain di dalam halaman yang sama"),
             UiaError::Guard(g) => write!(f, "Window Guard menolak aksi: {}", g.code()),
             UiaError::InputFailed(s) => write!(f, "Input fisik gagal: {s}"),
             UiaError::Com(hr) => write!(f, "Kesalahan COM (HRESULT 0x{:08X})", *hr as u32),

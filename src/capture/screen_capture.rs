@@ -6,7 +6,8 @@
 use super::encoder::{FrameEncoder, FrameRateLimiter};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc::Sender;
+use std::time::{Duration, Instant};
+use tokio::sync::watch;
 use tracing::{info, warn};
 use windows_capture::{
     capture::{CaptureControl, Context, GraphicsCaptureApiHandler},
@@ -20,14 +21,15 @@ use windows_capture::{
 };
 
 pub struct ScreenCaptureHandler {
-    frame_tx: Sender<String>,
+    frame_tx: watch::Sender<Option<(u64, String)>>,
     rate_limiter: FrameRateLimiter,
     encoder: FrameEncoder,
+    last_sent: Instant,
     is_active: Arc<AtomicBool>,
 }
 
 impl GraphicsCaptureApiHandler for ScreenCaptureHandler {
-    type Flags = (Sender<String>, u32, Arc<AtomicBool>);
+    type Flags = (watch::Sender<Option<(u64, String)>>, u32, Arc<AtomicBool>);
     type Error = Box<dyn std::error::Error + Send + Sync>;
 
     fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
@@ -41,6 +43,7 @@ impl GraphicsCaptureApiHandler for ScreenCaptureHandler {
             rate_limiter: FrameRateLimiter::new(fps),
             // Quality 55 (~120KB per frame): sharp legible text for Gemini Live Vision without choking audio bandwidth
             encoder: FrameEncoder::new(55),
+            last_sent: Instant::now(),
             is_active,
         })
     }
@@ -56,14 +59,22 @@ impl GraphicsCaptureApiHandler for ScreenCaptureHandler {
             return Ok(());
         }
 
-        let forced = super::FORCE_NEXT_CAPTURE.swap(false, Ordering::SeqCst);
-        if !forced && !self.rate_limiter.should_capture() {
+        let arrival = super::now_ms();
+        super::LAST_ARRIVAL_MS.store(arrival, Ordering::SeqCst);
+
+        let burst = arrival < super::BURST_UNTIL_MS.load(Ordering::SeqCst);
+        let due = if burst {
+            self.last_sent.elapsed() >= Duration::from_millis(120)
+        } else {
+            self.rate_limiter.should_capture()
+        };
+
+        if !due {
             return Ok(());
         }
-        if forced {
-            self.rate_limiter.force_capture();
-        }
-        super::LAST_CAPTURE_MS.store(super::now_ms(), Ordering::SeqCst);
+
+        self.last_sent = Instant::now();
+        super::LAST_CAPTURE_MS.store(arrival, Ordering::SeqCst);
 
         let buffer = frame.buffer()?;
 
@@ -88,19 +99,11 @@ impl GraphicsCaptureApiHandler for ScreenCaptureHandler {
                 );
             }
         });
+
         match self.encoder.encode_frame_buffer(&buffer) {
             Ok(base64_str) => {
-                // Non-blocking try_send: drops frame if previous frame is still transmitting
-                // This guarantees zero frame backlog and preserves 100% of WebSocket bandwidth for voice
-                match self.frame_tx.try_send(base64_str) {
-                    Ok(_) => {}
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                        // Previous frame still in flight: drop stale frame
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                        capture_control.stop();
-                    }
-                }
+                // watch::Sender guarantees latest frame replaces unread frame with zero latency and zero backlog
+                let _ = self.frame_tx.send(Some((arrival, base64_str)));
             }
             Err(e) => {
                 warn!("[CAPTURE] Frame compression failed: {}", e);
@@ -130,8 +133,8 @@ impl ScreenCaptureController {
         Monitor::primary().is_ok()
     }
 
-    /// Start 1 FPS Direct3D 11 screen capture on the primary monitor
-    pub fn start(frame_tx: Sender<String>, fps: u32) -> Result<Self, String> {
+    /// Start Direct3D 11 screen capture on the primary monitor
+    pub fn start(frame_tx: watch::Sender<Option<(u64, String)>>, fps: u32) -> Result<Self, String> {
         let primary_monitor = Monitor::primary()
             .map_err(|e| format!("Primary monitor not found: {}", e))?;
 
@@ -142,7 +145,7 @@ impl ScreenCaptureController {
             CursorCaptureSettings::WithoutCursor,
             DrawBorderSettings::WithoutBorder,
             SecondaryWindowSettings::Default,
-            MinimumUpdateIntervalSettings::Default,
+            MinimumUpdateIntervalSettings::Custom(Duration::from_millis(100)),
             DirtyRegionSettings::Default,
             ColorFormat::Rgba8,
             (frame_tx, fps, Arc::clone(&is_active)),

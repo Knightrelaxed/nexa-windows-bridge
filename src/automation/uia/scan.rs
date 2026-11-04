@@ -87,7 +87,7 @@ pub(super) fn classify(e: &windows::core::Error) -> UiaError {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub(super) struct UiaContext {
-    uia: IUIAutomation,
+    pub(super) uia: IUIAutomation,
     cache: IUIAutomationCacheRequest,
     interactive: IUIAutomationCondition,
 }

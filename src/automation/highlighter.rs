@@ -12,13 +12,13 @@
 
 #![allow(dead_code)]
 
-use crate::automation::element_finder::smart_snap_bounding_box;
+use crate::automation::element_finder::{smart_snap_bounding_box, SnappedRect};
 use crate::automation::input::{denormalize_to_pixels, get_primary_screen_dimensions};
 use crate::automation::uia;
 use crate::ui::OverlayWindow;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, info};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
@@ -520,6 +520,8 @@ pub fn rect_min16(px0: i32, py0: i32, px1: i32, py1: i32) -> RECT {
     }
 }
 
+static LAST_HIGHLIGHT_LOCK: Mutex<Option<(Instant, SnappedRect)>> = Mutex::new(None);
+
 /// Controller managing the lifetime, geometry, animations, and auto-dismiss of overlays
 #[derive(Clone)]
 pub struct HighlighterController {
@@ -529,12 +531,73 @@ pub struct HighlighterController {
 }
 
 impl HighlighterController {
+    /// Retrieve the most recently snapped highlight box if within the 10-second lease (Audit N5)
+    pub fn get_last_highlight_lock() -> Option<SnappedRect> {
+        let guard = LAST_HIGHLIGHT_LOCK.lock().ok()?;
+        let (ts, rect) = (*guard)?;
+        if ts.elapsed() <= Duration::from_secs(10) {
+            Some(rect)
+        } else {
+            None
+        }
+    }
+
+    /// Update the target lock for synchronization with subsequent click commands (Audit N5)
+    pub fn set_last_highlight_lock(rect: SnappedRect) {
+        if let Ok(mut guard) = LAST_HIGHLIGHT_LOCK.lock() {
+            *guard = Some((Instant::now(), rect));
+        }
+    }
+
     /// Create a controller with native Win32 GDI overlay window
     pub fn new(_overlay_window: Option<slint::Weak<OverlayWindow>>) -> Self {
         Self {
             overlay: Arc::new(NativeOverlay::spawn()),
             active_epoch: Arc::new(AtomicU64::new(0)),
             active_ripple_epoch: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Display an already-snapped element highlight, updating the target lock and auto-dissolving (Audit N5)
+    pub fn show_snapped(
+        &self,
+        snapped: SnappedRect,
+        style: HighlightStyle,
+        label: String,
+        duration_ms: u64,
+    ) {
+        Self::set_last_highlight_lock(snapped);
+        let epoch = self.active_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        let active_epoch = Arc::clone(&self.active_epoch);
+        let overlay = Arc::clone(&self.overlay);
+
+        let screen = get_primary_screen_dimensions();
+        let (px0, py0) = denormalize_to_pixels(snapped.xmin, snapped.ymin, screen.width, screen.height);
+        let (px1, py1) = denormalize_to_pixels(snapped.xmax, snapped.ymax, screen.width, screen.height);
+        let target_rect = rect_min16(px0, py0, px1, py1);
+
+        info!(
+            "[HIGHLIGHTER] 🌟 show_snapped [style={}, label='{}']: rect=({}, {} - {}x{}) duration={}ms (snapped={})",
+            style.as_str(),
+            label,
+            target_rect.left,
+            target_rect.top,
+            target_rect.right - target_rect.left,
+            target_rect.bottom - target_rect.top,
+            duration_ms,
+            snapped.is_snapped
+        );
+
+        overlay.show_highlight(target_rect, style, label);
+
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                tokio::time::sleep(Duration::from_millis(duration_ms)).await;
+                if active_epoch.load(Ordering::SeqCst) == epoch {
+                    overlay.hide_highlight();
+                    debug!("[HIGHLIGHTER] Auto-dissolved highlight epoch {}", epoch);
+                }
+            });
         }
     }
 
@@ -551,6 +614,7 @@ impl HighlighterController {
                     Ok(uia) => uia.snap_box(req.ymin, req.xmin, req.ymax, req.xmax).await,
                     Err(_) => smart_snap_bounding_box(req.ymin, req.xmin, req.ymax, req.xmax),
                 };
+                Self::set_last_highlight_lock(snapped);
 
                 // Check epoch: if superseded by a newer highlight while snapping, don't show outdated box
                 if active_epoch.load(Ordering::SeqCst) != epoch {
@@ -597,6 +661,7 @@ impl HighlighterController {
         } else {
             // Synchronous fallback (e.g. sync unit tests)
             let snapped = smart_snap_bounding_box(req.ymin, req.xmin, req.ymax, req.xmax);
+            Self::set_last_highlight_lock(snapped);
             let screen = get_primary_screen_dimensions();
             let (px0, py0) =
                 denormalize_to_pixels(snapped.xmin, snapped.ymin, screen.width, screen.height);
