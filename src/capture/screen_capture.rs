@@ -114,7 +114,7 @@ impl ScreenCaptureController {
             CursorCaptureSettings::WithoutCursor,
             DrawBorderSettings::WithoutBorder,
             SecondaryWindowSettings::Default,
-            MinimumUpdateIntervalSettings::Custom(std::time::Duration::from_millis(1000)),
+            MinimumUpdateIntervalSettings::Default,
             DirtyRegionSettings::Default,
             ColorFormat::Rgba8,
             (frame_tx, fps, Arc::clone(&is_active)),

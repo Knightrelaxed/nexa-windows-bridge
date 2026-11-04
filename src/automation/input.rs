@@ -421,7 +421,6 @@ pub fn desktop_click(
     double_click: bool,
 ) -> Result<(i32, i32), String> {
     let _ai_scope = AiInputScope::enter();
-    set_human_interrupted(false);
 
     if !(0.0..=1000.0).contains(&norm_x) || !(0.0..=1000.0).contains(&norm_y) {
         return Err(format!(

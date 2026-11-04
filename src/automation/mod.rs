@@ -363,7 +363,7 @@ pub async fn handle_execute_command(
                         )
                     } else if let UiaError::TargetHintMismatch { ref hint, ref best_match, similarity_pct } = err {
                         (
-                            format!("Petunjuk target '{}' tidak cocok dengan elemen terdekat '{}' (kemiripan {}% < 30%). Klik dibatalkan demi mencegah salah sasaran.", hint, best_match, similarity_pct),
+                            format!("Petunjuk target '{}' tidak cocok dengan elemen terdekat '{}' (kemiripan {}% < 50%). Klik dibatalkan demi mencegah salah sasaran.", hint, best_match, similarity_pct),
                             serde_json::json!({
                                 "error": "TARGET_HINT_MISMATCH",
                                 "hint": hint,
@@ -1212,9 +1212,36 @@ pub async fn handle_execute_command(
         }
 
         // ─────────────────────────────────────────────────────────────
-        // 17. CLOSE_WINDOW (Safe Graceful Window Closure via WM_CLOSE)
+        // 17. CLOSE_TAB (Safe Tab Closure via CTRL+W)
         // ─────────────────────────────────────────────────────────────
-        "CLOSEWINDOW" | "CLOSEAPP" | "CLOSETAB" => {
+        "CLOSETAB" => {
+            let res = tokio::task::spawn_blocking(|| {
+                desktop_press_key("CTRL+W")
+            })
+            .await
+            .map_err(|e| format!("Join error: {}", e))
+            .and_then(|r| r);
+
+            match res {
+                Ok(_) => ClientMessage::CommandResult {
+                    command_id,
+                    success: true,
+                    message: "Tab aktif berhasil ditutup (CTRL+W).".to_string(),
+                    data: serde_json::json!({ "action": "closeTab" }),
+                },
+                Err(err) => ClientMessage::CommandResult {
+                    command_id,
+                    success: false,
+                    message: format!("Gagal menutup tab: {}", err),
+                    data: serde_json::json!({ "error": err }),
+                },
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // 18. CLOSE_WINDOW (Safe Graceful Window Closure via WM_CLOSE)
+        // ─────────────────────────────────────────────────────────────
+        "CLOSEWINDOW" | "CLOSEAPP" => {
             let res = tokio::task::spawn_blocking(|| {
                 close_active_window()
             })

@@ -44,6 +44,22 @@ fn is_automation_armed(armed_until: &AtomicU64) -> bool {
     now < until
 }
 
+/// Identifies if a desktop command produces visual side effects on screen
+fn is_screen_changing_action(action: &str) -> bool {
+    let act = action.to_uppercase().replace(['_', '-'], "");
+    matches!(
+        act.as_str(),
+        "DESKTOPCLICK"
+            | "DESKTOPSCROLL"
+            | "DESKTOPTYPETEXT"
+            | "DESKTOPPRESSKEY"
+            | "LAUNCHAPP"
+            | "CLOSEWINDOW"
+            | "CLOSETAB"
+            | "CLOSEAPP"
+    )
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 0. Single-Instance Mutex Arbiter (Milestone 7.4 / Claude Bug #4)
@@ -230,6 +246,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(Mutex::new(None));
     let is_capture_desired = Arc::new(AtomicBool::new(false));
     let capture_generation = Arc::new(AtomicU64::new(0));
+    let capture_frame_seq = Arc::new(AtomicU64::new(0));
 
     // Session generation epoch & automation armed guard for security isolation (Audit K1, K2, N2, R3)
     // Auto-arm by default based on config.auto_arm (default: true).
@@ -241,6 +258,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let capture_ctrl = Arc::clone(&capture_controller);
         let is_capture_desired = Arc::clone(&is_capture_desired);
         let capture_generation = Arc::clone(&capture_generation);
+        let capture_frame_seq = Arc::clone(&capture_frame_seq);
         let net_client = network_client.clone();
         let window_weak = main_window.as_weak();
         let config_clone = Arc::clone(&config);
@@ -250,6 +268,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let capture_ctrl = Arc::clone(&capture_ctrl);
             let is_capture_desired = Arc::clone(&is_capture_desired);
             let capture_generation = Arc::clone(&capture_generation);
+            let capture_frame_seq = Arc::clone(&capture_frame_seq);
             let net_client = net_client.clone();
             let config_clone = Arc::clone(&config_clone);
 
@@ -291,6 +310,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let net_client_frame = net_client.clone();
                         let is_capture_desired_tx = Arc::clone(&is_capture_desired);
                         let capture_gen_tx = Arc::clone(&capture_generation);
+                        let capture_frame_seq_tx = Arc::clone(&capture_frame_seq);
 
                         // Stable session_id per screen sharing session (Claude Bug #9)
                         let session_id = format!(
@@ -314,7 +334,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         command_id: session_id.clone(),
                                         image_chunk: image_base64,
                                     };
-                                    let _ = net_client_frame.send_message(frame_msg).await;
+                                    if net_client_frame.send_message(frame_msg).await.is_ok() {
+                                        capture_frame_seq_tx.fetch_add(1, Ordering::SeqCst);
+                                    }
                                 }
                             }
                             info!("[MAIN] Screen capture frame transmitter loop ended for gen {}.", gen);
@@ -714,6 +736,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let net_tx_worker = net_client_cmd.clone();
     let session_gen_worker = Arc::clone(&session_generation);
     let armed_worker = Arc::clone(&armed_until);
+    let is_capture_desired_worker = Arc::clone(&is_capture_desired);
+    let capture_frame_seq_worker = Arc::clone(&capture_frame_seq);
 
     tokio::spawn(async move {
         while let Some((gen, cmd_id, action_name, action_params)) = fifo_cmd_rx.recv().await {
@@ -738,6 +762,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = net_tx_worker.send_message(disarm_msg).await;
                 continue;
             }
+
+            // Abort lama milik generasi sebelumnya: semua jalur abort sudah menaikkan session_gen,
+            // jadi perintah bergenerasi saat ini boleh mulai dengan flag bersih (Audit C1, C2).
+            automation::reset_automation_abort();
+            automation::set_human_interrupted(false);
 
             // Panic isolation: wrap execution in task so unexpected panics never kill the worker (Audit K9)
             let hl_task = Arc::clone(&hl_worker);
@@ -765,6 +794,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             };
+
+            // Hold briefly if command modified the screen (click, scroll, type, press key, etc.)
+            // to allow Windows to repaint and the fresh video frame to be transmitted to Gemini (Audit A1)
+            if let ClientMessage::CommandResult { success: true, .. } = &result {
+                if is_screen_changing_action(&action_name) && is_capture_desired_worker.load(Ordering::Relaxed) {
+                    let seq0 = capture_frame_seq_worker.load(Ordering::SeqCst);
+                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(800);
+                    while capture_frame_seq_worker.load(Ordering::SeqCst) == seq0 && tokio::time::Instant::now() < deadline {
+                        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+                    }
+                }
+            }
 
             if let ClientMessage::CommandResult { ref command_id, success, ref message, .. } = result {
                 if success {

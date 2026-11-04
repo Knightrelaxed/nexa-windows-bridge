@@ -536,7 +536,7 @@ fn run_click(
                                 similarity_pct: (best_sim * 100.0).round() as u32,
                             });
                         }
-                        snap::HintedPick::None => None,
+                        snap::HintedPick::None => return Err(UiaError::NoTarget),
                     },
                     _ => snap::pick_best(&scan.infos, &query).map(|m| (m.index, None)),
                 };
@@ -568,10 +568,16 @@ fn run_click(
                         }
                     }
                 } else {
+                    if target_hint.map_or(false, |h| !h.trim().is_empty()) {
+                        return Err(UiaError::NoTarget);
+                    }
                     break;
                 }
             }
             Err(e) => {
+                if target_hint.map_or(false, |h| !h.trim().is_empty()) {
+                    return Err(e); // Ada target hint spesifik tapi pohon kontrol gagal discan -> fail-closed
+                }
                 debug!("[UIA] scan_window gagal/timeout ({}), fallback ke klik fisik", e);
                 break;
             }

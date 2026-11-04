@@ -315,7 +315,7 @@ impl fmt::Display for UiaError {
             UiaError::AmbiguousTarget(msg) => write!(f, "Target klik ambigu: {msg}"),
             UiaError::TargetHintMismatch { hint, best_match, similarity_pct } => write!(
                 f,
-                "Target hint '{hint}' tidak cocok dengan elemen terdekat '{best_match}' (kemiripan {similarity_pct}% < 30%)"
+                "Target hint '{hint}' tidak cocok dengan elemen terdekat '{best_match}' (kemiripan {similarity_pct}% < 50%)"
             ),
             UiaError::ProviderUnavailable(hr) => write!(
                 f,

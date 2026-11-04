@@ -237,15 +237,17 @@ impl CursorController {
             st.badge.clone()
         };
 
-        let start_x = self.cur_x.load(Ordering::Relaxed);
-        let start_y = self.cur_y.load(Ordering::Relaxed);
+        let mut start_x = self.cur_x.load(Ordering::Relaxed);
+        let mut start_y = self.cur_y.load(Ordering::Relaxed);
 
         // 1. Initial appearance & redraw
         self.sprite.update(start_x, start_y, 255, mode, None, badge);
         self.is_visible.store(true, Ordering::Relaxed);
 
-        let start_time = Instant::now();
-        let total_dur = Duration::from_millis(duration_ms.max(50));
+        let mut start_time = Instant::now();
+        let mut total_dur = Duration::from_millis(duration_ms.max(50));
+        let mut last_tx = self.target_x.load(Ordering::Relaxed);
+        let mut last_ty = self.target_y.load(Ordering::Relaxed);
         let mut tick = tokio::time::interval(Duration::from_micros(16_667)); // 60 Hz interval
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -265,12 +267,22 @@ impl CursorController {
                 return;
             }
 
+            let cur_target_x = self.target_x.load(Ordering::Relaxed);
+            let cur_target_y = self.target_y.load(Ordering::Relaxed);
+
+            if cur_target_x != last_tx || cur_target_y != last_ty {
+                // Smoothly retarget without jump: set current position as new starting point
+                start_x = self.cur_x.load(Ordering::Relaxed);
+                start_y = self.cur_y.load(Ordering::Relaxed);
+                start_time = Instant::now();
+                total_dur = Duration::from_millis(80); // Smooth 80ms curve to snapped center
+                last_tx = cur_target_x;
+                last_ty = cur_target_y;
+            }
+
             let elapsed = start_time.elapsed();
             let t = (elapsed.as_secs_f32() / total_dur.as_secs_f32()).clamp(0.0, 1.0);
             let ease_t = 1.0 - (1.0 - t).powi(3);
-
-            let cur_target_x = self.target_x.load(Ordering::Relaxed);
-            let cur_target_y = self.target_y.load(Ordering::Relaxed);
 
             let cx = (start_x as f32 + (cur_target_x - start_x) as f32 * ease_t).round() as i32;
             let cy = (start_y as f32 + (cur_target_y - start_y) as f32 * ease_t).round() as i32;

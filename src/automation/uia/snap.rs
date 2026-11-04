@@ -335,10 +335,15 @@ pub fn pick_hinted(controls: &[ControlInfo], q: &SnapQuery, hint: &str) -> Hinte
         }
 
         let spatial = if contained { 0.0 } else { 0.25 + (d / reach) };
-        let textual = if named { 1.0 - sim } else { 0.5 };
+        let textual = if named { 1.0 - sim } else { 1.0 };
         let cost = 0.5 * spatial + 0.5 * textual;
 
         candidates.push((i, cost, sim, contained, named, ctl.name.clone(), ctl.kind, d));
+    }
+
+    // Ada kandidat bernama yang layak -> buang yang anonim (tak ada bukti kecocokan dengan hint)
+    if candidates.iter().any(|c| c.4 && c.2 >= 0.5) {
+        candidates.retain(|c| c.4);
     }
 
     candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
@@ -516,6 +521,17 @@ mod tests {
                 assert!(best_sim < 0.5);
             }
             _ => panic!("Expected veto on mismatch"),
+        }
+    }
+
+    #[test]
+    fn unnamed_container_does_not_beat_exact_named_match() {
+        let unnamed = ctl(ControlKind::Button, 100, 100, 200, 140); // mengandung titik
+        let mut send = ctl(ControlKind::Button, 230, 100, 290, 140); // ±80 px dari titik
+        send.name = "Send".into();
+        match pick_hinted(&[unnamed, send], &q(150, 120), "Send") {
+            HintedPick::Chosen { index, .. } => assert_eq!(index, 1),
+            other => panic!("expected Send, got {:?}", other),
         }
     }
 }
