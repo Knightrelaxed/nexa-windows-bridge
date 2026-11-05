@@ -320,7 +320,10 @@ pub fn pick_hinted(controls: &[ControlInfo], q: &SnapQuery, hint: &str) -> Hinte
         };
     }
 
-    let reach = ((q.radius_px as f32) * 2.0).min(160.0);
+    // Wide semantic search reach for high-confidence textual matches (up to 500px, e.g. sidebar navigation)
+    let wide_reach = ((q.screen_h as f32) * 0.5).clamp(350.0, 600.0);
+    let tight_radius = (q.radius_px as f32).max(16.0);
+
     // (index, cost, sim, contained, named, name, kind, distance)
     let mut candidates: Vec<(usize, f32, f32, bool, bool, String, ControlKind, f32)> = Vec::new();
 
@@ -340,40 +343,60 @@ pub fn pick_hinted(controls: &[ControlInfo], q: &SnapQuery, hint: &str) -> Hinte
         } else {
             rect_distance(&ctl.rect, q.px, q.py) as f32
         };
-        if d > reach {
-            continue;
-        }
 
         let n = normalize_hint(&ctl.name);
         let named = !n.is_empty();
         let sim = if named { text_similarity(&h, &n) } else { 0.0 };
 
-        // Di luar radius asli, hanya nama yang cocok kuat (sim >= 0.5) yang diizinkan menarik titik
-        if !contained && sim < 0.5 && d > q.radius_px as f32 {
-            continue;
+    // Dynamic Reach:
+    // Jika nama teks cocok kuat (sim >= 0.65, misal "Downloads" vs hint "download"),
+    // izinkan jangkauan semantik luas (hingga 500px) agar kesalahan estimasi koordinat model
+    // tetap terkunci ke elemen yang tepat.
+    // Jika tidak cocok (< 0.65), hanya izinkan di dalam radius geometris ketat (tight_radius).
+    let max_allowed_d = if sim >= 0.65 {
+        wide_reach
+    } else {
+        tight_radius
+    };
+
+    if !contained && d > max_allowed_d {
+        continue;
+    }
+
+    let spatial = if contained {
+        0.0
+    } else {
+        0.25 + (d / max_allowed_d) * 0.75
+    };
+    let textual = if named { 1.0 - sim } else { 1.0 };
+    // Berikan bobot dominan pada kecocokan teks jika hint ada
+    let cost = 0.3 * spatial + 0.7 * textual;
+
+    candidates.push((i, cost, sim, contained, named, ctl.name.clone(), ctl.kind, d));
+}
+
+// Jika ada kandidat bernama yang cocok secara semantik (sim >= 0.65),
+// BUANG SEMUA kandidat anonim atau kandidat dengan sim < 0.65 (mencegah salah sasaran ke elemen tetangga).
+if candidates.iter().any(|c| c.4 && c.2 >= 0.65) {
+    candidates.retain(|c| c.4 && c.2 >= 0.65);
+}
+
+candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
+
+match candidates.as_slice() {
+    [] => HintedPick::None,
+    // Jika kandidat terbaik tidak memenuhi ambang batas 65% kecocokan hint
+    [b, ..] if b.2 < 0.65 => {
+        if b.4 {
+            HintedPick::Vetoed {
+                best_name: b.5.clone(),
+                best_sim: b.2,
+            }
+        } else {
+            HintedPick::None
         }
-
-        let spatial = if contained { 0.0 } else { 0.25 + (d / reach) };
-        let textual = if named { 1.0 - sim } else { 1.0 };
-        let cost = 0.5 * spatial + 0.5 * textual;
-
-        candidates.push((i, cost, sim, contained, named, ctl.name.clone(), ctl.kind, d));
     }
-
-    // Ada kandidat bernama yang layak -> buang yang anonim (tak ada bukti kecocokan dengan hint)
-    if candidates.iter().any(|c| c.4 && c.2 >= 0.5) {
-        candidates.retain(|c| c.4);
-    }
-
-    candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
-
-    match candidates.as_slice() {
-        [] => HintedPick::None,
-        [b, ..] if b.4 && b.2 < 0.5 => HintedPick::Vetoed {
-            best_name: b.5.clone(),
-            best_sim: b.2,
-        },
-        [b, s, ..] if (s.1 - b.1).abs() < 0.08 => {
+        [b, s, ..] if (s.1 - b.1).abs() < 0.06 => {
             let top3 = candidates
                 .iter()
                 .take(3)
@@ -548,11 +571,11 @@ mod tests {
             _ => panic!("Expected Submit to be chosen"),
         }
 
-        // Veto mismatch when hint is "Print" (both Cancel and Submit have sim < 0.5)
+        // Veto mismatch when hint is "Print" (both Cancel and Submit have sim < 0.65)
         let veto = pick_hinted(&[btn_cancel, btn_submit], &q(120, 120), "Print");
         match veto {
             HintedPick::Vetoed { best_sim, .. } => {
-                assert!(best_sim < 0.5);
+                assert!(best_sim < 0.65);
             }
             _ => panic!("Expected veto on mismatch"),
         }
@@ -566,6 +589,37 @@ mod tests {
         match pick_hinted(&[unnamed, send], &q(150, 120), "Send") {
             HintedPick::Chosen { index, .. } => assert_eq!(index, 1),
             other => panic!("expected Send, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_sidebar_download_folder_found_across_large_distance_over_unrelated_item() {
+        // Point is at (50, 248) touching "Faqih - Personal"
+        let mut personal = ctl(ControlKind::TreeItem, 20, 230, 180, 266);
+        personal.name = "Faqih - Personal".into();
+
+        // Target "Downloads" is at (50, 358) (110 px lower in the tree)
+        let mut downloads = ctl(ControlKind::TreeItem, 20, 340, 180, 376);
+        downloads.name = "Downloads".into();
+
+        // Model called with hint "download" (Indonesian colloquial for folder Downloads)
+        let controls = vec![personal, downloads];
+        let query = SnapQuery {
+            px: 50,
+            py: 248,
+            radius_px: 22,
+            hint_area_px: None,
+            screen_w: 1920,
+            screen_h: 1080,
+        };
+
+        match pick_hinted(&controls, &query, "download") {
+            HintedPick::Chosen { index, sim, .. } => {
+                // Must pick Downloads (index 1), NOT Faqih - Personal (index 0)
+                assert_eq!(index, 1, "Downloads must be chosen even though cursor touched Faqih - Personal");
+                assert!(sim >= 0.8, "Similarity of 'download' vs 'Downloads' should be high");
+            }
+            other => panic!("Expected Downloads to be chosen, got {:?}", other),
         }
     }
 }
