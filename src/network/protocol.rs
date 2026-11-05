@@ -215,6 +215,21 @@ mod tests {
         assert!(json.contains("\"type\":\"CALL_EVENT\""));
         assert!(json.contains("\"event\":\"CALL_ACCEPTED\""));
 
+        let start_event = ClientMessage::CallEvent {
+            event: "SCREEN_SHARE_STARTED".to_string(),
+            command_id: "session_desktop_100".to_string(),
+        };
+        let start_json = start_event.to_json().unwrap();
+        assert!(start_json.contains("\"event\":\"SCREEN_SHARE_STARTED\""));
+        assert!(start_json.contains("\"command_id\":\"session_desktop_100\""));
+
+        let stop_event = ClientMessage::CallEvent {
+            event: "SCREEN_SHARE_STOPPED".to_string(),
+            command_id: String::new(),
+        };
+        let stop_json = stop_event.to_json().unwrap();
+        assert!(stop_json.contains("\"event\":\"SCREEN_SHARE_STOPPED\""));
+
         let ready_json = r#"{"type": "CALL_LIVE_READY", "sessionId": "DESKTOP_123", "model": "gemini-3.8-live"}"#;
         let ready_msg = ServerMessage::from_json(ready_json).unwrap();
         match ready_msg {

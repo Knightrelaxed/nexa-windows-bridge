@@ -328,6 +328,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .as_millis()
                         );
 
+                        // Send explicit SCREEN_SHARE_STARTED CallEvent to server
+                        let net_client_start = net_client.clone();
+                        let session_id_start = session_id.clone();
+                        tokio::spawn(async move {
+                            if net_client_start.is_connected() {
+                                let start_msg = ClientMessage::CallEvent {
+                                    event: "SCREEN_SHARE_STARTED".to_string(),
+                                    command_id: session_id_start,
+                                };
+                                if let Err(e) = net_client_start.send_message(start_msg).await {
+                                    warn!("[MAIN] Failed to send SCREEN_SHARE_STARTED CallEvent: {}", e);
+                                } else {
+                                    info!("[MAIN] Sent SCREEN_SHARE_STARTED CallEvent to server.");
+                                }
+                            }
+                        });
+
                         tokio::spawn(async move {
                             while frame_rx.changed().await.is_ok() {
                                 if !is_capture_desired_tx.load(Ordering::SeqCst)
@@ -1842,14 +1859,61 @@ unsafe fn enforce_system_cursor_visible(hwnd: windows_sys::Win32::Foundation::HW
 
 /// Helper to reliably resolve the HWND of the Nexa Bridge main window.
 /// Tries the active title "Nexa Bridge", then fallback "N.E.X.A Windows Bridge",
-/// and finally enumerates visible windows owned by the current process.
+/// and finally enumerates visible interactive windows owned by the current process,
+/// carefully excluding click-through transparent overlays and internal helper windows.
 unsafe fn get_main_window_hwnd() -> windows_sys::Win32::Foundation::HWND {
     use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
     use windows_sys::Win32::System::Threading::GetCurrentProcessId;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, FindWindowW, GetClassNameW, GetWindowThreadProcessId, IsWindowVisible,
+        EnumWindows, FindWindowW, GetClassNameW, GetWindowLongW, GetWindowThreadProcessId,
+        IsWindowVisible, GWL_EXSTYLE, WS_EX_TRANSPARENT,
     };
 
+    struct EnumCtx {
+        pid: u32,
+        found: HWND,
+    }
+
+    unsafe extern "system" fn enum_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let ctx = &mut *(lparam as *mut EnumCtx);
+        let mut window_pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut window_pid);
+        if window_pid == ctx.pid && IsWindowVisible(hwnd) != 0 {
+            // Must NOT be a transparent overlay (such as cursor sprite or highlighter layer)
+            let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+            if (ex & WS_EX_TRANSPARENT) != 0 {
+                return 1; // continue
+            }
+
+            let mut class_buf = [0u16; 64];
+            let class_len = GetClassNameW(hwnd, class_buf.as_mut_ptr(), 64);
+            let class_name = String::from_utf16_lossy(&class_buf[..class_len as usize]);
+
+            // Skip internal helper classes (sprite, highlighter, tray, power listeners)
+            if class_name.contains("Nexa")
+                || class_name.contains("Event Target")
+                || class_name.contains("IME")
+            {
+                return 1; // continue
+            }
+
+            ctx.found = hwnd;
+            return 0; // stop enumeration
+        }
+        1 // continue
+    }
+
+    let mut ctx = EnumCtx {
+        pid: GetCurrentProcessId(),
+        found: std::ptr::null_mut(),
+    };
+
+    EnumWindows(Some(enum_cb), &mut ctx as *mut _ as LPARAM);
+    if !ctx.found.is_null() {
+        return ctx.found;
+    }
+
+    // Fallbacks
     let title1: Vec<u16> = "Nexa Bridge\0".encode_utf16().collect();
     let hwnd = FindWindowW(std::ptr::null(), title1.as_ptr());
     if !hwnd.is_null() {
@@ -1862,34 +1926,7 @@ unsafe fn get_main_window_hwnd() -> windows_sys::Win32::Foundation::HWND {
         return hwnd;
     }
 
-    struct EnumCtx {
-        pid: u32,
-        found: HWND,
-    }
-
-    unsafe extern "system" fn enum_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        let ctx = &mut *(lparam as *mut EnumCtx);
-        let mut window_pid = 0u32;
-        GetWindowThreadProcessId(hwnd, &mut window_pid);
-        if window_pid == ctx.pid && IsWindowVisible(hwnd) != 0 {
-            let mut class_buf = [0u16; 64];
-            let class_len = GetClassNameW(hwnd, class_buf.as_mut_ptr(), 64);
-            let class_name = String::from_utf16_lossy(&class_buf[..class_len as usize]);
-            if !class_name.contains("Event Target") && !class_name.contains("IME") {
-                ctx.found = hwnd;
-                return 0; // stop enumeration
-            }
-        }
-        1 // continue
-    }
-
-    let mut ctx = EnumCtx {
-        pid: GetCurrentProcessId(),
-        found: std::ptr::null_mut(),
-    };
-
-    EnumWindows(Some(enum_cb), &mut ctx as *mut _ as LPARAM);
-    ctx.found
+    std::ptr::null_mut()
 }
 
 /// Helper to configure the pill window geometry and position (top-center, DPI-scaled, non-activating)
