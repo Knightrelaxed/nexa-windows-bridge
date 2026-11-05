@@ -141,7 +141,10 @@ pub fn verify_unchanged(snap: &WindowSnapshot) -> Result<(), GuardError> {
     if now as usize == snap.hwnd {
         return Ok(());
     }
-    if pid_of(now) == snap.pid || root_owner_of(now) == snap.root_owner {
+    // T4 FIX: OR-on-PID alone allows multi-window Chrome to bypass the guard (all windows share PID).
+    // Require same root_owner instead — popup menus and owned dialogs share root_owner with their parent.
+    // Guard: root_owner == 0 means GetAncestor returned NULL; skip that case to avoid false-pass.
+    if root_owner_of(now) == snap.root_owner && snap.root_owner != 0 {
         return Ok(());
     }
     Err(GuardError::ForegroundChanged)

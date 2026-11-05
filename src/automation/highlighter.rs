@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tracing::{debug, info};
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -377,7 +377,13 @@ impl NativeOverlay {
 
                 // 2. Exclude overlay from screen capture so Gemini Vision never captures its own overlays
                 const WDA_EXCLUDEFROMCAPTURE: u32 = 0x00000011;
-                SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+                let wda_ok = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+                if wda_ok == 0 {
+                    tracing::warn!(
+                        "[HIGHLIGHTER] ⚠️ SetWindowDisplayAffinity(0x11) failed: error 0x{:X}",
+                        GetLastError()
+                    );
+                }
 
                 // Start invisible
                 ShowWindow(hwnd, SW_HIDE);

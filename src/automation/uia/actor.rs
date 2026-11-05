@@ -468,9 +468,17 @@ fn precommit(
     glide_epoch: Option<u64>,
 ) -> Result<(), UiaError> {
     if let Some(epoch) = glide_epoch {
-        while crate::automation::CursorController::global().arrived_epoch() < epoch {
+        let ctl = crate::automation::CursorController::global();
+        while ctl.arrived_epoch() < epoch {
             if cancel.load(Ordering::SeqCst) || is_automation_abort_requested() || Instant::now() >= deadline {
                 return Err(UiaError::Cancelled);
+            }
+            // S3 FIX: If glide was cancelled/preempted/superseded, do not spin until deadline
+            if ctl.active_epoch() != epoch {
+                if crate::automation::is_human_interrupted() {
+                    return Err(UiaError::Cancelled);
+                }
+                break;
             }
             std::thread::sleep(Duration::from_millis(2));
         }
@@ -516,8 +524,8 @@ fn hit_matches(
     };
     if let Ok(pid) = unsafe { hit.CurrentProcessId() } {
         if pid as u32 == std::process::id() {
-            // Finding 6: Hit our own overlay/sprite window, ignore it!
-            return true;
+            // Self-PID hit (overlay/sprite window): fail-closed if hint is present (Claude Audit 1)
+            return !has_hint;
         }
     }
     let Ok(walker) = (unsafe { auto.ControlViewWalker() }) else {

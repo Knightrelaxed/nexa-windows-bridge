@@ -12,7 +12,7 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
+use windows_sys::Win32::Foundation::{GetLastError, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -112,7 +112,13 @@ impl NativeCursorSprite {
                 }
 
                 // Prevent cursor from being recorded by screen capture / Desktop Duplication
-                SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+                let wda_ok = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+                if wda_ok == 0 {
+                    tracing::warn!(
+                        "[SPRITE] ⚠️ SetWindowDisplayAffinity(0x11) failed: error 0x{:X}",
+                        GetLastError()
+                    );
+                }
 
                 // Setup 32-bit Premultiplied ARGB DIB Section
                 let screen_dc = GetDC(std::ptr::null_mut());
