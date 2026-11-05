@@ -73,6 +73,7 @@ enum Request {
         policy: ClickPolicy,
         target_hint: Option<String>,
         not_before: Option<Instant>,
+        glide_epoch: Option<u64>,
     },
     SnapBox {
         ymin: f64,
@@ -216,6 +217,7 @@ impl UiaHandle {
         policy: ClickPolicy,
         target_hint: Option<String>,
         not_before: Option<Instant>,
+        glide_epoch: Option<u64>,
     ) -> Result<ClickReport, UiaError> {
         let req = Request::Click {
             norm_x,
@@ -225,6 +227,7 @@ impl UiaHandle {
             policy,
             target_hint,
             not_before,
+            glide_epoch,
         };
         match self.call(req, CLICK_BUDGET).await? {
             Response::Click(r) => Ok(r),
@@ -242,7 +245,7 @@ impl UiaHandle {
         double: bool,
         policy: ClickPolicy,
     ) -> Result<ClickReport, UiaError> {
-        self.click_with_hint(norm_x, norm_y, button, double, policy, None, None).await
+        self.click_with_hint(norm_x, norm_y, button, double, policy, None, None, None).await
     }
 
     /// Magnet-snap untuk highlight. TIDAK PERNAH gagal: error/timeout → box visi apa adanya.
@@ -411,6 +414,7 @@ fn run_job(ctx: &UiaContext, job: &Job) -> Result<Response, UiaError> {
             policy,
             target_hint,
             not_before,
+            glide_epoch,
         } => run_click(
             ctx,
             *norm_x,
@@ -420,6 +424,7 @@ fn run_job(ctx: &UiaContext, job: &Job) -> Result<Response, UiaError> {
             *policy,
             target_hint.as_deref(),
             *not_before,
+            *glide_epoch,
             deadline,
             cancel,
         )
@@ -460,7 +465,16 @@ fn precommit(
     cancel: &AtomicBool,
     deadline: Instant,
     not_before: Option<Instant>,
+    glide_epoch: Option<u64>,
 ) -> Result<(), UiaError> {
+    if let Some(epoch) = glide_epoch {
+        while crate::automation::CursorController::global().arrived_epoch() < epoch {
+            if cancel.load(Ordering::SeqCst) || is_automation_abort_requested() || Instant::now() >= deadline {
+                return Err(UiaError::Cancelled);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
     if let Some(nb) = not_before {
         while Instant::now() < nb {
             if cancel.load(Ordering::SeqCst) || is_automation_abort_requested() {
@@ -488,15 +502,26 @@ fn physical_click_at_pixel(px: i32, py: i32, button: MouseButton, double: bool) 
         .map_err(UiaError::InputFailed)
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Verifies whether the chosen element is actually top-most at (cx, cy) within the application window (Audit N2).
 /// Prevents invoking elements occluded in-page by modals, popups, cookie banners, or sticky overlays.
-fn hit_matches(auto: &IUIAutomation, chosen: &IUIAutomationElement, cx: i32, cy: i32) -> bool {
+fn hit_matches(
+    auto: &IUIAutomation,
+    chosen: &IUIAutomationElement,
+    cx: i32,
+    cy: i32,
+    has_hint: bool,
+) -> bool {
     let Ok(hit) = (unsafe { auto.ElementFromPoint(POINT { x: cx, y: cy }) }) else {
-        return true; // Fail-open on COM error to avoid blocking valid clicks
+        return !has_hint; // Fail-closed on COM error if target hint is present (Finding 4)
     };
+    if let Ok(pid) = unsafe { hit.CurrentProcessId() } {
+        if pid as u32 == std::process::id() {
+            // Finding 6: Hit our own overlay/sprite window, ignore it!
+            return true;
+        }
+    }
     let Ok(walker) = (unsafe { auto.ControlViewWalker() }) else {
-        return true;
+        return !has_hint;
     };
     let same = |a: &IUIAutomationElement, b: &IUIAutomationElement| {
         unsafe { auto.CompareElements(a, b) }
@@ -528,6 +553,7 @@ fn hit_matches(auto: &IUIAutomation, chosen: &IUIAutomationElement, cx: i32, cy:
     false
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_click(
     ctx: &UiaContext,
     norm_x: f64,
@@ -537,6 +563,7 @@ fn run_click(
     policy: ClickPolicy,
     target_hint: Option<&str>,
     not_before: Option<Instant>,
+    glide_epoch: Option<u64>,
     deadline: Instant,
     cancel: &AtomicBool,
 ) -> Result<ClickReport, UiaError> {
@@ -602,9 +629,16 @@ fn run_click(
                         snap_cx - px, snap_cy - py, hint_tag
                     );
 
-                    // N2: In-page occlusion verification via UIA hit-test
+                    // Retarget virtual cursor to exact center of snapped button in flight
+                    crate::automation::CursorController::global().retarget(snap_cx, snap_cy);
+
+                    // Wait until cursor arrives at target before actuating (Finding 5)
+                    precommit(cancel, deadline, not_before, glide_epoch)?;
+
+                    // N2 & Finding 4: In-page occlusion verification via UIA hit-test RIGHT AFTER precommit
                     if let Some(el) = scan.elements.get(idx) {
-                        if !hit_matches(&ctx.uia, el, snap_cx, snap_cy) {
+                        let has_hint = target_hint.map_or(false, |h| !h.trim().is_empty());
+                        if !hit_matches(&ctx.uia, el, snap_cx, snap_cy, has_hint) {
                             warn!(
                                 "[AUTOMATION] ⛔ Element '{}' is occluded in-page by another element at ({}, {})",
                                 c.name, snap_cx, snap_cy
@@ -612,12 +646,6 @@ fn run_click(
                             return Err(UiaError::OccludedInPage);
                         }
                     }
-
-                    // Retarget virtual cursor to exact center of snapped button in flight
-                    crate::automation::CursorController::global().retarget(snap_cx, snap_cy);
-
-                    // Wait until cursor arrives at target before actuating
-                    precommit(cancel, deadline, not_before)?;
 
                     match act_on(&scan, idx, &target, button, double, policy, hint_tag, t0) {
                         Ok(report) => return Ok(report),
@@ -655,6 +683,10 @@ fn run_click(
     }
 
     // 3) Fallback: klik fisik di koordinat mentah
+    // Audit Finding 2: Fail-closed if target hint was specified (do NOT click blind)
+    if target_hint.map_or(false, |h| !h.trim().is_empty()) {
+        return Err(UiaError::NoTarget);
+    }
     if !policy.allow_unsnapped_fallback {
         return Err(UiaError::NoTarget);
     }
@@ -665,7 +697,7 @@ fn run_click(
             guard::verify_unchanged(snap)?;
         }
     }
-    precommit(cancel, deadline, not_before)?;
+    precommit(cancel, deadline, not_before, glide_epoch)?;
     if is_automation_abort_requested() {
         return Err(UiaError::Cancelled);
     }

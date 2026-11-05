@@ -11,6 +11,9 @@
 
 pub mod raster;
 pub mod sprite;
+pub mod suppress;
+
+pub use suppress::*;
 
 use self::sprite::NativeCursorSprite;
 use crate::automation::input::{ai_input_sequence, is_ai_input_active, set_human_interrupted};
@@ -34,11 +37,15 @@ struct CursorVisualState {
 pub struct CursorHold {
     controller: &'static CursorController,
     epoch: u64,
+    stop_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl Drop for CursorHold {
     fn drop(&mut self) {
-        self.controller.rest_then_fade_if_current(self.epoch, 800);
+        if let Some(tx) = self.stop_tx.take() {
+            let _ = tx.send(());
+        }
+        self.controller.rest_then_fade_if_current(self.epoch, 600);
     }
 }
 
@@ -52,7 +59,9 @@ pub struct CursorController {
     target_y: Arc<AtomicI32>,
     visual_state: Arc<StdMutex<CursorVisualState>>,
     active_epoch: Arc<AtomicU64>,
+    arrived_epoch: Arc<AtomicU64>,
     is_visible: Arc<AtomicBool>,
+    suppress_guard: Arc<StdMutex<Option<suppress::SuppressGuard>>>,
 }
 
 impl CursorController {
@@ -74,7 +83,34 @@ impl CursorController {
                 badge: None,
             })),
             active_epoch: Arc::new(AtomicU64::new(0)),
+            arrived_epoch: Arc::new(AtomicU64::new(0)),
             is_visible: Arc::new(AtomicBool::new(false)),
+            suppress_guard: Arc::new(StdMutex::new(None)),
+        }
+    }
+
+    /// Single gateway to mutate cursor visibility and synchronize hardware cursor suppression (Option A)
+    pub fn set_visible(&self, visible: bool) {
+        if visible {
+            let mut guard_slot = self.suppress_guard.lock().unwrap();
+            if guard_slot.is_none() {
+                *guard_slot = suppress::SuppressGuard::acquire(500);
+            } else if let Some(g) = guard_slot.as_ref() {
+                g.touch(500);
+            }
+            self.is_visible.store(true, Ordering::SeqCst);
+        } else {
+            let mut guard_slot = self.suppress_guard.lock().unwrap();
+            *guard_slot = None;
+            self.is_visible.store(false, Ordering::SeqCst);
+        }
+    }
+
+    /// Touch suppress guard to extend lease during active animations and holds
+    pub fn touch_suppress(&self, lease_ms: u64) {
+        let guard_slot = self.suppress_guard.lock().unwrap();
+        if let Some(g) = guard_slot.as_ref() {
+            g.touch(lease_ms);
         }
     }
 
@@ -96,9 +132,14 @@ impl CursorController {
         self.active_epoch.load(Ordering::SeqCst)
     }
 
+    /// Retrieve the current arrived epoch counter (glide arrival synchronization)
+    pub fn arrived_epoch(&self) -> u64 {
+        self.arrived_epoch.load(Ordering::SeqCst)
+    }
+
     /// Set visibility flag directly (primarily for testing)
     pub fn set_visible_for_test(&self, visible: bool) {
-        self.is_visible.store(visible, Ordering::Relaxed);
+        self.set_visible(visible);
     }
 
     /// Dynamically retarget an ongoing glide to new coordinates (e.g. snapped UIA control center)
@@ -107,9 +148,9 @@ impl CursorController {
         self.target_y.store(target_y, Ordering::Relaxed);
     }
 
-    /// Glide smoothly to a target pixel coordinate with ease-out interpolation (default 2.0s rest)
-    pub fn glide_to(&self, target_x: i32, target_y: i32, duration_ms: u64, mode: CursorMode) {
-        self.glide_to_with_rest(target_x, target_y, duration_ms, mode, 2000);
+    /// Glide smoothly to a target pixel coordinate with ease-out interpolation (default 600ms rest for seamless morph)
+    pub fn glide_to(&self, target_x: i32, target_y: i32, duration_ms: u64, mode: CursorMode) -> u64 {
+        self.glide_to_with_rest(target_x, target_y, duration_ms, mode, 600)
     }
 
     /// Glide smoothly to a target pixel coordinate with custom rest duration before fade-out
@@ -120,7 +161,7 @@ impl CursorController {
         duration_ms: u64,
         mode: CursorMode,
         rest_ms: u64,
-    ) {
+    ) -> u64 {
         let epoch = self.active_epoch.fetch_add(1, Ordering::SeqCst) + 1;
         self.target_x.store(target_x, Ordering::Relaxed);
         self.target_y.store(target_y, Ordering::Relaxed);
@@ -133,12 +174,12 @@ impl CursorController {
                     .await;
             });
         }
+        epoch
     }
 
     /// Hold the cursor visible in a specific mode (e.g. Typing) for the duration of an operation
     pub fn hold(&'static self, mode: CursorMode) -> CursorHold {
         let epoch = self.active_epoch.fetch_add(1, Ordering::SeqCst) + 1;
-        self.is_visible.store(true, Ordering::Relaxed);
         let (x, y) = self.current_position();
         let badge = {
             let mut st = self.visual_state.lock().unwrap();
@@ -146,11 +187,33 @@ impl CursorController {
             st.badge.clone()
         };
         self.sprite.update(x, y, 255, mode, None, badge);
+        self.set_visible(true);
+
+        let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let controller = self;
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(200));
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            controller.touch_suppress(500);
+                        }
+                        _ = &mut stop_rx => {
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+
         CursorHold {
             controller: self,
             epoch,
+            stop_tx: Some(stop_tx),
         }
     }
+
 
     /// Trigger a double-concentric click ripple at the current position
     pub fn trigger_click(&self, x: i32, y: i32) {
@@ -200,14 +263,14 @@ impl CursorController {
     /// Hide cursor immediately
     pub fn hide(&self) {
         self.active_epoch.fetch_add(1, Ordering::SeqCst);
-        self.is_visible.store(false, Ordering::Relaxed);
+        self.set_visible(false);
         self.sprite.hide();
     }
 
     /// Hide cursor if the current epoch is still matching (atomic compare-exchange to prevent TOCTOU)
     pub fn hide_if_current(&self, epoch: u64) {
         if self.active_epoch.compare_exchange(epoch, epoch + 1, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
-            self.is_visible.store(false, Ordering::Relaxed);
+            self.set_visible(false);
             self.sprite.hide();
         }
     }
@@ -240,9 +303,23 @@ impl CursorController {
         let mut start_x = self.cur_x.load(Ordering::Relaxed);
         let mut start_y = self.cur_y.load(Ordering::Relaxed);
 
-        // 1. Initial appearance & redraw
+        // Position seeding from actual hardware cursor when becoming visible (Seamless Morph)
+        if !self.is_visible.load(Ordering::SeqCst) {
+            let mut pt = POINT { x: 0, y: 0 };
+            unsafe {
+                GetCursorPos(&mut pt);
+            }
+            if pt.x != 0 || pt.y != 0 {
+                start_x = pt.x;
+                start_y = pt.y;
+                self.cur_x.store(start_x, Ordering::Relaxed);
+                self.cur_y.store(start_y, Ordering::Relaxed);
+            }
+        }
+
+        // 1. Initial appearance & acquire suppression
         self.sprite.update(start_x, start_y, 255, mode, None, badge);
-        self.is_visible.store(true, Ordering::Relaxed);
+        self.set_visible(true);
 
         let mut start_time = Instant::now();
         let mut total_dur = Duration::from_millis(duration_ms.max(50));
@@ -259,6 +336,8 @@ impl CursorController {
             if self.active_epoch.load(Ordering::SeqCst) != epoch {
                 return; // Superseded by newer action
             }
+
+            self.touch_suppress(500);
 
             // Yield to Human with AI input immunity and histeresis
             if yield_watch.check_tripped(12) {
@@ -297,6 +376,9 @@ impl CursorController {
             }
         }
 
+        // Record arrival for precommit synchronization
+        self.arrived_epoch.store(epoch, Ordering::SeqCst);
+
         // Ensure exact target lock
         let final_tx = self.target_x.load(Ordering::Relaxed);
         let final_ty = self.target_y.load(Ordering::Relaxed);
@@ -323,6 +405,8 @@ impl CursorController {
                 return;
             }
 
+            self.touch_suppress(500);
+
             let elapsed = start_time.elapsed();
             let progress = (elapsed.as_secs_f32() / total_dur.as_secs_f32()).clamp(0.0, 1.0);
             self.sprite.update(x, y, 255, mode, Some(progress), badge.clone());
@@ -339,8 +423,8 @@ impl CursorController {
         }
         self.sprite.update(x, y, 255, CursorMode::Idle, None, badge);
 
-        // Rest Phase (2.0s) -> Auto Fade-Out
-        self.run_rest_and_fade(epoch, 2000).await;
+        // Rest Phase (600ms) -> Auto Fade-Out
+        self.run_rest_and_fade(epoch, 600).await;
     }
 
     async fn run_rest_and_fade(&self, epoch: u64, rest_ms: u64) {
@@ -351,6 +435,8 @@ impl CursorController {
             if self.active_epoch.load(Ordering::SeqCst) != epoch {
                 return;
             }
+
+            self.touch_suppress(500);
 
             if yield_watch.check_tripped(12) {
                 set_human_interrupted(true);
@@ -368,6 +454,7 @@ impl CursorController {
             if self.active_epoch.load(Ordering::SeqCst) != epoch {
                 return;
             }
+            self.touch_suppress(500);
             let alpha = (255 - (255 * step / fade_steps)) as u8;
             self.sprite.move_to(x, y, alpha);
             tokio::time::sleep(Duration::from_millis(15)).await;
@@ -375,6 +462,7 @@ impl CursorController {
 
         self.hide_if_current(epoch);
     }
+
 }
 
 /// Helper to detect physical human mouse interference with AI input immunity and histeresis
@@ -453,7 +541,7 @@ mod tests {
         controller.cur_y.store(200, Ordering::Relaxed);
         assert_eq!(controller.current_position(), (100, 200));
 
-        controller.is_visible.store(true, Ordering::Relaxed);
+        controller.set_visible(true);
         assert!(controller.is_visible());
 
         controller.hide();
@@ -492,7 +580,7 @@ mod tests {
     #[tokio::test]
     async fn test_cursor_controller_hide_if_current_compare_exchange() {
         let controller = CursorController::new();
-        controller.is_visible.store(true, Ordering::Relaxed);
+        controller.set_visible(true);
         let epoch = controller.active_epoch.load(Ordering::SeqCst);
 
         // Hide when epoch matches succeeds
@@ -500,7 +588,7 @@ mod tests {
         assert!(!controller.is_visible());
 
         // Hide when epoch is stale fails to mutate newer state
-        controller.is_visible.store(true, Ordering::Relaxed);
+        controller.set_visible(true);
         let stale_epoch = epoch; // old epoch
         let _new_epoch = controller.active_epoch.load(Ordering::SeqCst);
         controller.hide_if_current(stale_epoch);

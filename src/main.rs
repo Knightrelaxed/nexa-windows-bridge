@@ -46,15 +46,29 @@ fn is_automation_armed(armed_until: &AtomicU64) -> bool {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // -1. Heal system cursor if previous run aborted unexpectedly (Option A L6 Disaster Recovery)
+    automation::heal_on_startup();
+
+    // Parse command line arguments (e.g. --cursor-guardian, --help, --version, --autostart, --minimized, --console)
+    let args: Vec<String> = std::env::args().collect();
+
+    // Check if invoked as cursor guardian process (MUST execute before SingleInstanceGuard!)
+    for (idx, arg) in args.iter().enumerate() {
+        if arg == "--cursor-guardian" {
+            if let Some(pid_str) = args.get(idx + 1) {
+                if let Ok(pid) = pid_str.parse::<u32>() {
+                    automation::run_guardian(pid);
+                }
+            }
+        }
+    }
+
     // 0. Single-Instance Mutex Arbiter (Milestone 7.4 / Claude Bug #4)
     let single_instance = platform::SingleInstanceGuard::acquire();
     if !single_instance.is_unique() {
         eprintln!("N.E.X.A Bridge is already running. Signaling existing instance to focus.");
         return Ok(());
     }
-
-    // Parse command line arguments (e.g. --help, --version, --autostart, --minimized, --console)
-    let args: Vec<String> = std::env::args().collect();
 
     // Attach to parent console if requested or started with --console
     #[cfg(not(debug_assertions))]
@@ -141,6 +155,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let crash_file = panic_log_dir.join("crash.log");
         let _ = std::fs::write(&crash_file, &panic_msg);
     }));
+
+    // Install Seamless Morph layered disaster recovery & human input monitoring (Option A L2-L5)
+    automation::install_panic_restore();
+    automation::install_console_ctrl_handler();
+    automation::spawn_guardian();
+    automation::start_human_input_monitor(|| {
+        automation::set_human_interrupted(true);
+        automation::CursorController::global().hide();
+    });
 
     info!(
         "Starting N.E.X.A Windows Bridge v{} (Lenovo ThinkPad X380 Yoga)...",
@@ -323,6 +346,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         if net_client_frame.send_message(frame_msg).await.is_ok() {
                                             capture_frame_seq_tx.fetch_add(1, Ordering::SeqCst);
                                             crate::capture::LAST_SENT_ARRIVAL_MS.store(arrival_ms, Ordering::SeqCst);
+                                        }
+                                        // Finding 1: Pacing in transmitter loop ensures the final settled frame is always published cleanly
+                                        let burst = crate::capture::now_ms() < crate::capture::BURST_UNTIL_MS.load(Ordering::SeqCst);
+                                        if burst {
+                                            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
                                         }
                                     }
                                 }

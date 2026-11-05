@@ -464,7 +464,8 @@ pub fn desktop_click(
             },
         };
         send_inputs(&[move_input])?;
-        sleep(Duration::from_millis(15));
+        // Section 2.3: Dwell 35ms after teleporting physical mouse before actuating button down
+        sleep(Duration::from_millis(35));
 
         // Helper closure to trigger a single down/up sequence with position lock & RAII guard (Audit N2)
         let trigger_click = |guard: &mut HeldMouseGuard| -> Result<(), String> {

@@ -196,6 +196,13 @@ pub async fn settle_and_fresh_frame(settle_ms: u64, max_wait_ms: u64) {
             break;
         }
         if std::time::Instant::now() >= deadline {
+            let sent = LAST_SENT_ARRIVAL_MS.load(SeqCst);
+            if sent < arr {
+                tracing::warn!(
+                    "[AUTOMATION] ⚠️ settle_and_fresh_frame reached deadline ({}ms) before fresh frame was sent: sent_ms={} < arrival_ms={}",
+                    max_wait_ms, sent, arr
+                );
+            }
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(40)).await;
@@ -325,7 +332,7 @@ pub async fn handle_execute_command(
             // Immediately start gliding toward target coordinates while UIA element scan and Window Guard run in parallel
             let screen = get_primary_screen_dimensions();
             let (raw_px, raw_py) = denormalize_to_pixels(x, y, screen.width, screen.height);
-            CursorController::global().glide_to(raw_px, raw_py, 180, crate::ui::CursorMode::Hover);
+            let glide_epoch = CursorController::global().glide_to(raw_px, raw_py, 180, crate::ui::CursorMode::Hover);
             let not_before = std::time::Instant::now() + std::time::Duration::from_millis(180);
 
             // Execute hybrid UIA click (Window Guard -> Interactive Scan -> Hinted Re-Ranker -> Semantic Pattern -> Physical Snapped/Raw)
@@ -333,7 +340,7 @@ pub async fn handle_execute_command(
             let click_res = match uia_handle_res {
                 Ok(handle) => {
                     handle
-                        .click_with_hint(x, y, button, double_click, uia::ClickPolicy::default(), target_hint, Some(not_before))
+                        .click_with_hint(x, y, button, double_click, uia::ClickPolicy::default(), target_hint, Some(not_before), Some(glide_epoch))
                         .await
                 }
                 Err(e) => Err(e),

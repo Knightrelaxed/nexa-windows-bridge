@@ -64,7 +64,7 @@ impl GraphicsCaptureApiHandler for ScreenCaptureHandler {
 
         let burst = arrival < super::BURST_UNTIL_MS.load(Ordering::SeqCst);
         let due = if burst {
-            self.last_sent.elapsed() >= Duration::from_millis(120)
+            true // Burst mode: publish each frame to watch channel so trailing edge static frame is never dropped (Finding 1)
         } else {
             self.rate_limiter.should_capture()
         };
