@@ -109,6 +109,24 @@ pub struct ScreenDimensions {
 /// Retrieve current primary screen dimensions (in physical pixels)
 pub fn get_primary_screen_dimensions() -> ScreenDimensions {
     unsafe {
+        // Query GDI DC for DESKTOPHORZRES / DESKTOPVERTRES which always returns true physical pixels
+        // on all Windows versions, immune to process DPI virtualization.
+        use windows_sys::Win32::Graphics::Gdi::{
+            GetDC, ReleaseDC, GetDeviceCaps, DESKTOPHORZRES, DESKTOPVERTRES,
+        };
+        let hdc = GetDC(std::ptr::null_mut());
+        if !hdc.is_null() {
+            let dw = GetDeviceCaps(hdc, DESKTOPHORZRES as i32);
+            let dh = GetDeviceCaps(hdc, DESKTOPVERTRES as i32);
+            ReleaseDC(std::ptr::null_mut(), hdc);
+            if dw > 0 && dh > 0 {
+                return ScreenDimensions {
+                    width: dw,
+                    height: dh,
+                };
+            }
+        }
+
         let w = GetSystemMetrics(SM_CXSCREEN);
         let h = GetSystemMetrics(SM_CYSCREEN);
         ScreenDimensions {
@@ -1375,5 +1393,18 @@ mod tests {
         assert!(!is_ai_input_active());
         let seq_after = ai_input_sequence();
         assert_eq!(seq_after, seq_before + 1);
+    }
+
+    #[test]
+    fn test_dpi_awareness_and_physical_dimensions() {
+        use windows_sys::Win32::UI::HiDpi::{
+            SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        };
+        unsafe {
+            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            let s = get_primary_screen_dimensions();
+            assert!(s.width >= 800, "Screen width must be at least 800px: {}", s.width);
+            assert!(s.height >= 600, "Screen height must be at least 600px: {}", s.height);
+        }
     }
 }

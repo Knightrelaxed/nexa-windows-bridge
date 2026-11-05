@@ -454,13 +454,9 @@ pub fn render_cursor_frame(
     });
 
     let (flip_x, flip_y) = if let Some((sx, sy)) = screen_pos {
-        let (screen_w, screen_h) = {
-            let sw = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(windows_sys::Win32::UI::WindowsAndMessaging::SM_CXSCREEN) };
-            let sh = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(windows_sys::Win32::UI::WindowsAndMessaging::SM_CYSCREEN) };
-            (if sw > 0 { sw } else { 1920 }, if sh > 0 { sh } else { 1080 })
-        };
+        let s = crate::automation::get_primary_screen_dimensions();
         // Flip badge left if close to right edge of screen; flip up if close to bottom
-        (sx + 120 > screen_w, sy + 50 > screen_h)
+        (sx + 120 > s.width, sy + 50 > s.height)
     } else {
         (false, false)
     };

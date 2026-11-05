@@ -46,6 +46,19 @@ fn is_automation_armed(armed_until: &AtomicU64) -> bool {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // -2. Set Per-Monitor V2 High-DPI Awareness Context before ANY Win32 / COM / Slint / GUI call
+    // Ensures GetSystemMetrics, SendInput, UIA, and WGC capture coordinates match 1:1 in physical pixels.
+    unsafe {
+        use windows_sys::Win32::UI::HiDpi::{
+            SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
+        };
+        let ok = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        if ok == 0 {
+            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
+        }
+    }
+
     // -1. Heal system cursor if previous run aborted unexpectedly (Option A L6 Disaster Recovery)
     automation::heal_on_startup();
 
