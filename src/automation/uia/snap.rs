@@ -266,7 +266,35 @@ pub fn jaro_winkler_similarity(s1: &str, s2: &str) -> f32 {
     jaro + prefix * 0.1 * (1.0 - jaro)
 }
 
-/// Hitung kemiripan teks kontekstual (Exact, Containment, Jaro-Winkler, atau Token Matching)
+/// Hitung kemiripan antara dua kata individu (Exact, Substring, atau Jaro-Winkler Typo)
+fn word_sim(hw: &str, cw: &str) -> f32 {
+    if hw == cw {
+        return 1.0;
+    }
+    // Substring match between words (e.g. "oogenesi" in "oogenesi_nurul", "download" in "downloads")
+    if hw.contains(cw) || cw.contains(hw) {
+        let min_len = hw.len().min(cw.len()) as f32;
+        let max_len = hw.len().max(cw.len()) as f32;
+        if min_len >= 3.0 && min_len / max_len >= 0.6 {
+            return 0.85 + 0.15 * (min_len / max_len);
+        }
+    }
+    // Fuzzy match for typo / transliteration:
+    // Hanya relevan jika kedua kata memiliki panjang >= 4
+    if hw.len() >= 4 && cw.len() >= 4 {
+        let jw = jaro_winkler_similarity(hw, cw);
+        // Jika huruf pertama berbeda, pasang ambang ketat (>= 0.88) agar rima pendek tak sengaja
+        // (seperti "mode" vs "kode" [jw=0.833] atau "code" vs "kode" [jw=0.833]) TIDAK dianggap cocok.
+        let same_first_char = hw.chars().next() == cw.chars().next();
+        let threshold = if same_first_char { 0.78 } else { 0.88 };
+        if jw >= threshold {
+            return jw;
+        }
+    }
+    0.0
+}
+
+/// Hitung kemiripan teks kontekstual (Exact, Containment, Jaro-Winkler, dan Token-Coverage)
 pub fn text_similarity(hint: &str, candidate: &str) -> f32 {
     let h = normalize_hint(hint);
     let c = normalize_hint(candidate);
@@ -276,40 +304,88 @@ pub fn text_similarity(hint: &str, candidate: &str) -> f32 {
     if h == c {
         return 1.0;
     }
-    if c.contains(&h) || h.contains(&c) {
-        return 0.85;
+    // Substring containment:
+    // Jika candidate memuat seluruh hint secara utuh (misal link hasil pencarian memuat judul lengkap)
+    if c.contains(&h) {
+        return 0.95;
     }
-    let full_sim = jaro_winkler_similarity(&h, &c);
+    // Jika hint memuat seluruh candidate (misal hint "Downloads folder" vs candidate "Downloads")
+    if h.contains(&c) && (c.len() as f32 / h.len() as f32) >= 0.60 {
+        return 0.90;
+    }
 
-    // Token-level fuzzy matching:
-    // Menangani kasus di mana nama kontrol UIA dibungkus frasa aksi (misal: "Open Dazatulloh profile"
-    // vs hint pengguna "Dzatullah 2").
-    // Jika ada kata signifikan (panjang >= 3) pada hint dan kandidat yang cocok kuat,
-    // gunakan skor token tersebut agar tidak dipotong oleh kata tambahan pembungkus.
-    let h_words: Vec<&str> = h.split_whitespace().collect();
-    let c_words: Vec<&str> = c.split_whitespace().collect();
+    let min_len = h.len().min(c.len()) as f32;
+    let max_len = h.len().max(c.len()) as f32;
+    let len_ratio = min_len / max_len;
 
-    let mut best_token_match = 0.0f32;
+    // Asymmetric length scaling: Jaro-Winkler menggelembungkan skor jika salah satu string
+    // jauh lebih pendek dari yang lain (misal "mode ai" [7 char] vs "alih kode..." [38 char]).
+    // Jika rasio panjang < 0.60 dan bukan containment, skala turunkan full_sim agar token coverage
+    // yang menentukan kecocokan semantik.
+    let full_sim = if len_ratio >= 0.60 {
+        jaro_winkler_similarity(&h, &c)
+    } else {
+        jaro_winkler_similarity(&h, &c) * (len_ratio / 0.60)
+    };
+
+    // Stop words yang diabaikan saat menghitung coverage kata kunci
+    const STOP_WORDS: &[&str] = &[
+        "dan", "di", "ke", "dari", "yang", "pada", "untuk", "dengan", "atau", "ini", "itu",
+        "the", "and", "or", "in", "on", "at", "to", "for", "of", "with", "by",
+        "buka", "klik", "open", "click", "file", "folder", "tombol", "button", "link",
+    ];
+
+    let h_words: Vec<&str> = h
+        .split_whitespace()
+        .filter(|w| w.len() >= 3 && !STOP_WORDS.contains(w))
+        .collect();
+    let c_words: Vec<&str> = c
+        .split_whitespace()
+        .filter(|w| w.len() >= 3)
+        .collect();
+
+    if h_words.is_empty() || c_words.is_empty() {
+        return full_sim;
+    }
+
+    // Hitung berapa proporsi kata kunci hint yang berhasil ditemukan di candidate (Hint Coverage / Recall)
+    let mut hint_matches_sum = 0.0f32;
     for hw in &h_words {
-        if hw.len() < 3 {
+        let mut best_m = 0.0f32;
+        for cw in &c_words {
+            let s = word_sim(hw, cw);
+            if s > best_m {
+                best_m = s;
+            }
+        }
+        hint_matches_sum += best_m;
+    }
+    let hint_coverage = hint_matches_sum / (h_words.len() as f32);
+
+    // Hitung berapa proporsi kata candidate yang cocok dengan hint (Candidate Coverage)
+    let mut cand_matches_sum = 0.0f32;
+    for cw in &c_words {
+        if STOP_WORDS.contains(cw) {
             continue;
         }
-        for cw in &c_words {
-            if cw.len() < 3 {
-                continue;
-            }
-            if hw == cw || cw.contains(hw) || hw.contains(cw) {
-                best_token_match = best_token_match.max(0.88);
-            } else {
-                let jw = jaro_winkler_similarity(hw, cw);
-                if jw >= 0.75 {
-                    best_token_match = best_token_match.max(jw);
-                }
+        let mut best_m = 0.0f32;
+        for hw in &h_words {
+            let s = word_sim(hw, cw);
+            if s > best_m {
+                best_m = s;
             }
         }
+        cand_matches_sum += best_m;
     }
+    let cand_significant_count = c_words.iter().filter(|w| !STOP_WORDS.contains(w)).count();
+    let cand_coverage = if cand_significant_count > 0 {
+        cand_matches_sum / (cand_significant_count as f32)
+    } else {
+        0.0
+    };
 
-    full_sim.max(best_token_match)
+    let token_sim = hint_coverage.max(cand_coverage * 0.9);
+    full_sim.max(token_sim)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -699,5 +775,71 @@ mod tests {
         // and score >= 0.65 so that wide_reach is activated.
         let sim = text_similarity("Dzatullah 2", "Open Dazatulloh profile");
         assert!(sim >= 0.65, "Expected similarity >= 0.65 for 'Dzatullah 2' vs 'Open Dazatulloh profile', got {}", sim);
+    }
+
+    #[test]
+    fn test_text_similarity_rejects_partial_token_rhymes_like_mode_ai_and_code_tools() {
+        // Bug C: In Google Search results, when user asks for "Alih Kode dan Campur Kode Bahasa Arab",
+        // neighboring controls like bookmark 'CODE Tools' and filter 'Mode AI' must NOT be matched
+        // just because 'code' or 'mode' resembles 'kode'!
+        let hint = "Alih Kode dan Campur Kode Bahasa Arab";
+
+        let sim_code_tools = text_similarity(hint, "CODE Tools");
+        assert!(
+            sim_code_tools < 0.50,
+            "Expected 'CODE Tools' to have low similarity (< 0.50), got {}",
+            sim_code_tools
+        );
+
+        let sim_mode_ai = text_similarity(hint, "Mode AI");
+        assert!(
+            sim_mode_ai < 0.50,
+            "Expected 'Mode AI' to have low similarity (< 0.50), got {}",
+            sim_mode_ai
+        );
+
+        let real_result = "Alih Kode dan Campur Kode Bahasa Arab Jurnal Universitas Gadjah Mada https://journal.ugm.ac.id › article › view";
+        let sim_real = text_similarity(hint, real_result);
+        assert!(
+            sim_real >= 0.90,
+            "Expected real search result to have high similarity (>= 0.90), got {}",
+            sim_real
+        );
+    }
+
+    #[test]
+    fn test_pick_hinted_snaps_to_search_result_despite_neighboring_code_tools_and_mode_ai() {
+        // Simulation of the exact screen state from user's incident:
+        // Query point at (480, 184) in the search box text.
+        // Neighboring controls:
+        // - 'CODE Tools' bookmark at (200, 95)
+        // - 'Mode AI' filter tab at (200, 250)
+        // - Real search result link at (480, 420)
+        let mut bookmark = ctl(ControlKind::Button, 150, 80, 250, 110);
+        bookmark.name = "CODE Tools".into();
+
+        let mut mode_ai = ctl(ControlKind::Button, 150, 235, 250, 265);
+        mode_ai.name = "Mode AI".into();
+
+        let mut ugm_link = ctl(ControlKind::Hyperlink, 200, 390, 760, 450);
+        ugm_link.name = "Alih Kode dan Campur Kode Bahasa Arab Jurnal Universitas Gadjah Mada https://journal.ugm.ac.id › article › view".into();
+
+        let controls = vec![bookmark, mode_ai, ugm_link];
+        let query = SnapQuery {
+            px: 480,
+            py: 184,
+            radius_px: 22,
+            hint_area_px: None,
+            screen_w: 1920,
+            screen_h: 1080,
+        };
+
+        match pick_hinted(&controls, &query, "Alih Kode dan Campur Kode Bahasa Arab") {
+            HintedPick::Chosen { index, sim, .. } => {
+                assert_eq!(index, 2, "Must pick UGM search result (index 2), NOT CODE Tools or Mode AI");
+                assert!(sim >= 0.90, "Similarity must be >= 0.90");
+            }
+            other => panic!("Expected Chosen, but got {:?}", other),
+        }
     }
 }
