@@ -511,56 +511,76 @@ fn physical_click_at_pixel(px: i32, py: i32, button: MouseButton, double: bool) 
 }
 
 /// Verifies whether the chosen element is actually top-most at (cx, cy) within the application window (Audit N2).
-/// Prevents invoking elements occluded in-page by modals, popups, cookie banners, or sticky overlays.
+/// Prevents invoking elements occluded by Nexa Bridge HUD or foreign overlays.
+/// Allows intra-application hits (e.g. Chrome/Edge web content text nodes, containers, or shadow DOM).
 fn hit_matches(
     auto: &IUIAutomation,
     chosen: &IUIAutomationElement,
     cx: i32,
     cy: i32,
-    has_hint: bool,
+    _has_hint: bool,
 ) -> bool {
     let Ok(hit) = (unsafe { auto.ElementFromPoint(POINT { x: cx, y: cy }) }) else {
-        return !has_hint; // Fail-closed on COM error if target hint is present (Finding 4)
+        return true; // Fail-open on COM error to avoid blocking valid clicks
     };
-    if let Ok(pid) = unsafe { hit.CurrentProcessId() } {
-        if pid as u32 == std::process::id() {
-            // Self-PID hit (overlay/sprite window): fail-closed if hint is present (Claude Audit 1)
-            return !has_hint;
-        }
+    let hit_pid = unsafe { hit.CurrentProcessId().unwrap_or(0) } as u32;
+    if hit_pid != 0 && hit_pid == std::process::id() {
+        // Self-PID hit (overlay/capsule window): fail-closed, never click Nexa Bridge HUD
+        return false;
     }
-    let Ok(walker) = (unsafe { auto.ControlViewWalker() }) else {
-        return !has_hint;
-    };
+
+    let chosen_pid = unsafe { chosen.CurrentProcessId().unwrap_or(0) } as u32;
+
     let same = |a: &IUIAutomationElement, b: &IUIAutomationElement| {
         unsafe { auto.CompareElements(a, b) }
             .map(|v| v.as_bool())
             .unwrap_or(false)
     };
-    // 1) hit is chosen or a descendant of chosen (e.g. inner label or icon)
-    // Depth increased from 8→15 to handle deeply-nested Chrome/Chromium web content UIA trees.
-    // Chrome's Blink accessibility provider can expose 10+ nesting levels for web buttons/links.
-    let mut n = hit.clone();
-    for _ in 0..15 {
-        if same(&n, chosen) {
-            return true;
+
+    if same(&hit, chosen) {
+        return true;
+    }
+
+    // Try RawViewWalker first (includes all raw DOM elements in Chromium/Electron),
+    // fallback to ControlViewWalker if raw walker is unavailable.
+    let walker_opt = unsafe { auto.RawViewWalker().ok().or_else(|| auto.ControlViewWalker().ok()) };
+    if let Some(walker) = walker_opt {
+        // 1) hit is chosen or a descendant of chosen (e.g. inner label, icon, or text node inside button)
+        let mut n = hit.clone();
+        for _ in 0..25 {
+            if same(&n, chosen) {
+                return true;
+            }
+            match unsafe { walker.GetParentElement(&n) } {
+                Ok(p) => n = p,
+                Err(_) => break,
+            }
         }
-        match unsafe { walker.GetParentElement(&n) } {
-            Ok(p) => n = p,
-            Err(_) => break,
+        // 2) chosen is a descendant of hit (e.g. parent container, section, or card)
+        let mut m = chosen.clone();
+        for _ in 0..20 {
+            match unsafe { walker.GetParentElement(&m) } {
+                Ok(p) => m = p,
+                Err(_) => break,
+            }
+            if same(&m, &hit) {
+                return true;
+            }
         }
     }
-    // 2) chosen is a descendant of hit (e.g. non-hit-testable control inside parent container)
-    // Depth increased from 3→5 to allow for Chrome's container grouping layers.
-    let mut m = chosen.clone();
-    for _ in 0..5 {
-        match unsafe { walker.GetParentElement(&m) } {
-            Ok(p) => m = p,
-            Err(_) => break,
-        }
-        if same(&m, &hit) {
-            return true;
-        }
+
+    // If both belong to the same non-Nexa application process (e.g. Chrome/Edge web content):
+    // In Chromium, complex DOM structures, shadow roots, and pseudo-elements often isolate nodes
+    // in UIA, but they belong to the same active document under the same cursor coordinate.
+    // Do not block valid interactions within the target application.
+    if hit_pid != 0 && hit_pid == chosen_pid {
+        info!(
+            "[AUTOMATION] hit_matches: same-PID ({}) non-ancestry element detected at ({},{}); allowing click within target app",
+            hit_pid, cx, cy
+        );
+        return true;
     }
+
     false
 }
 

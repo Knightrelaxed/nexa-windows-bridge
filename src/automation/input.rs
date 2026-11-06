@@ -179,7 +179,7 @@ pub fn denormalize_to_mouse_absolute(norm_x: f64, norm_y: f64) -> (i32, i32) {
 
 /// Calculate mouse wheel delta value for scrolling
 pub fn calculate_scroll_wheel_delta(direction: &str, amount: i32) -> i32 {
-    let notches = if amount <= 0 { 3 } else { amount.min(50) };
+    let notches = if amount <= 0 { 6 } else { amount.min(50) };
     let wheel_delta = 120; // Win32 WHEEL_DELTA constant
 
     match direction.trim().to_uppercase().as_str() {
@@ -713,6 +713,8 @@ pub struct WindowInfo {
     pub process_name: String,
     pub pid: u32,
     pub is_foreground: bool,
+    #[serde(default)]
+    pub hwnd: usize,
 }
 
 struct WindowEnumState {
@@ -795,6 +797,7 @@ unsafe extern "system" fn list_windows_callback(
         process_name: proc_name,
         pid,
         is_foreground,
+        hwnd: hwnd as usize,
     });
 
     1
@@ -925,12 +928,26 @@ pub fn close_active_window() -> Result<String, String> {
             || lower == "lsass.exe"
             || lower == "services.exe"
             || lower == "smss.exe"
-            || lower == "explorer.exe"
         {
             return Err(format!(
                 "Penutupan jendela ditolak oleh kebijakan keamanan: proses sistem '{}' dilindungi.",
                 proc_name
             ));
+        }
+
+        // For explorer.exe: do NOT close taskbar or desktop, but allow closing user folder windows (CabinetWClass)
+        if lower == "explorer.exe" {
+            use windows_sys::Win32::UI::WindowsAndMessaging::GetClassNameW;
+            let mut class_buf = [0u16; 64];
+            let class_len = GetClassNameW(target_hwnd, class_buf.as_mut_ptr(), class_buf.len() as i32);
+            let class_name = if class_len > 0 {
+                String::from_utf16_lossy(&class_buf[..class_len as usize])
+            } else {
+                String::new()
+            };
+            if class_name == "Shell_TrayWnd" || class_name == "Progman" || class_name == "WorkerW" {
+                return Err("Penutupan shell taskbar/desktop Windows diblokir demi stabilitas sistem.".to_string());
+            }
         }
 
         let len = GetWindowTextLengthW(target_hwnd);
@@ -958,6 +975,179 @@ pub fn close_active_window() -> Result<String, String> {
 
         Ok(format!("Jendela '{}' ({}) berhasil ditutup.", title, proc_name))
     }
+}
+
+/// Close active window, target window by title/process, or close all windows except specified exceptions.
+pub fn close_window_targeted(
+    target: Option<&str>,
+    except: Option<&str>,
+) -> Result<String, String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetClassNameW, PostMessageW, WM_CLOSE};
+
+    let target_trimmed = target.map(|s| s.trim()).filter(|s| !s.is_empty());
+    let except_trimmed = except.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
+
+    // Case 1: Close all windows except specified, OR close all windows
+    let is_all = match target_trimmed {
+        Some(t) => {
+            let upper = t.to_uppercase();
+            upper == "ALL" || upper == "ALL_EXCEPT" || upper == "SEMUA" || upper == "SEMUA_KECUALI"
+        }
+        None => except_trimmed.is_some(),
+    };
+
+    if is_all {
+        let windows = list_open_windows();
+        let mut closed_count = 0;
+        let mut closed_names = Vec::new();
+
+        for win in &windows {
+            let win_title_lower = win.title.to_lowercase();
+            let win_proc_lower = win.process_name.to_lowercase();
+
+            // Check if excepted
+            if let Some(ref exc) = except_trimmed {
+                if win_title_lower.contains(exc)
+                    || win_proc_lower.contains(exc)
+                    || (exc.contains("explorer") && win_proc_lower.contains("explorer"))
+                {
+                    info!(
+                        "[AUTOMATION] 🛡️ close_window_targeted: Skipping excepted window '{}' ({})",
+                        win.title, win.process_name
+                    );
+                    continue;
+                }
+            }
+
+            // Guard protected system processes
+            if win_proc_lower == "csrss.exe"
+                || win_proc_lower == "dwm.exe"
+                || win_proc_lower == "lsass.exe"
+                || win_proc_lower == "services.exe"
+                || win_proc_lower == "smss.exe"
+            {
+                continue;
+            }
+
+            // For explorer.exe: do NOT close taskbar / desktop
+            if win_proc_lower == "explorer.exe" {
+                let mut class_buf = [0u16; 64];
+                let class_len = unsafe {
+                    GetClassNameW(
+                        win.hwnd as windows_sys::Win32::Foundation::HWND,
+                        class_buf.as_mut_ptr(),
+                        class_buf.len() as i32,
+                    )
+                };
+                let class_name = if class_len > 0 {
+                    String::from_utf16_lossy(&class_buf[..class_len as usize])
+                } else {
+                    String::new()
+                };
+                if class_name == "Shell_TrayWnd" || class_name == "Progman" || class_name == "WorkerW" {
+                    continue;
+                }
+            }
+
+            unsafe {
+                PostMessageW(
+                    win.hwnd as windows_sys::Win32::Foundation::HWND,
+                    WM_CLOSE,
+                    0,
+                    0,
+                );
+            }
+            closed_count += 1;
+            closed_names.push(format!("'{}'", win.title));
+            info!(
+                "[AUTOMATION] 🛑 close_window_targeted: Sent WM_CLOSE to '{}' ({})",
+                win.title, win.process_name
+            );
+        }
+
+        if closed_count == 0 {
+            return Ok("Tidak ada jendela aplikasi yang perlu ditutup.".to_string());
+        }
+
+        let summary = if let Some(ref exc) = except_trimmed {
+            format!(
+                "Berhasil menutup {} jendela aplikasi ({}) kecuali '{}'.",
+                closed_count,
+                closed_names.join(", "),
+                exc
+            )
+        } else {
+            format!(
+                "Berhasil menutup {} jendela aplikasi ({}).",
+                closed_count,
+                closed_names.join(", ")
+            )
+        };
+        return Ok(summary);
+    }
+
+    // Case 2: Specific target window name/process (e.g. "Chrome", "Notepad")
+    if let Some(target_name) = target_trimmed {
+        let windows = list_open_windows();
+        let target_lower = target_name.to_lowercase();
+        let mut closed_count = 0;
+
+        for win in &windows {
+            let win_title_lower = win.title.to_lowercase();
+            let win_proc_lower = win.process_name.to_lowercase();
+
+            if win_title_lower.contains(&target_lower) || win_proc_lower.contains(&target_lower) {
+                // Check if protected explorer shell
+                if win_proc_lower == "explorer.exe" {
+                    let mut class_buf = [0u16; 64];
+                    let class_len = unsafe {
+                        GetClassNameW(
+                            win.hwnd as windows_sys::Win32::Foundation::HWND,
+                            class_buf.as_mut_ptr(),
+                            class_buf.len() as i32,
+                        )
+                    };
+                    let class_name = if class_len > 0 {
+                        String::from_utf16_lossy(&class_buf[..class_len as usize])
+                    } else {
+                        String::new()
+                    };
+                    if class_name == "Shell_TrayWnd" || class_name == "Progman" || class_name == "WorkerW" {
+                        continue;
+                    }
+                }
+
+                unsafe {
+                    PostMessageW(
+                        win.hwnd as windows_sys::Win32::Foundation::HWND,
+                        WM_CLOSE,
+                        0,
+                        0,
+                    );
+                }
+                closed_count += 1;
+                info!(
+                    "[AUTOMATION] 🛑 close_window_targeted: Sent WM_CLOSE to targeted window '{}' ({})",
+                    win.title, win.process_name
+                );
+            }
+        }
+
+        if closed_count > 0 {
+            return Ok(format!(
+                "Jendela aplikasi '{}' ({} jendela) berhasil ditutup.",
+                target_name, closed_count
+            ));
+        } else {
+            return Err(format!(
+                "Tidak ditemukan jendela aplikasi terbuka yang cocok dengan '{}'.",
+                target_name
+            ));
+        }
+    }
+
+    // Case 3: Default - close active foreground window
+    close_active_window()
 }
 
 /// Type Unicode text using KEYEVENTF_UNICODE to ensure 100% layout-independent character entry.
@@ -1204,7 +1394,13 @@ mod tests {
         assert_eq!(calculate_scroll_wheel_delta("UP", 3), 360);
         assert_eq!(calculate_scroll_wheel_delta("up", 1), 120);
         assert_eq!(calculate_scroll_wheel_delta("DOWN", 5), -600);
-        assert_eq!(calculate_scroll_wheel_delta("down", 0), -360); // Default 3 notches
+        assert_eq!(calculate_scroll_wheel_delta("down", 0), -720); // Default 6 notches
+    }
+
+    #[test]
+    fn test_close_window_targeted_nonexistent_returns_err() {
+        let res = close_window_targeted(Some("__NON_EXISTENT_APP_WINDOW_12345__"), None);
+        assert!(res.is_err());
     }
 
     #[test]

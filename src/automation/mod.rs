@@ -1420,8 +1420,22 @@ pub async fn handle_execute_command(
         // 18. CLOSE_WINDOW (Safe Graceful Window Closure via WM_CLOSE)
         // ─────────────────────────────────────────────────────────────
         "CLOSEWINDOW" | "CLOSEAPP" => {
-            let res = tokio::task::spawn_blocking(|| {
-                close_active_window()
+            let target = params
+                .get("target")
+                .or_else(|| params.get("target_title"))
+                .or_else(|| params.get("app"))
+                .or_else(|| params.get("title"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            let except = params
+                .get("except")
+                .or_else(|| params.get("kecuali"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            let res = tokio::task::spawn_blocking(move || {
+                close_window_targeted(target.as_deref(), except.as_deref())
             })
             .await
             .map_err(|e| format!("Join error: {}", e))
