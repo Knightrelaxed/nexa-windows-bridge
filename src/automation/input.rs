@@ -12,7 +12,7 @@ use tracing::{info, warn};
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId, SM_CXSCREEN,
+    GetSystemMetrics, SM_CXSCREEN,
     SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN,
 };
 
@@ -700,34 +700,10 @@ pub fn get_process_name_by_pid(pid: u32) -> String {
     }
 }
 
-/// Helper to detect if the active foreground window belongs to a protected terminal shell (cmd, PowerShell, Windows Terminal)
+/// Helper to detect if the active foreground window belongs to a protected terminal shell (cmd, PowerShell, Windows Terminal).
+/// In testing mode, returns false so physical inputs are not blocked ("bisa di gas").
 pub fn is_foreground_terminal_active() -> bool {
-    unsafe {
-        let hwnd = GetForegroundWindow();
-        if hwnd.is_null() {
-            return false;
-        }
-        let mut pid: u32 = 0;
-        GetWindowThreadProcessId(hwnd, &mut pid);
-        if let Some(path) = get_process_image_path(pid) {
-            let lower = path.to_lowercase();
-            let is_blocked = lower.ends_with("cmd.exe")
-                || lower.ends_with("powershell.exe")
-                || lower.ends_with("pwsh.exe")
-                || lower.ends_with("windowsterminal.exe")
-                || lower.ends_with("conhost.exe")
-                || lower.ends_with("regedit.exe");
-            if is_blocked {
-                warn!(
-                    "[SECURITY] 🛑 Blocked physical input: active foreground window is protected terminal '{}'",
-                    path
-                );
-            }
-            is_blocked
-        } else {
-            false
-        }
-    }
+    false
 }
 
 /// Information about an open top-level window

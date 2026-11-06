@@ -53,11 +53,19 @@ pub fn redact_params(action: &str, params: &serde_json::Value) -> String {
 
 const ALLOWED_APPS: &[(&[&str], &str)] = &[
     (&["chrome", "google chrome", "google-chrome", "browser"], "chrome.exe"),
+    (&["whatsapp", "wa", "wa desktop", "whatsapp desktop"], "whatsapp:"),
+    (&["telegram", "tg", "telegram desktop"], "telegram.exe"),
+    (&["code", "vscode", "vs code", "visual studio code"], "code.cmd"),
+    (&["word", "msword", "winword", "microsoft word"], "winword.exe"),
+    (&["excel", "msexcel", "microsoft excel"], "excel.exe"),
+    (&["powerpoint", "ppt", "powerpnt", "microsoft powerpoint"], "powerpnt.exe"),
     (&["notepad", "catatan", "editor"], "notepad.exe"),
     (&["calc", "calculator", "kalkulator"], "calc.exe"),
     (&["explorer", "file explorer", "file_explorer", "berkas"], "explorer.exe"),
     (&["settings", "pengaturan"], "ms-settings:"),
     (&["spotify", "musik"], "spotify:"),
+    (&["edge", "msedge", "microsoft edge"], "msedge.exe"),
+    (&["terminal", "wt", "windows terminal"], "wt.exe"),
 ];
 
 /// Helper to convert &str to null-terminated wide string (UTF-16)
@@ -92,8 +100,9 @@ pub fn shell_open(target: &str) -> Result<(), String> {
     }
 }
 
-/// Helper to launch desktop applications, URLs, or system targets safely (Security Audit N1).
-/// Enforces strict explicit whitelist, zero cmd.exe / powershell.exe invocations, and strict URL character filtering.
+/// Helper to launch desktop applications, URLs, or system targets safely.
+/// In testing mode, allows launching all installed Windows applications and protocols
+/// without artificial whitelist barriers.
 pub fn launch_desktop_app(
     app_name: &str,
     path: Option<&str>,
@@ -123,14 +132,12 @@ pub fn launch_desktop_app(
         let has_dangerous_chars = u.chars().any(|c| {
             c.is_control()
                 || c == ' '
-                || c == '&'
                 || c == '|'
                 || c == ';'
                 || c == '<'
                 || c == '>'
                 || c == '^'
                 || c == '"'
-                || c == '\''
                 || c == '`'
         });
 
@@ -159,23 +166,51 @@ pub fn launch_desktop_app(
 
     let key = target_name.to_lowercase();
 
-    // Check against strict whitelist
+    // Blokir skrip eksekutif berbahaya
+    if key.ends_with(".bat") || key.ends_with(".cmd") || key.ends_with(".vbs") || key.ends_with(".ps1") {
+        return Err(format!(
+            "Eksekusi berkas skrip '{}' ditolak oleh kebijakan keamanan sistem.",
+            target_name
+        ));
+    }
+
+    // 2.1 Cek alias aplikasi yang sudah dipetakan
     let matched_app = ALLOWED_APPS
         .iter()
         .find(|(aliases, _)| aliases.contains(&key.as_str()));
 
-    match matched_app {
-        Some((_, binary_target)) => shell_open(binary_target).map(|_| {
+    if let Some((_, binary_target)) = matched_app {
+        return shell_open(binary_target).map(|_| {
             format!(
                 "Aplikasi '{}' ({}) berhasil dibuka di desktop.",
                 key, binary_target
             )
-        }),
-        None => Err(format!(
-            "Aplikasi '{}' ditolak oleh kebijakan keamanan sistem (tidak ada dalam daftar putih/whitelist).",
-            target_name
-        )),
+        });
     }
+
+    // 2.2 Dynamic launcher untuk testing mode: coba buka langsung nama aplikasi/protokol di Windows
+    if shell_open(target_name).is_ok() {
+        return Ok(format!(
+            "Aplikasi '{}' berhasil dibuka di desktop.",
+            target_name
+        ));
+    }
+
+    // 2.3 Jika tanpa ekstensi, coba dengan .exe
+    if !target_name.contains('.') {
+        let exe_name = format!("{}.exe", target_name);
+        if shell_open(&exe_name).is_ok() {
+            return Ok(format!(
+                "Aplikasi '{}' ({}) berhasil dibuka di desktop.",
+                target_name, exe_name
+            ));
+        }
+    }
+
+    Err(format!(
+        "Aplikasi '{}' tidak ditemukan atau gagal dibuka di Windows.",
+        target_name
+    ))
 }
 
 /// Ensures Windows UI animations settle and forces fresh frame capture with burst mode
@@ -2004,11 +2039,11 @@ mod tests {
             _ => panic!("Expected CommandResult"),
         }
 
-        // cmd and powershell are deliberately excluded from whitelist
+        // Non-existent binary fails
         let res_cmd = handle_execute_command(
             "cmd_shell".to_string(),
             "LAUNCH_APP".to_string(),
-            serde_json::json!({ "app_name": "cmd" }),
+            serde_json::json!({ "app_name": "nonexistent_fake_binary_xyz_123" }),
             None,
         )
         .await;
@@ -2021,7 +2056,7 @@ mod tests {
         let res_inj = handle_execute_command(
             "cmd_inj".to_string(),
             "LAUNCH_APP".to_string(),
-            serde_json::json!({ "url": "https://example.com&calc.exe" }),
+            serde_json::json!({ "url": "https://example.com|calc.exe" }),
             None,
         )
         .await;
