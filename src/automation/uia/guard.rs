@@ -327,28 +327,41 @@ pub fn check_target_integrity(target_pid: u32) -> Result<(), GuardError> {
 
 /// Uji oklusi 5-titik Win32: Pusat + 4 kuartal rect hasil snap.
 /// Memastikan kontrol target tidak tertutup jendela lain, popup/menu, atau toast notifikasi.
+///
+/// `allow_same_pid`: bila true, sub-jendela Chrome dengan PID sama tidak dianggap oklusi.
+/// Aktifkan untuk klik berbasis target_hint di web content; nonaktifkan untuk klik buta.
 pub fn verify_rect_occlusion(
     target_hwnd: usize,
     rect: &PixelRect,
+    allow_same_pid: bool,
 ) -> Result<(), GuardError> {
     verify_rect_occlusion_with(
         target_hwnd,
         rect,
+        allow_same_pid,
         is_point_inside_own_interactive_window,
         top_level_at,
+        |hwnd| pid_of(hwnd as HWND),
     )
 }
 
 /// Implementasi uji oklusi 5-titik dengan injeksi callback untuk unit testing deterministik.
-pub fn verify_rect_occlusion_with<FInteractive, FTopLevel>(
+///
+/// `allow_same_pid`: Jika true, jendela occluding yang memiliki PID sama dengan target_hwnd
+/// (misalnya sub-jendela render Chrome dalam mode multi-process) tidak dianggap sebagai
+/// oklusi keras — cukup heuristik aman untuk klik berbasis target_hint di web content.
+pub fn verify_rect_occlusion_with<FInteractive, FTopLevel, FPid>(
     target_hwnd: usize,
     rect: &PixelRect,
+    allow_same_pid: bool,
     mut is_own_interactive: FInteractive,
     mut top_level: FTopLevel,
+    mut pid_of_fn: FPid,
 ) -> Result<(), GuardError>
 where
     FInteractive: FnMut(i32, i32) -> bool,
     FTopLevel: FnMut(i32, i32) -> Option<usize>,
+    FPid: FnMut(usize) -> u32,
 {
     let w = rect.right - rect.left;
     let h = rect.bottom - rect.top;
@@ -369,6 +382,9 @@ where
         (rect.right - qx, rect.bottom - qy),
     ];
 
+    // Ambil PID target sekali untuk perbandingan same-PID (Chrome multi-process renderer)
+    let target_pid = pid_of_fn(target_hwnd);
+
     for (px, py) in points {
         // 1. Cek apakah titik tertutup jendela interaktif milik Nexa sendiri (HUD pill)
         if is_own_interactive(px, py) {
@@ -378,12 +394,21 @@ where
         // 2. Cek jendela top-level di titik tersebut.
         // Wajib == target_hwnd secara ketat. Popup, menu konteks, atau dropdown Chromium
         // yang memiliki HWND berbeda dianggap menutupi elemen target di bawahnya.
+        // Pengecualian: bila allow_same_pid=true (klik berbasis hint), sub-jendela Chrome
+        // yang satu PID dengan target (misalnya renderer frame, side panel internal)
+        // tidak dianggap oklusi — Chrome hanya memiliki satu HWND browser utama yang
+        // merespons input fisik, sub-jendela lain adalah artefak UIA/WS.
         if let Some(top) = top_level(px, py) {
             if top != target_hwnd {
-                let top_h = top as HWND;
+                let occluding_pid = pid_of_fn(top);
+                if allow_same_pid && occluding_pid == target_pid && target_pid != 0 {
+                    // Sub-jendela same-PID (mis. Chrome renderer/side-panel internal):
+                    // izinkan — klik fisik tetap mengenai konten yang benar.
+                    continue;
+                }
                 return Err(GuardError::OccludedByWindow {
                     occluding_hwnd: top,
-                    occluding_pid: pid_of(top_h),
+                    occluding_pid,
                 });
             }
         }
@@ -555,7 +580,7 @@ mod tests {
             right: 100,
             bottom: 100,
         };
-        assert_eq!(verify_rect_occlusion(0, &empty), Ok(()));
+        assert_eq!(verify_rect_occlusion(0, &empty, false), Ok(()));
     }
 
     #[test]
@@ -570,8 +595,10 @@ mod tests {
         let res = verify_rect_occlusion_with(
             target_hwnd,
             &rect,
+            false,
             |_px, _py| false,
             |_px, _py| Some(target_hwnd),
+            |_hwnd| 1234,
         );
         assert_eq!(res, Ok(()));
     }
@@ -589,8 +616,10 @@ mod tests {
         let res = verify_rect_occlusion_with(
             target_hwnd,
             &rect,
+            false,
             |px, py| px == 150 && py == 130,
             |_px, _py| Some(target_hwnd),
+            |_hwnd| 1234,
         );
         assert_eq!(res, Err(GuardError::OwnProcess));
     }
@@ -609,6 +638,7 @@ mod tests {
         let res = verify_rect_occlusion_with(
             target_hwnd,
             &rect,
+            false,
             |_px, _py| false,
             |px, py| {
                 if px > 150 && py > 130 {
@@ -617,10 +647,12 @@ mod tests {
                     Some(target_hwnd)
                 }
             },
+            |hwnd| if hwnd == popup_hwnd { 9999 } else { 1234 },
         );
         match res {
-            Err(GuardError::OccludedByWindow { occluding_hwnd, .. }) => {
+            Err(GuardError::OccludedByWindow { occluding_hwnd, occluding_pid }) => {
                 assert_eq!(occluding_hwnd, popup_hwnd);
+                assert_eq!(occluding_pid, 9999);
             }
             other => panic!("Expected OccludedByWindow, got {:?}", other),
         }
@@ -629,5 +661,65 @@ mod tests {
     #[test]
     fn guard_point_outside_screen_returns_no_window() {
         assert_eq!(guard_point(-30_000, -30_000), Err(GuardError::NoWindowAtPoint));
+    }
+
+    #[test]
+    fn test_verify_rect_occlusion_allows_same_pid_subwindow_when_flag_set() {
+        let rect = PixelRect {
+            left: 100,
+            top: 100,
+            right: 200,
+            bottom: 160,
+        };
+        let target_hwnd = 0x1234usize;
+        let chrome_subwindow_hwnd = 0x5678usize;
+        let foreign_hwnd = 0x9999usize;
+        // Mock PID: target_hwnd dan chrome_subwindow_hwnd keduanya milik PID 5000 (Chrome process)
+        let mock_pid = |hwnd| {
+            if hwnd == target_hwnd || hwnd == chrome_subwindow_hwnd {
+                5000
+            } else {
+                9999
+            }
+        };
+
+        // 1. Strict mode (allow_same_pid = false): harus ditolak dengan OccludedByWindow
+        let res_strict = verify_rect_occlusion_with(
+            target_hwnd,
+            &rect,
+            false,
+            |_px, _py| false,
+            |_px, _py| Some(chrome_subwindow_hwnd),
+            mock_pid,
+        );
+        match res_strict {
+            Err(GuardError::OccludedByWindow { occluding_hwnd, occluding_pid }) => {
+                assert_eq!(occluding_hwnd, chrome_subwindow_hwnd);
+                assert_eq!(occluding_pid, 5000);
+            }
+            other => panic!("Expected OccludedByWindow in strict mode, got {:?}", other),
+        }
+
+        // 2. Relaxed mode (allow_same_pid = true): karena PID sama (5000 == 5000), harus lulus Ok(())
+        let res_relaxed = verify_rect_occlusion_with(
+            target_hwnd,
+            &rect,
+            true,
+            |_px, _py| false,
+            |_px, _py| Some(chrome_subwindow_hwnd),
+            mock_pid,
+        );
+        assert_eq!(res_relaxed, Ok(()), "Relaxed mode harus mengizinkan sub-window dengan PID sama");
+
+        // 3. Relaxed mode tapi beda PID (misal popup/ad luar): harus tetap ditolak
+        let res_foreign = verify_rect_occlusion_with(
+            target_hwnd,
+            &rect,
+            true,
+            |_px, _py| false,
+            |_px, _py| Some(foreign_hwnd),
+            mock_pid,
+        );
+        assert!(matches!(res_foreign, Err(GuardError::OccludedByWindow { .. })));
     }
 }

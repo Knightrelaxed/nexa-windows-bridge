@@ -33,7 +33,7 @@ use windows::Win32::Foundation::POINT;
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 use windows::Win32::UI::Accessibility::{IUIAutomation, IUIAutomationElement};
 
-const CLICK_BUDGET: Duration = Duration::from_millis(2500);
+const CLICK_BUDGET: Duration = Duration::from_millis(4000);
 #[allow(dead_code)]
 const SET_TEXT_BUDGET: Duration = Duration::from_millis(4000);
 const SNAP_BUDGET: Duration = Duration::from_millis(350);
@@ -537,8 +537,10 @@ fn hit_matches(
             .unwrap_or(false)
     };
     // 1) hit is chosen or a descendant of chosen (e.g. inner label or icon)
+    // Depth increased from 8→15 to handle deeply-nested Chrome/Chromium web content UIA trees.
+    // Chrome's Blink accessibility provider can expose 10+ nesting levels for web buttons/links.
     let mut n = hit.clone();
-    for _ in 0..8 {
+    for _ in 0..15 {
         if same(&n, chosen) {
             return true;
         }
@@ -548,8 +550,9 @@ fn hit_matches(
         }
     }
     // 2) chosen is a descendant of hit (e.g. non-hit-testable control inside parent container)
+    // Depth increased from 3→5 to allow for Chrome's container grouping layers.
     let mut m = chosen.clone();
-    for _ in 0..3 {
+    for _ in 0..5 {
         match unsafe { walker.GetParentElement(&m) } {
             Ok(p) => m = p,
             Err(_) => break,
@@ -753,8 +756,12 @@ fn act_on(
 
     revalidate(info, el)?;
 
-    // 5-Point Win32 Occlusion Gate: pastikan pusat dan 4 kuartal kontrol tidak tertutup jendela lain/toast
-    guard::verify_rect_occlusion(target.target_hwnd, &info.rect)?;
+    // 5-Point Win32 Occlusion Gate: pastikan pusat dan 4 kuartal kontrol tidak tertutup jendela lain/toast.
+    // Bila klik berbasis hint (kita tahu semantis apa yang ingin diklik), izinkan same-PID Chrome sub-windows.
+    // Ini menangani kasus Chrome Side Panel / renderer frame yang muncul sebagai HWND terpisah di Z-order
+    // tetapi PID-nya sama dengan browser frame utama — klik fisik tetap mengenai konten yang benar.
+    let allow_same_pid = hint_match.is_some();
+    guard::verify_rect_occlusion(target.target_hwnd, &info.rect, allow_same_pid)?;
 
     // Tier-1 semantik: HANYA dilakukan jika jendela target saat ini adalah foreground,
     // klik kiri tunggal, dan foreground belum berubah.

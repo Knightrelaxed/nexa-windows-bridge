@@ -27,8 +27,10 @@ use windows::Win32::UI::Accessibility::{
     UIA_ValuePatternId,
 };
 
-/// Batas elemen per scan (sama dengan UFO: `min(com_elem_array.Length, 500)`).
-const MAX_ELEMENTS: i32 = 500;
+/// Batas elemen per scan (dinaikkan ke 1000 untuk menangani halaman web kompleks —
+/// Chrome/Blink accessibility tree bisa mengekspos ratusan elemen interaktif: tombol, link, form, dsb.
+/// Sebelumnya 500, mengikuti UFO: `min(com_elem_array.Length, 500)`).
+const MAX_ELEMENTS: i32 = 1000;
 /// Batas keras panggilan lintas-proses (butuh Win10 1809+ / IUIAutomation6).
 const CONNECTION_TIMEOUT_MS: u32 = 1000;
 const TRANSACTION_TIMEOUT_MS: u32 = 1500;
