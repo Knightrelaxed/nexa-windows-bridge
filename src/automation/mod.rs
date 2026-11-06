@@ -1352,6 +1352,36 @@ pub async fn handle_execute_command(
         }
 
         // ─────────────────────────────────────────────────────────────
+        // 17.1. NAVIGATE_BACK (Browser / App Back Navigation via ALT+LEFT)
+        // ─────────────────────────────────────────────────────────────
+        "NAVIGATEBACK" | "BROWSERBACK" => {
+            let res = tokio::task::spawn_blocking(|| {
+                desktop_press_key("ALT+LEFT")
+            })
+            .await
+            .map_err(|e| format!("Join error: {}", e))
+            .and_then(|r| r);
+
+            match res {
+                Ok(_) => {
+                    settle_and_fresh_frame(250, 1200).await;
+                    ClientMessage::CommandResult {
+                        command_id,
+                        success: true,
+                        message: "Navigasi kembali (ALT+LEFT) berhasil dikirim.".to_string(),
+                        data: serde_json::json!({ "action": "navigateBack" }),
+                    }
+                }
+                Err(err) => ClientMessage::CommandResult {
+                    command_id,
+                    success: false,
+                    message: format!("Gagal navigasi kembali: {}", err),
+                    data: serde_json::json!({ "error": err }),
+                },
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────
         // 18. CLOSE_WINDOW (Safe Graceful Window Closure via WM_CLOSE)
         // ─────────────────────────────────────────────────────────────
         "CLOSEWINDOW" | "CLOSEAPP" => {

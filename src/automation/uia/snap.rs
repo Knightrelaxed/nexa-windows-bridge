@@ -266,7 +266,7 @@ pub fn jaro_winkler_similarity(s1: &str, s2: &str) -> f32 {
     jaro + prefix * 0.1 * (1.0 - jaro)
 }
 
-/// Hitung kemiripan teks kontekstual (Exact, Containment, atau Jaro-Winkler)
+/// Hitung kemiripan teks kontekstual (Exact, Containment, Jaro-Winkler, atau Token Matching)
 pub fn text_similarity(hint: &str, candidate: &str) -> f32 {
     let h = normalize_hint(hint);
     let c = normalize_hint(candidate);
@@ -279,7 +279,37 @@ pub fn text_similarity(hint: &str, candidate: &str) -> f32 {
     if c.contains(&h) || h.contains(&c) {
         return 0.85;
     }
-    jaro_winkler_similarity(&h, &c)
+    let full_sim = jaro_winkler_similarity(&h, &c);
+
+    // Token-level fuzzy matching:
+    // Menangani kasus di mana nama kontrol UIA dibungkus frasa aksi (misal: "Open Dazatulloh profile"
+    // vs hint pengguna "Dzatullah 2").
+    // Jika ada kata signifikan (panjang >= 3) pada hint dan kandidat yang cocok kuat,
+    // gunakan skor token tersebut agar tidak dipotong oleh kata tambahan pembungkus.
+    let h_words: Vec<&str> = h.split_whitespace().collect();
+    let c_words: Vec<&str> = c.split_whitespace().collect();
+
+    let mut best_token_match = 0.0f32;
+    for hw in &h_words {
+        if hw.len() < 3 {
+            continue;
+        }
+        for cw in &c_words {
+            if cw.len() < 3 {
+                continue;
+            }
+            if hw == cw || cw.contains(hw) || hw.contains(cw) {
+                best_token_match = best_token_match.max(0.88);
+            } else {
+                let jw = jaro_winkler_similarity(hw, cw);
+                if jw >= 0.75 {
+                    best_token_match = best_token_match.max(jw);
+                }
+            }
+        }
+    }
+
+    full_sim.max(best_token_match)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -396,25 +426,41 @@ match candidates.as_slice() {
             HintedPick::None
         }
     }
-        [b, s, ..] if (s.1 - b.1).abs() < 0.06 => {
-            let top3 = candidates
-                .iter()
-                .take(3)
-                .map(|c| AmbiguousCandidate {
-                    index: c.0,
-                    name: c.5.clone(),
-                    kind: c.6,
-                    distance_px: c.7,
-                    score: c.1,
-                })
-                .collect();
-            HintedPick::Ambiguous(top3)
+        [b, ..] => {
+            // Cek apakah ada kandidat lain yang benar-benar berbeda (competing distinct target)
+            // yang skornya berselisih < 0.06.
+            // Jika kandidat kedua memiliki nama yang sama (misal '📄 Akses PDF' vs '📄 Akses PDF'),
+            // atau keduanya bertumpukan pada titik yang sama (nested element di DOM),
+            // maka itu BUKAN ambiguitas — itu elemen yang sama!
+            let competing = candidates.iter().skip(1).find(|s| {
+                let nb = normalize_hint(&b.5);
+                let ns = normalize_hint(&s.5);
+                let same_name = nb == ns || nb.contains(&ns) || ns.contains(&nb);
+                let overlapping = b.3 && s.3; // both contain the query point
+                !same_name && !overlapping && (s.1 - b.1).abs() < 0.06
+            });
+
+            if competing.is_some() {
+                let top3 = candidates
+                    .iter()
+                    .take(3)
+                    .map(|c| AmbiguousCandidate {
+                        index: c.0,
+                        name: c.5.clone(),
+                        kind: c.6,
+                        distance_px: c.7,
+                        score: c.1,
+                    })
+                    .collect();
+                HintedPick::Ambiguous(top3)
+            } else {
+                HintedPick::Chosen {
+                    index: b.0,
+                    sim: b.2,
+                    contained: b.3,
+                }
+            }
         }
-        [b, ..] => HintedPick::Chosen {
-            index: b.0,
-            sim: b.2,
-            contained: b.3,
-        },
     }
 }
 
@@ -621,5 +667,37 @@ mod tests {
             }
             other => panic!("Expected Downloads to be chosen, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_pick_hinted_duplicate_nested_elements_do_not_trigger_ambiguity() {
+        // Bug A: In Chrome, a web button or hyperlink often contains an inner text element
+        // with the EXACT SAME accessible name (e.g. '📄 Akses PDF' on <a> and inner <span>).
+        // When both elements contain the click point (distance = 0.0), pick_hinted must NOT
+        // treat them as competing ambiguous targets!
+        let mut hyperlink = ctl(ControlKind::Hyperlink, 1300, 600, 1400, 660);
+        hyperlink.name = "📄 Akses PDF".into();
+        let mut inner_span = ctl(ControlKind::Button, 1310, 610, 1390, 650);
+        inner_span.name = "📄 Akses PDF".into();
+
+        let controls = vec![hyperlink, inner_span];
+        let query = q(1344, 630);
+
+        match pick_hinted(&controls, &query, "Akses PDF") {
+            HintedPick::Chosen { index, sim, .. } => {
+                assert!(index == 0 || index == 1);
+                assert!(sim >= 0.85);
+            }
+            other => panic!("Expected Chosen, but got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_text_similarity_token_matching_for_wrapper_phrases() {
+        // Bug B: In Chrome profile picker, the button is named "Open Dazatulloh profile",
+        // but user says "Dzatullah 2". Token-level fuzzy match must match "dzatullah" with "dazatulloh"
+        // and score >= 0.65 so that wide_reach is activated.
+        let sim = text_similarity("Dzatullah 2", "Open Dazatulloh profile");
+        assert!(sim >= 0.65, "Expected similarity >= 0.65 for 'Dzatullah 2' vs 'Open Dazatulloh profile', got {}", sim);
     }
 }
