@@ -384,11 +384,20 @@ where
 
     // Ambil PID target sekali untuk perbandingan same-PID (Chrome multi-process renderer)
     let target_pid = pid_of_fn(target_hwnd);
+    let mut own_covered_points = 0usize;
 
     for (px, py) in points {
-        // 1. Cek apakah titik tertutup jendela interaktif milik Nexa sendiri (HUD pill)
+        // 1. Cek apakah titik tertutup jendela interaktif milik Nexa sendiri (HUD pill).
+        // Untuk kontrol lebar (w >= 300, mis. omnibox Chrome / search bar) pada klik ber-hint
+        // (`allow_same_pid == true`), HUD pill di tengah-atas hanya menutupi sebagian bar;
+        // `avoid_own_overlay_point` sudah menggeser titik klik ke sisi yang bebas HUD,
+        // sehingga baru ditolak jika >= 4 dari 5 titik sampel tertutup HUD.
         if is_own_interactive(px, py) {
-            return Err(GuardError::OwnProcess);
+            own_covered_points += 1;
+            if !allow_same_pid || w < 300 || own_covered_points >= 4 {
+                return Err(GuardError::OwnProcess);
+            }
+            continue;
         }
 
         // 2. Cek jendela top-level di titik tersebut.
@@ -491,6 +500,77 @@ pub fn window_top(hwnd: usize) -> Option<i32> {
     } else {
         Some(r.top)
     }
+}
+
+/// Judul jendela top-level `hwnd` (kosong jika tidak ada atau gagal).
+pub fn window_title(hwnd: usize) -> String {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowTextW;
+    let mut buf = [0u16; 256];
+    let len = unsafe { GetWindowTextW(hwnd as HWND, buf.as_mut_ptr(), buf.len() as i32) };
+    if len > 0 {
+        String::from_utf16_lossy(&buf[..len as usize])
+    } else {
+        String::new()
+    }
+}
+
+/// Pilih titik klik di dalam `rect` yang tidak tertutup jendela interaktif milik Nexa Bridge
+/// (seperti floating HUD pill di tengah atas layar yang sering menutupi bagian tengah omnibox Chrome).
+pub fn avoid_own_overlay_point(
+    rect: &PixelRect,
+    preferred: (i32, i32),
+    raw_px: i32,
+    raw_py: i32,
+) -> (i32, i32) {
+    avoid_own_overlay_point_with(
+        rect,
+        preferred,
+        raw_px,
+        raw_py,
+        is_point_inside_own_interactive_window,
+    )
+}
+
+pub fn avoid_own_overlay_point_with<FInteractive>(
+    rect: &PixelRect,
+    preferred: (i32, i32),
+    raw_px: i32,
+    raw_py: i32,
+    mut is_own_interactive: FInteractive,
+) -> (i32, i32)
+where
+    FInteractive: FnMut(i32, i32) -> bool,
+{
+    if !is_own_interactive(preferred.0, preferred.1) {
+        return preferred;
+    }
+    let w = rect.right - rect.left;
+    let h = rect.bottom - rect.top;
+    if w <= 16 || h <= 0 {
+        return preferred;
+    }
+    let cy = preferred.1.clamp(rect.top, rect.bottom - 1);
+    let raw_clamped_x = raw_px.clamp(rect.left + 8, rect.right - 9);
+    let raw_clamped_y = raw_py.clamp(rect.top, rect.bottom - 1);
+    let candidates = [
+        (raw_clamped_x, raw_clamped_y),
+        (raw_clamped_x, cy),
+        (rect.left + w / 4, cy),
+        (rect.left + w / 6, cy),
+        (rect.right - w / 4, cy),
+        (rect.right - w / 6, cy),
+    ];
+    for (cx, cy_cand) in candidates {
+        if cx >= rect.left
+            && cx < rect.right
+            && cy_cand >= rect.top
+            && cy_cand < rect.bottom
+            && !is_own_interactive(cx, cy_cand)
+        {
+            return (cx, cy_cand);
+        }
+    }
+    preferred
 }
 
 /// Deteksi batas bawah pita chrome (tab strip + omnibox + bookmarks bar) untuk jendela browser (Chrome, Edge, Firefox, dll).
@@ -766,5 +846,30 @@ mod tests {
             mock_pid,
         );
         assert!(matches!(res_foreign, Err(GuardError::OccludedByWindow { .. })));
+    }
+
+    #[test]
+    fn test_wide_control_partially_covered_by_hud_pill_shifts_point_and_passes_occlusion() {
+        // Omnibox Chrome dari log 2026-11-07 07:50:28: rect=(243, 64, 1315, 95)
+        // HUD pill Nexa berada di tengah-atas: x=750..1170, y=10..90
+        let omnibox = PixelRect::new(243, 64, 1315, 95);
+        let hud_covers = |px: i32, py: i32| (750..=1170).contains(&px) && (10..=90).contains(&py);
+
+        // Pusat (779, 79) tertutup HUD → harus digeser ke sisi kiri yang bebas HUD
+        let pt = avoid_own_overlay_point_with(&omnibox, (779, 79), 804, 79, hud_covers);
+        assert!(!hud_covers(pt.0, pt.1), "Titik klik harus bebas dari HUD pill: {:?}", pt);
+        assert!(pt.0 >= omnibox.left && pt.0 < omnibox.right);
+
+        // Uji oklusi 5-titik pada klik ber-hint (allow_same_pid=true) harus lulus karena sisi kiri bebas HUD
+        let target_hwnd = 0x10132usize;
+        let res = verify_rect_occlusion_with(
+            target_hwnd,
+            &omnibox,
+            true,
+            hud_covers,
+            |_px, _py| Some(target_hwnd),
+            |_hwnd| 5000,
+        );
+        assert_eq!(res, Ok(()));
     }
 }

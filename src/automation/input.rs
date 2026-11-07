@@ -1277,6 +1277,17 @@ pub fn desktop_press_key(key: &str) -> Result<u16, String> {
         return Err("Penekanan tombol ditolak oleh kebijakan keamanan sistem: jendela terminal yang sedang aktif dilindungi dari injeksi perintah AI.".to_string());
     }
 
+    let upper_cmd = trimmed.to_uppercase().replace(' ', "");
+    if upper_cmd == "CLEAR"
+        || upper_cmd == "CLEAR_ALL"
+        || upper_cmd == "CTRL+A+BACKSPACE"
+        || upper_cmd == "CTRL+A+DELETE"
+    {
+        desktop_press_key("CTRL+A")?;
+        sleep(Duration::from_millis(25));
+        return desktop_press_key("BACKSPACE");
+    }
+
     let vks = if trimmed.contains('+') {
         let parts: Vec<&str> = trimmed
             .split('+')

@@ -585,6 +585,65 @@ fn hit_matches(
     false
 }
 
+/// Buat keterangan diagnostik ketika klik ber-hint gagal menemukan elemen di sekitar titik klik:
+/// - Jika elemen yang cocok (sim >= 0.65) sebenarnya ada di bagian lain jendela aktif, berikan koordinat norm (x, y)-nya.
+/// - Jika elemen tersebut TIDAK ADA sama sekali di seluruh jendela aktif, sebutkan judul jendela aktif
+///   dan contoh elemen yang terlihat agar model tahu layar sudah berpindah dan berhenti mengulang klik basi.
+pub(crate) fn describe_missing_hint_context(
+    window_title: &str,
+    controls: &[super::types::ControlInfo],
+    hint: &str,
+    screen_w: i32,
+    screen_h: i32,
+) -> String {
+    let title_label = if window_title.trim().is_empty() {
+        "jendela aktif"
+    } else {
+        window_title.trim()
+    };
+
+    let best_elsewhere = controls
+        .iter()
+        .filter(|c| !c.name.trim().is_empty() && c.rect.is_valid_control(screen_w, screen_h))
+        .map(|c| (c, snap::text_similarity(hint, &c.name)))
+        .filter(|(_, sim)| *sim >= 0.65)
+        .max_by(|a, b| a.1.total_cmp(&b.1));
+
+    if let Some((ctl, _)) = best_elsewhere {
+        let (cx, cy) = snap::click_point(ctl, 0, 0);
+        let nx = ((cx as f64 / (screen_w.max(1) as f64)) * 1000.0).round() as i32;
+        let ny = ((cy as f64 / (screen_h.max(1) as f64)) * 1000.0).round() as i32;
+        format!(
+            " [Catatan: elemen '{}' ditemukan di bagian lain '{}' pada koordinat x={}, y={}]",
+            ctl.short_name(50),
+            title_label,
+            nx,
+            ny
+        )
+    } else {
+        let mut samples: Vec<String> = Vec::new();
+        for c in controls {
+            let n = c.short_name(35);
+            let trimmed = n.trim();
+            if !trimmed.is_empty() && !samples.iter().any(|s| s == trimmed) {
+                samples.push(trimmed.to_string());
+                if samples.len() >= 5 {
+                    break;
+                }
+            }
+        }
+        let sample_str = if samples.is_empty() {
+            "tidak ada kontrol bernama".to_string()
+        } else {
+            samples.join("', '")
+        };
+        format!(
+            " [PERINGATAN: Elemen '{}' TIDAK ADA di seluruh jendela aktif '{}' (elemen yang terlihat: '{}'). Layar sudah berpindah — JANGAN ulangi klik '{}' lagi!]",
+            hint, title_label, sample_str, hint
+        )
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_click(
     ctx: &UiaContext,
@@ -644,19 +703,43 @@ fn run_click(
                             return Err(UiaError::AmbiguousTarget(desc.join(", ")));
                         }
                         snap::HintedPick::Vetoed { best_name, best_sim } => {
+                            let win_title = guard::window_title(target.target_hwnd);
+                            let ctx_note = describe_missing_hint_context(
+                                &win_title,
+                                &scan.infos,
+                                hint,
+                                screen.width,
+                                screen.height,
+                            );
                             return Err(UiaError::TargetHintMismatch {
                                 hint: hint.to_string(),
-                                best_match: best_name,
+                                best_match: format!("{}{}", best_name, ctx_note),
                                 similarity_pct: (best_sim * 100.0).round() as u32,
                             });
                         }
-                        snap::HintedPick::None => return Err(UiaError::NoTarget),
+                        snap::HintedPick::None => {
+                            let win_title = guard::window_title(target.target_hwnd);
+                            let ctx_note = describe_missing_hint_context(
+                                &win_title,
+                                &scan.infos,
+                                hint,
+                                screen.width,
+                                screen.height,
+                            );
+                            return Err(UiaError::TargetHintMismatch {
+                                hint: hint.to_string(),
+                                best_match: format!("(kosong di titik klik){}", ctx_note),
+                                similarity_pct: 0,
+                            });
+                        }
                     },
                     _ => snap::pick_best(&scan.infos, &query).map(|m| (m.index, None)),
                 };
 
                 if let Some((idx, hint_tag)) = chosen_candidate {
-                    let (snap_cx, snap_cy) = snap::click_point(&scan.infos[idx], px, py);
+                    let raw_snap_pt = snap::click_point(&scan.infos[idx], px, py);
+                    let (snap_cx, snap_cy) =
+                        guard::avoid_own_overlay_point(&scan.infos[idx].rect, raw_snap_pt, px, py);
                     let c = &scan.infos[idx];
                     info!(
                         "[CLICK-TRACE] chosen kind={:?} name='{}' rect=({},{},{},{}) d_raw=({},{}) hint_tag={:?}",
@@ -943,6 +1026,57 @@ mod tests {
     fn default_policy_allows_semantic() {
         let p = ClickPolicy::default();
         assert!(p.allow_semantic && p.allow_unsnapped_fallback);
+    }
+
+    #[test]
+    fn describe_missing_hint_reports_when_element_absent_from_active_window() {
+        use super::super::types::ControlInfo;
+        let controls = vec![
+            ControlInfo {
+                kind: ControlKind::Edit,
+                name: "Address and search bar".into(),
+                automation_id: String::new(),
+                rect: PixelRect::new(243, 64, 1315, 95),
+                pid: 100,
+            },
+            ControlInfo {
+                kind: ControlKind::ComboBox,
+                name: "Search Google or type a URL".into(),
+                automation_id: String::new(),
+                rect: PixelRect::new(660, 416, 1260, 472),
+                pid: 100,
+            },
+        ];
+        let msg = describe_missing_hint_context(
+            "New Tab - Google Chrome",
+            &controls,
+            "Dazatulloh 2",
+            1920,
+            1080,
+        );
+        assert!(msg.contains("TIDAK ADA di seluruh jendela aktif 'New Tab - Google Chrome'"));
+        assert!(msg.contains("Search Google or type a URL"));
+        assert!(msg.contains("JANGAN ulangi klik 'Dazatulloh 2'"));
+    }
+
+    #[test]
+    fn describe_missing_hint_points_to_coordinates_when_element_exists_elsewhere() {
+        use super::super::types::ControlInfo;
+        let controls = vec![ControlInfo {
+            kind: ControlKind::Button,
+            name: "Dazatulloh 2".into(),
+            automation_id: String::new(),
+            rect: PixelRect::new(960, 500, 1160, 580),
+            pid: 100,
+        }];
+        let msg = describe_missing_hint_context(
+            "Google Chrome",
+            &controls,
+            "Dazatulloh 2",
+            1920,
+            1080,
+        );
+        assert!(msg.contains("ditemukan di bagian lain 'Google Chrome' pada koordinat x="));
     }
 
     #[tokio::test]

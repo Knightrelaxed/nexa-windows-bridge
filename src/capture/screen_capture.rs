@@ -64,7 +64,9 @@ impl GraphicsCaptureApiHandler for ScreenCaptureHandler {
 
         let burst = arrival < super::BURST_UNTIL_MS.load(Ordering::SeqCst);
         let due = if burst {
-            true // Burst mode: publish each frame to watch channel so trailing edge static frame is never dropped (Finding 1)
+            // Burst mode: batasi maksimal ~8 FPS (interval >= 120ms) agar mendapatkan frame pasca-aksi
+            // dengan cepat tanpa membanjiri WebSocket dengan puluhan JPEG per detik.
+            arrival.saturating_sub(super::LAST_CAPTURE_MS.load(Ordering::SeqCst)) >= 120
         } else {
             self.rate_limiter.should_capture()
         };

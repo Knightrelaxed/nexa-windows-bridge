@@ -15,7 +15,7 @@ use crate::automation::element_finder::PixelRect;
 const MAX_AREA_RATIO: i64 = 6;
 /// Selisih minimum (px) antara titik model dan batas bawah pita chrome browser agar titik itu
 /// dianggap "di konten halaman" (bukan di tab strip/toolbar).
-const CHROME_BAND_MARGIN: i32 = 80;
+const CHROME_BAND_MARGIN: i32 = 20;
 /// Penalti biaya untuk kontainer baris (ListItem/DataItem) vs kontrol spesifik bernama sama.
 const CONTAINER_PENALTY: f32 = 0.05;
 /// Hyperlink lebih tinggi dari ini dianggap blok multi-baris (judul + URL + snippet).
@@ -302,10 +302,37 @@ pub fn jaro_winkler_similarity(s1: &str, s2: &str) -> f32 {
     jaro + prefix * 0.1 * (1.0 - jaro)
 }
 
-/// Hitung kemiripan antara dua kata individu (Exact, Substring, atau Jaro-Winkler Typo)
+/// Sinonim lintas-bahasa (Inggris <-> Indonesia) untuk elemen UI umum agar hint bahasa Inggris
+/// dari model visi tetap cocok dengan label UIA berbahasa Indonesia (atau sebaliknya).
+const UI_SYNONYM_GROUPS: &[&[&str]] = &[
+    &["search", "cari", "telusuri", "pencarian", "penelusuran", "temukan", "find"],
+    &["download", "downloads", "unduh", "unduhan"],
+    &["delete", "clear", "remove", "hapus", "bersihkan", "kosongkan"],
+    &["close", "tutup", "keluar", "exit"],
+    &["back", "kembali", "mundur"],
+    &["next", "forward", "lanjut", "selanjutnya", "berikutnya"],
+    &["save", "simpan"],
+    &["cancel", "batal", "batalkan"],
+    &["settings", "setting", "pengaturan", "setelan"],
+    &["home", "beranda"],
+    &["all", "semua"],
+    &["image", "images", "gambar", "foto", "photo", "photos"],
+    &["news", "berita"],
+];
+
+fn are_ui_synonyms(w1: &str, w2: &str) -> bool {
+    UI_SYNONYM_GROUPS
+        .iter()
+        .any(|g| g.contains(&w1) && g.contains(&w2))
+}
+
+/// Hitung kemiripan antara dua kata individu (Exact, Sinonim UI, Substring, atau Jaro-Winkler Typo)
 fn word_sim(hw: &str, cw: &str) -> f32 {
     if hw == cw {
         return 1.0;
+    }
+    if are_ui_synonyms(hw, cw) {
+        return 0.95;
     }
     // Substring match between words (e.g. "oogenesi" in "oogenesi_nurul", "download" in "downloads")
     if hw.contains(cw) || cw.contains(hw) {
@@ -369,12 +396,16 @@ pub fn text_similarity(hint: &str, candidate: &str) -> f32 {
         "dan", "di", "ke", "dari", "yang", "pada", "untuk", "dengan", "atau", "ini", "itu",
         "the", "and", "or", "in", "on", "at", "to", "for", "of", "with", "by",
         "buka", "klik", "open", "click", "file", "folder", "tombol", "button", "link",
+        "bar", "box", "input", "field", "kolom", "kotak", "current", "query", "profile", "profil",
     ];
 
-    let h_words: Vec<&str> = h
+    let mut h_words: Vec<&str> = h
         .split_whitespace()
         .filter(|w| w.len() >= 3 && !STOP_WORDS.contains(w))
         .collect();
+    if h_words.is_empty() {
+        h_words = h.split_whitespace().filter(|w| w.len() >= 3).collect();
+    }
     let c_words: Vec<&str> = c
         .split_whitespace()
         .filter(|w| w.len() >= 3)
@@ -420,7 +451,8 @@ pub fn text_similarity(hint: &str, candidate: &str) -> f32 {
         0.0
     };
 
-    let token_sim = hint_coverage.max(cand_coverage * 0.9);
+    let adjusted_hint_cov = (hint_coverage * 0.95 + hint_coverage * cand_coverage * 0.05).min(1.0);
+    let token_sim = adjusted_hint_cov.max(cand_coverage * 0.9);
     full_sim.max(token_sim)
 }
 
@@ -500,6 +532,17 @@ pub fn pick_hinted(controls: &[ControlInfo], q: &SnapQuery, hint: &str) -> Hinte
     let wide_reach = ((q.screen_h as f32) * 0.5).clamp(350.0, 600.0);
     let tight_radius = (q.radius_px as f32).max(16.0);
 
+    let hint_explicitly_button = h
+        .split_whitespace()
+        .any(|w| matches!(w, "tombol" | "button" | "btn" | "icon" | "ikon" | "suara" | "voice"));
+    let hint_wants_input = !hint_explicitly_button
+        && h.split_whitespace().any(|w| {
+            matches!(
+                w,
+                "bar" | "box" | "input" | "field" | "kolom" | "kotak" | "search" | "cari"
+            )
+        });
+
     let mut candidates: Vec<HintCand> = Vec::new();
 
     for (i, ctl) in controls.iter().enumerate() {
@@ -551,6 +594,9 @@ pub fn pick_hinted(controls: &[ControlInfo], q: &SnapQuery, hint: &str) -> Hinte
         let mut cost = 0.3 * spatial + 0.7 * textual;
         if is_row_container(ctl.kind) {
             cost += CONTAINER_PENALTY;
+        }
+        if hint_wants_input && !matches!(ctl.kind, ControlKind::Edit | ControlKind::ComboBox) {
+            cost += 0.08;
         }
 
         candidates.push(HintCand {
@@ -1104,5 +1150,34 @@ mod tests {
         assert_eq!(click_point(&photo, 700, 350), (700, 350));
         // di luar gambar → pusat
         assert_eq!(click_point(&photo, 50, 50), (950, 500));
+    }
+
+    // ── Regression (log 2026-11-07 07:50:27..07:50:47 & 07:58:26): "search bar" vs "Cari" ─────────
+    #[test]
+    fn regression_log_075027_search_bar_hint_matches_indonesian_cari_and_ignores_omnibox() {
+        let omnibox = named(ControlKind::Edit, "Address and search bar", 243, 64, 1315, 95);
+        let google_cari = named(ControlKind::ComboBox, "Cari", 264, 184, 1088, 247);
+        let voice_btn = named(ControlKind::Button, "Telusuri dengan suara", 1140, 195, 1180, 235);
+        let controls = vec![omnibox, google_cari, voice_btn];
+
+        // 1. Klik di (804, 208) dengan hint "search bar" harus memilih ComboBox "Cari" (index 1),
+        //    BUKAN melompat ke omnibox di atas (index 0) yang tertutup HUD!
+        match pick_hinted(&controls, &browser_q(804, 208), "search bar") {
+            HintedPick::Chosen { index, .. } => assert_eq!(index, 1, "Harus memilih ComboBox 'Cari', bukan omnibox"),
+            other => panic!("Expected Chosen(1), got {:?}", other),
+        }
+
+        // 2. Klik di (1056, 237) maupun (1155, 237) dekat tombol suara dengan hint "search bar"
+        //    atau "Search" atau "search bar with current query" harus cocok dengan "Cari" (index 1)!
+        for &(px, py) in &[(1056, 237), (1155, 237)] {
+            for hint in ["search bar", "Search", "search bar with current query", "kotak pencarian"] {
+                match pick_hinted(&controls, &browser_q(px, py), hint) {
+                    HintedPick::Chosen { index, .. } => {
+                        assert_eq!(index, 1, "Hint '{}' di ({},{}) harus memilih 'Cari'", hint, px, py)
+                    }
+                    other => panic!("Hint '{}' di ({},{}) gagal memilih 'Cari': {:?}", hint, px, py, other),
+                }
+            }
+        }
     }
 }

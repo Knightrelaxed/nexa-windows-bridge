@@ -313,6 +313,7 @@ fn select(el: &IUIAutomationElement) -> windows::core::Result<()> {
     // SAFETY: lihat `pattern`.
     unsafe { pattern::<IUIAutomationSelectionItemPattern>(el, UIA_SelectionItemPatternId)?.Select() }
 }
+#[allow(dead_code)]
 fn expand(el: &IUIAutomationElement) -> windows::core::Result<()> {
     // SAFETY: lihat `pattern`.
     unsafe { pattern::<IUIAutomationExpandCollapsePattern>(el, UIA_ExpandCollapsePatternId)?.Expand() }
@@ -322,6 +323,7 @@ const CHAIN_INVOKE: &[Attempt] = &[("invoke", invoke)];
 const CHAIN_CHECK: &[Attempt] = &[("toggle", toggle), ("invoke", invoke)];
 const CHAIN_SELECT: &[Attempt] = &[("select", select), ("invoke", invoke)];
 const CHAIN_LISTITEM: &[Attempt] = &[("invoke", invoke), ("select", select)];
+#[allow(dead_code)]
 const CHAIN_COMBO: &[Attempt] = &[("expand", expand)];
 const CHAIN_NONE: &[Attempt] = &[];
 
@@ -335,9 +337,9 @@ fn chain_for(kind: ControlKind) -> &'static [Attempt] {
             CHAIN_SELECT
         }
         ControlKind::ListItem => CHAIN_LISTITEM,
-        ControlKind::ComboBox => CHAIN_COMBO,
-        // Klik pada Edit = taruh caret di titik tertentu → biarkan SendInput.
-        ControlKind::Edit => CHAIN_NONE,
+        // Klik pada Edit / ComboBox (mis. kotak pencarian Google 'Cari') = taruh fokus & caret
+        // lewat klik fisik SendInput; ExpandCollapsePattern tidak memfokuskan input teks web.
+        ControlKind::ComboBox | ControlKind::Edit => CHAIN_NONE,
         // Foto/thumbnail: tidak punya pattern aktivasi; klik fisik di titik model/pusat.
         ControlKind::Image => CHAIN_NONE,
     }

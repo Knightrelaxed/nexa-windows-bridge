@@ -221,17 +221,23 @@ pub async fn settle_and_fresh_frame(settle_ms: u64, max_wait_ms: u64) {
     if !IS_CAPTURE_RUNNING.load(SeqCst) {
         return;
     }
-    BURST_UNTIL_MS.store(now_ms() + settle_ms + max_wait_ms + 300, SeqCst);
+    // 1. Tunggu animasi UI selesai terlebih dahulu sebelum mengaktifkan burst capture
     tokio::time::sleep(std::time::Duration::from_millis(settle_ms)).await;
+    let post_settle_ms = now_ms();
+    let prev_sent_ms = LAST_SENT_ARRIVAL_MS.load(SeqCst);
+    BURST_UNTIL_MS.store(post_settle_ms + max_wait_ms, SeqCst);
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(max_wait_ms);
     loop {
+        let sent = LAST_SENT_ARRIVAL_MS.load(SeqCst);
         let arr = LAST_ARRIVAL_MS.load(SeqCst);
-        let quiet = now_ms().saturating_sub(arr) >= 200;
-        if quiet && LAST_SENT_ARRIVAL_MS.load(SeqCst) >= arr {
+        let fresh_sent = sent >= post_settle_ms && sent > prev_sent_ms;
+        let static_screen_synced = now_ms().saturating_sub(post_settle_ms) >= 250
+            && arr < post_settle_ms
+            && sent >= arr;
+        if fresh_sent || static_screen_synced {
             break;
         }
         if std::time::Instant::now() >= deadline {
-            let sent = LAST_SENT_ARRIVAL_MS.load(SeqCst);
             if sent < arr {
                 tracing::warn!(
                     "[AUTOMATION] ⚠️ settle_and_fresh_frame reached deadline ({}ms) before fresh frame was sent: sent_ms={} < arrival_ms={}",
@@ -240,8 +246,9 @@ pub async fn settle_and_fresh_frame(settle_ms: u64, max_wait_ms: u64) {
             }
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     }
+    BURST_UNTIL_MS.store(0, SeqCst);
 }
 
 /// Central command dispatcher for ServerMessage::ExecuteCommand.
@@ -535,6 +542,8 @@ pub async fn handle_execute_command(
                             }),
                         )
                     };
+                    // Pastikan frame layar terbaru tetap dikirim saat klik gagal agar model melihat keadaan layar terkini
+                    settle_and_fresh_frame(120, 500).await;
                     ClientMessage::CommandResult {
                         command_id,
                         success: false,
@@ -646,10 +655,19 @@ pub async fn handle_execute_command(
                 .or_else(|| params.get("pressEnter"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            let clear_first = params
+                .get("clear_first")
+                .or_else(|| params.get("clearFirst"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(press_enter);
 
             let text_owned = text.to_string();
             let _cursor_hold = CursorController::global().hold(crate::ui::CursorMode::Typing);
             let type_res = tokio::task::spawn_blocking(move || {
+                if clear_first {
+                    let _ = desktop_press_key("CTRL+A+BACKSPACE");
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
                 desktop_type_text(&text_owned, press_enter)
             })
             .await
@@ -662,11 +680,16 @@ pub async fn handle_execute_command(
                     ClientMessage::CommandResult {
                         command_id,
                         success: true,
-                        message: format!("Teks berhasil diketik di desktop ({} karakter).", chars_typed),
+                        message: format!(
+                            "Teks berhasil diketik di desktop ({} karakter{}).",
+                            chars_typed,
+                            if clear_first { ", teks lama dibersihkan terlebih dahulu" } else { "" }
+                        ),
                         data: serde_json::json!({
                             "action": "desktopTypeText",
                             "chars_typed": chars_typed,
-                            "press_enter": press_enter
+                            "press_enter": press_enter,
+                            "clear_first": clear_first
                         }),
                     }
                 }
