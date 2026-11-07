@@ -13,6 +13,15 @@ use super::types::{ControlInfo, ControlKind};
 use crate::automation::element_finder::PixelRect;
 
 const MAX_AREA_RATIO: i64 = 6;
+/// Selisih minimum (px) antara titik model dan batas bawah pita chrome browser agar titik itu
+/// dianggap "di konten halaman" (bukan di tab strip/toolbar).
+const CHROME_BAND_MARGIN: i32 = 80;
+/// Penalti biaya untuk kontainer baris (ListItem/DataItem) vs kontrol spesifik bernama sama.
+const CONTAINER_PENALTY: f32 = 0.05;
+/// Hyperlink lebih tinggi dari ini dianggap blok multi-baris (judul + URL + snippet).
+const MULTILINE_LINK_HEIGHT: i64 = 64;
+/// Offset (px) dari tepi atas blok multi-baris ke baris judul.
+const FIRST_LINE_OFFSET: i64 = 20;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SnapQuery {
@@ -23,6 +32,9 @@ pub struct SnapQuery {
     pub hint_area_px: Option<i64>,
     pub screen_w: i32,
     pub screen_h: i32,
+    /// Batas bawah (px layar) pita chrome browser (tab strip + address bar + bookmark bar) pada
+    /// jendela browser; 0 = nonaktif (aplikasi lain).
+    pub chrome_band_bottom: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -92,11 +104,35 @@ fn is_better(c: &SnapMatch, c_area: i64, b: &SnapMatch, b_area: i64) -> bool {
     }
 }
 
+/// Titik klik fisik untuk kontrol hasil snap (piksel layar).
+/// - `Image`: bila titik model jatuh di dalam gambar, pakai titik model itu (pusat foto besar
+///   jarang sama dengan yang dimaksud).
+/// - `Hyperlink` multi-baris (tinggi > 64px, mis. blok hasil Google berisi judul + URL + snippet):
+///   bidik baris pertama (judul). Pusat blok sering jatuh di snippet yang BUKAN bagian `<a>`.
+/// - Lainnya: pusat kontrol.
+pub fn click_point(c: &ControlInfo, px: i32, py: i32) -> (i32, i32) {
+    let (cx, cy) = c.center();
+    let h = c.rect.bottom as i64 - c.rect.top as i64;
+    match c.kind {
+        ControlKind::Image if contains(&c.rect, px, py) => (px, py),
+        ControlKind::Hyperlink if h > MULTILINE_LINK_HEIGHT => {
+            let y = (c.rect.top as i64 + FIRST_LINE_OFFSET).min(c.rect.bottom as i64 - 1);
+            (cx, y.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
+        }
+        _ => (cx, cy),
+    }
+}
+
 /// Pilih kontrol interaktif terbaik untuk titik estimasi model.
 pub fn pick_best(controls: &[ControlInfo], q: &SnapQuery) -> Option<SnapMatch> {
     let mut best: Option<(SnapMatch, i64)> = None;
 
     for (index, c) in controls.iter().enumerate() {
+        // Image hanya relevan untuk klik ber-hint (pick_hinted). Tanpa hint, gambar besar akan
+        // "menelan" titik model dan klik berpindah ke pusat gambar.
+        if c.kind == ControlKind::Image {
+            continue;
+        }
         // PixelRect::width() memakai pengurangan i32 biasa → bisa overflow pada rect sampah
         // (mis. elemen offscreen dengan koordinat i32::MIN). Saring dulu dengan aritmetika i64.
         let w = c.rect.right as i64 - c.rect.left as i64;
@@ -412,6 +448,40 @@ pub enum HintedPick {
     },
 }
 
+/// Kind "kontainer baris": sering membungkus kontrol yang lebih spesifik (Hyperlink/Button) dengan
+/// nama yang sama, atau berupa paragraf panjang. Diberi penalti kecil agar kontrol spesifik menang
+/// saat skornya setara, tetapi tetap terpilih bila ia satu-satunya yang cocok (mis. baris Gmail).
+fn is_row_container(kind: ControlKind) -> bool {
+    matches!(kind, ControlKind::ListItem | ControlKind::DataItem)
+}
+
+#[derive(Debug, Clone)]
+struct HintCand {
+    index: usize,
+    cost: f32,
+    sim: f32,
+    contained: bool,
+    named: bool,
+    name: String,
+    kind: ControlKind,
+    distance: f32,
+    area: i64,
+}
+
+/// Jarak jangkau semantik (px, ke tepi kontrol) menurut kekuatan kecocokan teks:
+/// - sim >= 0.85 : jangkauan lebar (koordinat model bisa meleset ratusan px, mis. sidebar/hasil cari)
+/// - sim >= 0.65 : jangkauan menengah (kecocokan parsial TIDAK boleh melompat melintasi layar)
+/// - lainnya     : radius geometris ketat
+fn reach_for_sim(sim: f32, wide_reach: f32, tight_radius: f32) -> f32 {
+    if sim >= 0.85 {
+        wide_reach
+    } else if sim >= 0.65 {
+        wide_reach.min(300.0)
+    } else {
+        tight_radius
+    }
+}
+
 /// Disambiguasi semantik cerdas (Re-Ranker) kontrol interaktif berdasarkan hint teks.
 pub fn pick_hinted(controls: &[ControlInfo], q: &SnapQuery, hint: &str) -> HintedPick {
     let h = normalize_hint(hint);
@@ -430,8 +500,7 @@ pub fn pick_hinted(controls: &[ControlInfo], q: &SnapQuery, hint: &str) -> Hinte
     let wide_reach = ((q.screen_h as f32) * 0.5).clamp(350.0, 600.0);
     let tight_radius = (q.radius_px as f32).max(16.0);
 
-    // (index, cost, sim, contained, named, name, kind, distance)
-    let mut candidates: Vec<(usize, f32, f32, bool, bool, String, ControlKind, f32)> = Vec::new();
+    let mut candidates: Vec<HintCand> = Vec::new();
 
     for (i, ctl) in controls.iter().enumerate() {
         let w = ctl.rect.right as i64 - ctl.rect.left as i64;
@@ -440,6 +509,17 @@ pub fn pick_hinted(controls: &[ControlInfo], q: &SnapQuery, hint: &str) -> Hinte
             continue;
         }
         if !ctl.rect.is_valid_control(q.screen_w, q.screen_h) {
+            continue;
+        }
+
+        // Pita chrome browser (tab strip / address bar / bookmark bar): bila titik model berada
+        // jelas di area konten halaman, kontrol yang seluruhnya berada di pita atas itu BUKAN target.
+        // Tanpa ini, hint yang sama dengan judul tab (mis. judul artikel yang sedang dibuka) menang
+        // "exact" atas elemen halaman dan klik terbang ke tab strip.
+        if q.chrome_band_bottom > 0
+            && q.py >= q.chrome_band_bottom + CHROME_BAND_MARGIN
+            && ctl.rect.bottom <= q.chrome_band_bottom
+        {
             continue;
         }
 
@@ -454,54 +534,85 @@ pub fn pick_hinted(controls: &[ControlInfo], q: &SnapQuery, hint: &str) -> Hinte
         let named = !n.is_empty();
         let sim = if named { text_similarity(&h, &n) } else { 0.0 };
 
-    // Dynamic Reach:
-    // Jika nama teks cocok kuat (sim >= 0.65, misal "Downloads" vs hint "download"),
-    // izinkan jangkauan semantik luas (hingga 500px) agar kesalahan estimasi koordinat model
-    // tetap terkunci ke elemen yang tepat.
-    // Jika tidak cocok (< 0.65), hanya izinkan di dalam radius geometris ketat (tight_radius).
-    let max_allowed_d = if sim >= 0.65 {
-        wide_reach
-    } else {
-        tight_radius
-    };
+        // Dynamic Reach (lihat `reach_for_sim`).
+        let max_allowed_d = reach_for_sim(sim, wide_reach, tight_radius);
 
-    if !contained && d > max_allowed_d {
-        continue;
-    }
-
-    let spatial = if contained {
-        0.0
-    } else {
-        0.25 + (d / max_allowed_d) * 0.75
-    };
-    let textual = if named { 1.0 - sim } else { 1.0 };
-    // Berikan bobot dominan pada kecocokan teks jika hint ada
-    let cost = 0.3 * spatial + 0.7 * textual;
-
-    candidates.push((i, cost, sim, contained, named, ctl.name.clone(), ctl.kind, d));
-}
-
-// Jika ada kandidat bernama yang cocok secara semantik (sim >= 0.65),
-// BUANG SEMUA kandidat anonim atau kandidat dengan sim < 0.65 (mencegah salah sasaran ke elemen tetangga).
-if candidates.iter().any(|c| c.4 && c.2 >= 0.65) {
-    candidates.retain(|c| c.4 && c.2 >= 0.65);
-}
-
-candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
-
-match candidates.as_slice() {
-    [] => HintedPick::None,
-    // Jika kandidat terbaik tidak memenuhi ambang batas 65% kecocokan hint
-    [b, ..] if b.2 < 0.65 => {
-        if b.4 {
-            HintedPick::Vetoed {
-                best_name: b.5.clone(),
-                best_sim: b.2,
-            }
-        } else {
-            HintedPick::None
+        if !contained && d > max_allowed_d {
+            continue;
         }
+
+        let spatial = if contained {
+            0.0
+        } else {
+            0.25 + (d / max_allowed_d) * 0.75
+        };
+        let textual = if named { 1.0 - sim } else { 1.0 };
+        // Berikan bobot dominan pada kecocokan teks jika hint ada
+        let mut cost = 0.3 * spatial + 0.7 * textual;
+        if is_row_container(ctl.kind) {
+            cost += CONTAINER_PENALTY;
+        }
+
+        candidates.push(HintCand {
+            index: i,
+            cost,
+            sim,
+            contained,
+            named,
+            name: ctl.name.clone(),
+            kind: ctl.kind,
+            distance: d,
+            area: ctl.area(),
+        });
     }
+
+    // Jika ada kandidat bernama yang cocok secara semantik (sim >= 0.65),
+    // BUANG SEMUA kandidat anonim atau kandidat dengan sim < 0.65 (mencegah salah sasaran ke elemen tetangga).
+    if candidates.iter().any(|c| c.named && c.sim >= 0.65) {
+        candidates.retain(|c| c.named && c.sim >= 0.65);
+    }
+
+    // Urut berdasarkan biaya; bila selisih sangat kecil, kontrol berluas LEBIH KECIL (lebih spesifik)
+    // menang — bukan sekadar urutan pohon UIA (induk selalu muncul sebelum anak).
+    candidates.sort_by(|a, b| {
+        if (a.cost - b.cost).abs() < 0.01 {
+            a.area.cmp(&b.area).then(a.index.cmp(&b.index))
+        } else {
+            a.cost.total_cmp(&b.cost)
+        }
+    });
+
+    match candidates.as_slice() {
+        [] => HintedPick::None,
+        // Foto/thumbnail tanpa nama yang tepat berada di titik model: hint (mis. judul artikel)
+        // tidak bisa dicocokkan ke teks, tetapi titik model memang jatuh di dalam gambar itu.
+        [b, ..] if b.sim < 0.65 => {
+            let named_neighbour = candidates.iter().any(|c| {
+                c.named && c.kind != ControlKind::Image && (c.contained || c.distance <= tight_radius)
+            });
+            if !named_neighbour {
+                if let Some(img) = candidates
+                    .iter()
+                    .filter(|c| c.kind == ControlKind::Image && c.contained && !c.named)
+                    .min_by_key(|c| c.area)
+                {
+                    return HintedPick::Chosen {
+                        index: img.index,
+                        sim: 0.0,
+                        contained: true,
+                    };
+                }
+            }
+            // Jika kandidat terbaik tidak memenuhi ambang batas 65% kecocokan hint
+            if b.named {
+                HintedPick::Vetoed {
+                    best_name: b.name.clone(),
+                    best_sim: b.sim,
+                }
+            } else {
+                HintedPick::None
+            }
+        }
         [b, ..] => {
             // Cek apakah ada kandidat lain yang benar-benar berbeda (competing distinct target)
             // yang skornya berselisih < 0.06.
@@ -509,11 +620,11 @@ match candidates.as_slice() {
             // atau keduanya bertumpukan pada titik yang sama (nested element di DOM),
             // maka itu BUKAN ambiguitas — itu elemen yang sama!
             let competing = candidates.iter().skip(1).find(|s| {
-                let nb = normalize_hint(&b.5);
-                let ns = normalize_hint(&s.5);
+                let nb = normalize_hint(&b.name);
+                let ns = normalize_hint(&s.name);
                 let same_name = nb == ns || nb.contains(&ns) || ns.contains(&nb);
-                let overlapping = b.3 && s.3; // both contain the query point
-                !same_name && !overlapping && (s.1 - b.1).abs() < 0.06
+                let overlapping = b.contained && s.contained; // both contain the query point
+                !same_name && !overlapping && (s.cost - b.cost).abs() < 0.06
             });
 
             if competing.is_some() {
@@ -521,19 +632,19 @@ match candidates.as_slice() {
                     .iter()
                     .take(3)
                     .map(|c| AmbiguousCandidate {
-                        index: c.0,
-                        name: c.5.clone(),
-                        kind: c.6,
-                        distance_px: c.7,
-                        score: c.1,
+                        index: c.index,
+                        name: c.name.clone(),
+                        kind: c.kind,
+                        distance_px: c.distance,
+                        score: c.cost,
                     })
                     .collect();
                 HintedPick::Ambiguous(top3)
             } else {
                 HintedPick::Chosen {
-                    index: b.0,
-                    sim: b.2,
-                    contained: b.3,
+                    index: b.index,
+                    sim: b.sim,
+                    contained: b.contained,
                 }
             }
         }
@@ -566,6 +677,7 @@ mod tests {
             hint_area_px: None,
             screen_w: SW,
             screen_h: SH,
+            chrome_band_bottom: 0,
         }
     }
 
@@ -733,6 +845,7 @@ mod tests {
             hint_area_px: None,
             screen_w: 1920,
             screen_h: 1080,
+            chrome_band_bottom: 0,
         };
 
         match pick_hinted(&controls, &query, "download") {
@@ -832,6 +945,7 @@ mod tests {
             hint_area_px: None,
             screen_w: 1920,
             screen_h: 1080,
+            chrome_band_bottom: 0,
         };
 
         match pick_hinted(&controls, &query, "Alih Kode dan Campur Kode Bahasa Arab") {
@@ -841,5 +955,154 @@ mod tests {
             }
             other => panic!("Expected Chosen, but got {:?}", other),
         }
+    }
+
+    fn named(kind: ControlKind, name: &str, l: i32, t: i32, r: i32, b: i32) -> ControlInfo {
+        let mut c = ctl(kind, l, t, r, b);
+        c.name = name.into();
+        c
+    }
+
+    fn browser_q(px: i32, py: i32) -> SnapQuery {
+        SnapQuery {
+            px,
+            py,
+            radius_px: 22,
+            hint_area_px: None,
+            screen_w: SW,
+            screen_h: SH,
+            chrome_band_bottom: 150,
+        }
+    }
+
+    // ── Regression (log 2026-11-06 17:15:25): hint == judul tab yang sedang terbuka ──────────────
+    // Titik model di foto halaman (960,432). Satu-satunya elemen bernama sama adalah TabItem di
+    // tab strip (y<52). Sebelumnya TabItem menang "exact" lalu klik ditolak/terbang ke tab strip.
+    #[test]
+    fn browser_tab_with_same_title_does_not_steal_click_from_page_content() {
+        let title = "Tim Mahasiswa Sastra Arab UGM Raih Juara 2 Lomba Essay Presentation dalam Ajang Arabic Fair UNS 2025 - Program Studi Sastra Arab FIB UGM";
+        let tab = named(ControlKind::TabItem, title, 928, 0, 1249, 52);
+        let photo = ctl(ControlKind::Image, 600, 300, 1300, 700);
+        let controls = vec![tab, photo];
+
+        // Baseline (perilaku lama): tanpa pita chrome, tab menang "exact".
+        let mut no_band = browser_q(960, 432);
+        no_band.chrome_band_bottom = 0;
+        match pick_hinted(&controls, &no_band, title) {
+            HintedPick::Chosen { index, .. } => assert_eq!(index, 0, "baseline: tab menang tanpa pita chrome"),
+            other => panic!("baseline expected tab, got {:?}", other),
+        }
+
+        // Setelah fix: pita chrome mengecualikan tab → foto (tanpa nama) di titik model dipilih.
+        match pick_hinted(&controls, &browser_q(960, 432), title) {
+            HintedPick::Chosen { index, .. } => assert_eq!(index, 1, "foto halaman harus dipilih, bukan tab"),
+            other => panic!("expected photo, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn browser_tab_still_clickable_when_model_points_at_tab_strip() {
+        let tab = named(ControlKind::TabItem, "PM2+ Monitoring", 928, 0, 1249, 52);
+        match pick_hinted(&[tab], &browser_q(1000, 30), "PM2+ Monitoring") {
+            HintedPick::Chosen { index, .. } => assert_eq!(index, 0),
+            other => panic!("tab must remain clickable near tab strip, got {:?}", other),
+        }
+    }
+
+    // ── Regression (log 17:14:40): kecocokan parsial tidak boleh melompat ~600px ──────────────────
+    #[test]
+    fn partial_match_cannot_jump_across_screen() {
+        let hint = "Tim Mahasiswa Sastra Arab UGM Raih Juara 2 Lomba Essay";
+        let cand = "Universitas Gadjah Mada UNIVERSITAS GADJAH MADA";
+        let sim = text_similarity(hint, cand);
+        assert!((0.65..0.85).contains(&sim), "precondition: parsial, sim={sim}");
+
+        let far = named(ControlKind::Button, cand, 100, 800, 300, 840);
+        // titik model 600px di atas kandidat
+        if let HintedPick::Chosen { .. } = pick_hinted(&[far.clone()], &q(200, 200), hint) {
+            panic!("kecocokan parsial 600px jauhnya tidak boleh dipilih");
+        }
+        // dekat (<=300px) tetap boleh
+        match pick_hinted(&[far], &q(200, 600), hint) {
+            HintedPick::Chosen { index, .. } => assert_eq!(index, 0),
+            other => panic!("kecocokan parsial dekat harus dipilih, got {:?}", other),
+        }
+    }
+
+    // ── Regression: duplikat bersarang — induk (ListItem) muncul lebih dulu di pohon UIA ──────────
+    #[test]
+    fn nested_duplicate_prefers_specific_control_over_row_container() {
+        let li = named(ControlKind::ListItem, "Akses PDF", 1100, 560, 1700, 700);
+        let link = named(ControlKind::Hyperlink, "Akses PDF", 1300, 600, 1420, 650);
+        match pick_hinted(&[li, link], &q(1350, 625), "Akses PDF") {
+            HintedPick::Chosen { index, .. } => assert_eq!(index, 1, "Hyperlink spesifik harus menang atas ListItem pembungkus"),
+            other => panic!("expected Chosen, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sole_row_container_is_still_chosen_for_row_style_lists() {
+        let row = named(
+            ControlKind::DataItem,
+            "Tokopedia Promo akhir tahun diskon besar-besaran untuk kamu yang berlangganan newsletter kami hari ini saja",
+            300,
+            400,
+            1500,
+            440,
+        );
+        match pick_hinted(&[row], &q(800, 420), "Tokopedia") {
+            HintedPick::Chosen { index, .. } => assert_eq!(index, 0),
+            other => panic!("baris email harus tetap bisa dipilih, got {:?}", other),
+        }
+    }
+
+    // ── Foto/thumbnail tanpa nama tepat di titik model (hint tidak bisa dicocokkan) ───────────────
+    #[test]
+    fn unnamed_image_under_point_is_chosen_when_hint_cannot_match() {
+        let photo = ctl(ControlKind::Image, 600, 300, 1300, 700);
+        match pick_hinted(&[photo], &browser_q(960, 432), "foto juara") {
+            HintedPick::Chosen { index, .. } => assert_eq!(index, 0),
+            other => panic!("expected image, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn unnamed_image_does_not_override_named_neighbour_mismatch() {
+        let photo = ctl(ControlKind::Image, 600, 300, 1300, 700);
+        let btn = named(ControlKind::Button, "Submit", 900, 400, 1000, 440);
+        match pick_hinted(&[photo, btn], &browser_q(950, 420), "Print") {
+            HintedPick::Vetoed { .. } => {}
+            other => panic!("tombol bertetangga yang tak cocok harus veto, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pick_best_without_hint_ignores_images() {
+        let photo = ctl(ControlKind::Image, 600, 300, 1300, 700);
+        assert!(pick_best(&[photo], &q(960, 432)).is_none());
+    }
+
+    // ── Titik klik fisik ───────────────────────────────────────────────────────────────────────
+    // Regression (log 07:16:15): blok hasil Google 458x153 → pusat (1405,503) jatuh di snippet.
+    #[test]
+    fn click_point_targets_first_line_of_multiline_hyperlink() {
+        let link = named(ControlKind::Hyperlink, "Hasil", 1176, 427, 1634, 580);
+        assert_eq!(click_point(&link, 1344, 108), (1405, 447));
+    }
+
+    #[test]
+    fn click_point_uses_center_for_single_line_controls() {
+        let btn = named(ControlKind::Button, "OK", 100, 100, 200, 140);
+        assert_eq!(click_point(&btn, 0, 0), (150, 120));
+        let link = named(ControlKind::Hyperlink, "Satu baris", 100, 100, 300, 130);
+        assert_eq!(click_point(&link, 0, 0), (200, 115));
+    }
+
+    #[test]
+    fn click_point_keeps_model_point_inside_image() {
+        let photo = ctl(ControlKind::Image, 600, 300, 1300, 700);
+        assert_eq!(click_point(&photo, 700, 350), (700, 350));
+        // di luar gambar → pusat
+        assert_eq!(click_point(&photo, 50, 50), (950, 500));
     }
 }

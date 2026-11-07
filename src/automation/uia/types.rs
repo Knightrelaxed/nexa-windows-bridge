@@ -5,8 +5,9 @@ use crate::automation::element_finder::PixelRect;
 use std::fmt;
 
 /// Jenis kontrol interaktif (padanan `CONTROL_LIST` pada konfigurasi UFO).
-/// `Document`, `Pane`, `Group`, `Text`, `Image` sengaja TIDAK dimasukkan:
-/// itu kontainer/dekorasi yang menyebabkan snap ke elemen raksasa.
+/// `Document`, `Pane`, `Group`, `Text` sengaja TIDAK dimasukkan: itu kontainer/dekorasi yang
+/// menyebabkan snap ke elemen raksasa. `Image` dimasukkan HANYA untuk klik ber-hint (foto/thumbnail
+/// yang bisa diklik); `pick_best` tanpa hint mengabaikannya (lihat `snap::pick_best`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ControlKind {
     Button,
@@ -21,10 +22,11 @@ pub enum ControlKind {
     ListItem,
     TreeItem,
     DataItem,
+    Image,
 }
 
 impl ControlKind {
-    pub const DEFAULT_INTERACTIVE: [ControlKind; 12] = [
+    pub const DEFAULT_INTERACTIVE: [ControlKind; 13] = [
         ControlKind::Button,
         ControlKind::SplitButton,
         ControlKind::CheckBox,
@@ -37,6 +39,7 @@ impl ControlKind {
         ControlKind::ListItem,
         ControlKind::TreeItem,
         ControlKind::DataItem,
+        ControlKind::Image,
     ];
 
     /// Nilai `UIA_*ControlTypeId` (didefinisikan lokal agar modul ini bebas dependensi Win32).
@@ -47,6 +50,7 @@ impl ControlKind {
             ControlKind::ComboBox => 50003,
             ControlKind::Edit => 50004,
             ControlKind::Hyperlink => 50005,
+            ControlKind::Image => 50006,
             ControlKind::ListItem => 50007,
             ControlKind::MenuItem => 50011,
             ControlKind::RadioButton => 50013,
@@ -78,6 +82,7 @@ impl ControlKind {
             ControlKind::ListItem => "ListItem",
             ControlKind::TreeItem => "TreeItem",
             ControlKind::DataItem => "DataItem",
+            ControlKind::Image => "Image",
         }
     }
 }

@@ -473,7 +473,52 @@ pub fn is_point_inside_own_interactive_window(px: i32, py: i32) -> bool {
 /// mencari jendela top-level di titik → tolak jika milik internal Nexa → tolak jika hung/unresponsive.
 /// Menandai apakah jendela target adalah jendela aktif (foreground) saat ini.
 pub fn guard_point(px: i32, py: i32) -> Result<GuardedTarget, GuardError> {
-    if is_point_inside_own_interactive_window(px, py) {
+    guard_point_with(px, py, false)
+}
+
+/// Batas atas (y layar) jendela top-level `hwnd`; dipakai untuk menempatkan pita chrome browser
+/// relatif terhadap jendela (bukan terhadap layar) saat browser tidak maximized.
+pub fn window_top(hwnd: usize) -> Option<i32> {
+    let mut r = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    // SAFETY: hwnd boleh basi; API gagal tanpa efek samping.
+    if unsafe { GetWindowRect(hwnd as HWND, &mut r) } == 0 {
+        None
+    } else {
+        Some(r.top)
+    }
+}
+
+/// Deteksi batas bawah pita chrome (tab strip + omnibox + bookmarks bar) untuk jendela browser (Chrome, Edge, Firefox, dll).
+/// Mengembalikan koordinat Y layar (px). Jika bukan jendela browser atau gagal, mengembalikan 0.
+pub fn detect_chrome_band_bottom(hwnd: usize) -> i32 {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetClassNameW;
+    let mut class_buf = [0u16; 64];
+    let class_len = unsafe { GetClassNameW(hwnd as HWND, class_buf.as_mut_ptr(), class_buf.len() as i32) };
+    if class_len > 0 {
+        let class_name = String::from_utf16_lossy(&class_buf[..class_len as usize]);
+        // Chromium (Chrome, Edge, Brave, Opera, Vivaldi) dan Firefox
+        if class_name == "Chrome_WidgetWin_1" || class_name == "MozillaWindowClass" {
+            if let Some(top_y) = window_top(hwnd) {
+                // Pita atas browser (tab strip ~45px + omnibox ~45px + bookmark bar ~40px) = ~140px dari tepi atas jendela.
+                return top_y.max(0) + 140;
+            }
+        }
+    }
+    0
+}
+
+/// Variasi `guard_point`. `allow_own_overlay`: bila true, titik mentah model yang kebetulan jatuh
+/// di jendela interaktif Nexa (kapsul HUD) TIDAK menggagalkan aksi — pada klik ber-hint titik itu
+/// hanya prior, target sebenarnya ditentukan nama elemen. Jendela di BAWAH HUD tetap dicari
+/// (`top_level_at` melewati jendela Nexa) dan penutupan oleh HUD pada titik klik akhir tetap
+/// dicegat oleh `hit_matches`/`verify_rect_occlusion`.
+pub fn guard_point_with(px: i32, py: i32, allow_own_overlay: bool) -> Result<GuardedTarget, GuardError> {
+    if !allow_own_overlay && is_point_inside_own_interactive_window(px, py) {
         return Err(GuardError::OwnProcess);
     }
 

@@ -338,6 +338,8 @@ fn chain_for(kind: ControlKind) -> &'static [Attempt] {
         ControlKind::ComboBox => CHAIN_COMBO,
         // Klik pada Edit = taruh caret di titik tertentu → biarkan SendInput.
         ControlKind::Edit => CHAIN_NONE,
+        // Foto/thumbnail: tidak punya pattern aktivasi; klik fisik di titik model/pusat.
+        ControlKind::Image => CHAIN_NONE,
     }
 }
 

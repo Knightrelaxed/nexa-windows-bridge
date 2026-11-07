@@ -449,7 +449,7 @@ fn run_job(ctx: &UiaContext, job: &Job) -> Result<Response, UiaError> {
 // Job: klik hybrid
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn snap_query(px: i32, py: i32, hint: Option<i64>) -> SnapQuery {
+fn snap_query(px: i32, py: i32, hint: Option<i64>, chrome_band_bottom: i32) -> SnapQuery {
     let s = get_primary_screen_dimensions();
     SnapQuery {
         px,
@@ -458,6 +458,7 @@ fn snap_query(px: i32, py: i32, hint: Option<i64>) -> SnapQuery {
         hint_area_px: hint,
         screen_w: s.width,
         screen_h: s.height,
+        chrome_band_bottom,
     }
 }
 
@@ -603,8 +604,11 @@ fn run_click(
     let (px, py) = denormalize_to_pixels(norm_x, norm_y, screen.width, screen.height);
 
     // 1) Window Guard (titik pada jendela valid & responsif, bukan internal Nexa)
-    let target = guard::guard_point(px, py)?;
-    let query = snap_query(px, py, None);
+    // Bila model memberi target_hint, izinkan titik mentah mengenai overlay Nexa HUD
+    // karena target sebenarnya ditentukan oleh semantik hint di aplikasi di bawahnya.
+    let target = guard::guard_point_with(px, py, target_hint.is_some())?;
+    let chrome_band = guard::detect_chrome_band_bottom(target.target_hwnd);
+    let query = snap_query(px, py, None, chrome_band);
 
     // N6 Click Trace: Initial coordinates and target window
     info!(
@@ -652,7 +656,7 @@ fn run_click(
                 };
 
                 if let Some((idx, hint_tag)) = chosen_candidate {
-                    let (snap_cx, snap_cy) = scan.infos[idx].center();
+                    let (snap_cx, snap_cy) = snap::click_point(&scan.infos[idx], px, py);
                     let c = &scan.infos[idx];
                     info!(
                         "[CLICK-TRACE] chosen kind={:?} name='{}' rect=({},{},{},{}) d_raw=({},{}) hint_tag={:?}",
@@ -678,7 +682,7 @@ fn run_click(
                         }
                     }
 
-                    match act_on(&scan, idx, &target, button, double, policy, hint_tag, t0) {
+                    match act_on(&scan, idx, (snap_cx, snap_cy), &target, button, double, policy, hint_tag, t0) {
                         Ok(report) => return Ok(report),
                         Err(UiaError::ElevatedTarget) => return Err(UiaError::ElevatedTarget),
                         Err(UiaError::Guard(g)) => {
@@ -747,6 +751,7 @@ fn run_click(
 fn act_on(
     scan: &Scan,
     idx: usize,
+    click_pt: (i32, i32),
     target: &guard::GuardedTarget,
     button: MouseButton,
     double: bool,
@@ -756,7 +761,7 @@ fn act_on(
 ) -> Result<ClickReport, UiaError> {
     let info = scan.infos.get(idx).ok_or(UiaError::StaleElement)?;
     let el = scan.elements.get(idx).ok_or(UiaError::StaleElement)?;
-    let (cx, cy) = info.center();
+    let (cx, cy) = click_pt;
     let summary = || {
         Some(ControlSummary {
             kind: info.kind,
@@ -840,7 +845,7 @@ fn run_snap(
             .and_then(|idx| scan.infos.get(idx))
             .map(|c| c.rect))
     } else {
-        let q = snap_query(px, py, None);
+        let q = snap_query(px, py, None, 0);
         Ok(pick_best(&scan.infos, &q)
             .and_then(|m| scan.infos.get(m.index))
             .map(|c| c.rect))
@@ -864,7 +869,7 @@ fn run_set_text(
     let s = get_primary_screen_dimensions();
     let (px, py) = denormalize_to_pixels(norm_x, norm_y, s.width, s.height);
     let target = guard::guard_point(px, py)?;
-    let q = snap_query(px, py, None);
+    let q = snap_query(px, py, None, 0);
     let finish = |method: &'static str| SetTextReport {
         method,
         chars: text.chars().count(),
