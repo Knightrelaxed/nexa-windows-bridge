@@ -388,7 +388,7 @@ pub fn text_similarity(hint: &str, candidate: &str) -> f32 {
     let full_sim = if len_ratio >= 0.60 {
         jaro_winkler_similarity(&h, &c)
     } else {
-        jaro_winkler_similarity(&h, &c) * (len_ratio / 0.60)
+        jaro_winkler_similarity(&h, &c) * len_ratio
     };
 
     // Stop words yang diabaikan saat menghitung coverage kata kunci
@@ -399,23 +399,37 @@ pub fn text_similarity(hint: &str, candidate: &str) -> f32 {
         "bar", "box", "input", "field", "kolom", "kotak", "current", "query", "profile", "profil",
     ];
 
-    let mut h_words: Vec<&str> = h
+    // Deduplikasi token agar kata yang berulang di dalam hint (mis. "kode" x2 dan "bahasa" x2
+    // pada "Alih Kode dan Campur Kode Bahasa Arab | Deskripsi Bahasa") tidak menggelembungkan
+    // skor ketika kata pembeda penting (seperti "Deskripsi" atau "UGM") tidak ada di kandidat.
+    let mut h_words: Vec<&str> = Vec::new();
+    for w in h
         .split_whitespace()
         .filter(|w| w.len() >= 3 && !STOP_WORDS.contains(w))
-        .collect();
-    if h_words.is_empty() {
-        h_words = h.split_whitespace().filter(|w| w.len() >= 3).collect();
+    {
+        if !h_words.contains(&w) {
+            h_words.push(w);
+        }
     }
-    let c_words: Vec<&str> = c
-        .split_whitespace()
-        .filter(|w| w.len() >= 3)
-        .collect();
+    if h_words.is_empty() {
+        for w in h.split_whitespace().filter(|w| w.len() >= 3) {
+            if !h_words.contains(&w) {
+                h_words.push(w);
+            }
+        }
+    }
+    let mut c_words: Vec<&str> = Vec::new();
+    for w in c.split_whitespace().filter(|w| w.len() >= 3) {
+        if !c_words.contains(&w) {
+            c_words.push(w);
+        }
+    }
 
     if h_words.is_empty() || c_words.is_empty() {
         return full_sim;
     }
 
-    // Hitung berapa proporsi kata kunci hint yang berhasil ditemukan di candidate (Hint Coverage / Recall)
+    // Hitung berapa proporsi kata kunci unik hint yang berhasil ditemukan di candidate (Hint Coverage / Recall)
     let mut hint_matches_sum = 0.0f32;
     for hw in &h_words {
         let mut best_m = 0.0f32;
@@ -429,7 +443,7 @@ pub fn text_similarity(hint: &str, candidate: &str) -> f32 {
     }
     let hint_coverage = hint_matches_sum / (h_words.len() as f32);
 
-    // Hitung berapa proporsi kata candidate yang cocok dengan hint (Candidate Coverage)
+    // Hitung berapa proporsi kata unik candidate yang cocok dengan hint (Candidate Coverage / Precision)
     let mut cand_matches_sum = 0.0f32;
     for cw in &c_words {
         if STOP_WORDS.contains(cw) {
@@ -451,8 +465,26 @@ pub fn text_similarity(hint: &str, candidate: &str) -> f32 {
         0.0
     };
 
-    let adjusted_hint_cov = (hint_coverage * 0.95 + hint_coverage * cand_coverage * 0.05).min(1.0);
-    let token_sim = adjusted_hint_cov.max(cand_coverage * 0.9);
+    // Penalti dilusi paragraf panjang: jika kandidat bukan substring utuh (!c.contains(&h)) dan
+    // memiliki jauh lebih banyak kata daripada hint (mis. paragraf 50 kata di AI Overview yang
+    // kebetulan memuat kata topik secara tersebar), turunkan skor secara proporsional.
+    let penalized_hint_cov = if cand_significant_count > h_words.len() + 4 {
+        let dilution =
+            ((h_words.len() as f32 + 3.0) / (cand_significant_count as f32 + 3.0)).sqrt();
+        hint_coverage * dilution
+    } else {
+        hint_coverage
+    };
+
+    let adjusted_hint_cov =
+        (penalized_hint_cov * 0.95 + penalized_hint_cov * cand_coverage * 0.05).min(1.0);
+    // Jangan izinkan cand_coverage mengatrol skor ke 90% jika hint_coverage rendah (< 0.65),
+    // misalnya judul pendek terpotong milik UIN terhadap hint panjang yang meminta UGM.
+    let token_sim = if penalized_hint_cov >= 0.65 {
+        adjusted_hint_cov.max(cand_coverage * 0.9)
+    } else {
+        adjusted_hint_cov
+    };
     full_sim.max(token_sim)
 }
 
@@ -562,6 +594,19 @@ pub fn pick_hinted(controls: &[ControlInfo], q: &SnapQuery, hint: &str) -> Hinte
         if q.chrome_band_bottom > 0
             && q.py >= q.chrome_band_bottom + CHROME_BAND_MARGIN
             && ctl.rect.bottom <= q.chrome_band_bottom
+        {
+            continue;
+        }
+
+        // Di halaman web browser (chrome_band_bottom > 0), elemen `<li>` (ListItem) yang berisi
+        // kalimat/paragraf panjang (mis. butir penjelasan "Ringkasan AI" / AI Overview Google)
+        // adalah teks statis, BUKAN tautan yang bisa diklik (tautan web selalu Hyperlink/Button).
+        if q.chrome_band_bottom > 0
+            && ctl.kind == ControlKind::ListItem
+            && ctl.rect.top >= q.chrome_band_bottom
+            && (ctl.name.chars().count() > 80
+                || ctl.name.contains(": ")
+                || ctl.name.contains(". "))
         {
             continue;
         }
@@ -1178,6 +1223,73 @@ mod tests {
                     other => panic!("Hint '{}' di ({},{}) gagal memilih 'Cari': {:?}", hint, px, py, other),
                 }
             }
+        }
+    }
+
+    // ── Regression (log 2026-11-07 09:28:33..09:29:25): AI Overview ListItem & non-UGM truncated links ──
+    #[test]
+    fn regression_log_092833_ai_overview_list_items_and_non_ugm_truncated_links_are_rejected() {
+        let ai_overview_bullet_1 = named(
+            ControlKind::ListItem,
+            "Alih Kode (Code-Switching): Peristiwa peralihan dari satu bahasa (atau ragam bahasa) ke bahasa lain secara utuh dalam suatu situasi tutur. Contoh: Berbicara menggunakan bahasa Indonesia, lalu beralih penuh menggunakan bahasa Arab.",
+            285,
+            581,
+            1078,
+            806,
+        );
+        let ai_overview_bullet_2 = named(
+            ControlKind::ListItem,
+            "Contoh: \"Kita harus syukron dulu atas bantuan yang diberikan\" (mencampurkan kosakata bahasa Arab ke dalam struktur kalimat bahasa Indonesia).",
+            313,
+            211,
+            1078,
+            271,
+        );
+        let uin_truncated_link = named(
+            ControlKind::Hyperlink,
+            "Alih Kode dan Campur Kode dalam Percakapan Sehari-hari ...",
+            1176,
+            459,
+            1634,
+            612,
+        );
+        let unimal_link = named(
+            ControlKind::Hyperlink,
+            "Alih Kode dan Campur Kode Arab-Indonesia dalam Vlog ...",
+            1176,
+            620,
+            1634,
+            760,
+        );
+        let controls = vec![
+            ai_overview_bullet_1,
+            ai_overview_bullet_2,
+            uin_truncated_link,
+            unimal_link,
+        ];
+
+        // 1. Ketika model meminta jurnal UGM "Alih Kode dan Campur Kode Bahasa Arab | Deskripsi Bahasa"
+        //    tetapi layar masih di bagian atas (AI Overview, belum digulir ke bawah), JANGAN memilih
+        //    ListItem AI Overview ataupun link UIN/Unimal!
+        match pick_hinted(
+            &controls,
+            &browser_q(624, 529),
+            "Alih Kode dan Campur Kode Bahasa Arab | Deskripsi Bahasa",
+        ) {
+            HintedPick::Vetoed { .. } | HintedPick::None => {}
+            other => panic!("Tidak boleh memilih ListItem AI Overview atau link non-UGM: {:?}", other),
+        }
+
+        // 2. Ketika model memberikan hint panjang yang menyebutkan "Mahasiswa Jurusan Sastra Arab Universitas Gadjah Mada",
+        //    link pendek terpotong 'Alih Kode dan Campur Kode dalam Percakapan Sehari-hari ...' (milik UIN)
+        //    TIDAK BOLEH dikatrol oleh cand_coverage menjadi 90%!
+        match pick_hinted(
+            &controls,
+            &browser_q(1405, 763),
+            "Alih Kode dan Campur Kode dalam Percakapan Sehari-hari Mahasiswa Jurusan Sastra Arab Universitas Gadjah Mada",
+        ) {
+            HintedPick::Vetoed { .. } | HintedPick::None => {}
+            other => panic!("Link UIN terpotong tidak boleh lolos sebagai jurnal UGM: {:?}", other),
         }
     }
 }

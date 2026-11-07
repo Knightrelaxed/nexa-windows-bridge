@@ -87,6 +87,7 @@ enum Request {
         text: String,
         press_enter: bool,
     },
+    CheckFocusedInput,
 }
 
 #[allow(dead_code)]
@@ -94,6 +95,7 @@ enum Response {
     Click(ClickReport),
     Snap(Option<PixelRect>),
     SetText(SetTextReport),
+    FocusedInput { is_editable: bool, control_type: i32 },
 }
 
 struct Job {
@@ -290,6 +292,17 @@ impl UiaHandle {
             _ => Err(UiaError::Internal("tipe respons tidak cocok".into())),
         }
     }
+
+    /// Cek apakah elemen yang sedang fokus keyboard adalah kotak input teks (`Edit`/`ComboBox`).
+    pub async fn focused_input_state(&self) -> Option<(bool, i32)> {
+        match self.call(Request::CheckFocusedInput, Duration::from_millis(250)).await {
+            Ok(Response::FocusedInput {
+                is_editable,
+                control_type,
+            }) => Some((is_editable, control_type)),
+            _ => None,
+        }
+    }
 }
 
 /// Jalur terdegradasi (tanpa UIA, tetap dengan Window Guard). HANYA dipakai bila
@@ -442,6 +455,13 @@ fn run_job(ctx: &UiaContext, job: &Job) -> Result<Response, UiaError> {
             press_enter,
         } => run_set_text(ctx, *norm_x, *norm_y, text, *press_enter, deadline, cancel)
             .map(Response::SetText),
+        Request::CheckFocusedInput => {
+            let (is_editable, control_type) = ctx.focused_input_state();
+            Ok(Response::FocusedInput {
+                is_editable,
+                control_type,
+            })
+        }
     }
 }
 
@@ -602,6 +622,13 @@ pub(crate) fn describe_missing_hint_context(
         window_title.trim()
     };
 
+    if controls.is_empty() {
+        return format!(
+            " [Catatan: pohon UI jendela '{}' baru sedang dimuat (0 kontrol terdeteksi), silakan coba klik sekali lagi]",
+            title_label
+        );
+    }
+
     let best_elsewhere = controls
         .iter()
         .filter(|c| !c.name.trim().is_empty() && c.rect.is_valid_control(screen_w, screen_h))
@@ -621,11 +648,22 @@ pub(crate) fn describe_missing_hint_context(
             ny
         )
     } else {
+        const CHROME_BUTTON_NAMES: &[&str] = &[
+            "minimize", "maximize", "restore", "close", "back", "forward", "reload",
+            "new tab", "close tab", "tab search", "window", "system",
+        ];
         let mut samples: Vec<String> = Vec::new();
         for c in controls {
             let n = c.short_name(35);
             let trimmed = n.trim();
-            if !trimmed.is_empty() && !samples.iter().any(|s| s == trimmed) {
+            if trimmed.is_empty() {
+                continue;
+            }
+            let lower = trimmed.to_lowercase();
+            if CHROME_BUTTON_NAMES.contains(&lower.as_str()) {
+                continue;
+            }
+            if !samples.iter().any(|s| s == trimmed) {
                 samples.push(trimmed.to_string());
                 if samples.len() >= 5 {
                     break;
@@ -633,7 +671,7 @@ pub(crate) fn describe_missing_hint_context(
             }
         }
         let sample_str = if samples.is_empty() {
-            "tidak ada kontrol bernama".to_string()
+            "hanya tombol navigasi standar".to_string()
         } else {
             samples.join("', '")
         };
@@ -684,6 +722,17 @@ fn run_click(
                     "[CLICK-TRACE] scan_n={} for hwnd=0x{:X}",
                     scan.infos.len(), target.target_hwnd
                 );
+                // Pada jendela Chromium yang baru saja dibuka, pemindaian UIA pertama memicu
+                // inisialisasi pohon aksesibilitas secara malas (lazy) dan mengembalikan 0 elemen.
+                // Tunggu 180ms lalu ulangi sekali agar klik pertama langsung berhasil.
+                if scan.infos.is_empty() && attempt == 0 {
+                    info!(
+                        "[CLICK-TRACE] scan_n=0 on attempt 0 for hwnd=0x{:X} (lazy UIA init), retrying in 180ms...",
+                        target.target_hwnd
+                    );
+                    std::thread::sleep(Duration::from_millis(180));
+                    continue;
+                }
 
                 let chosen_candidate = match target_hint {
                     Some(hint) if !hint.trim().is_empty() => match snap::pick_hinted(&scan.infos, &query, hint) {

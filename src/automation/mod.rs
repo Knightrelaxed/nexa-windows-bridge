@@ -661,10 +661,69 @@ pub async fn handle_execute_command(
                 .and_then(|v| v.as_bool())
                 .unwrap_or(press_enter);
 
+            // Deteksi apakah jendela foreground adalah browser web (Chrome/Edge/Firefox) dan
+            // apakah fokus keyboard saat ini benar-benar berada di dalam kontrol input teks.
+            // Jika tidak ada kotak input yang fokus (mis. di halaman 'New Tab', atau setelah scroll/buka profil
+            // di mana fokus masih di dokumen atau tombol 'Restore'), menekan CTRL+A akan menyeleksi seluruh
+            // teks halaman web dan ketikan akan terbuang sia-sia. Solusi: tekan CTRL+L untuk memfokuskan omnibox!
+            let fg_hwnd = crate::automation::uia::guard::capture_foreground()
+                .map(|s| s.hwnd)
+                .unwrap_or(0);
+            let is_browser = fg_hwnd != 0
+                && crate::automation::uia::guard::detect_chrome_band_bottom(fg_hwnd) > 0;
+            let win_title = if fg_hwnd != 0 {
+                crate::automation::uia::guard::window_title(fg_hwnd)
+            } else {
+                String::new()
+            };
+            let title_lower = win_title.to_lowercase();
+            let is_new_tab = title_lower.starts_with("new tab")
+                || title_lower.starts_with("tab baru")
+                || title_lower == "google chrome"
+                || title_lower == "microsoft edge";
+
+            let (is_editable_focused, focused_ct) = if is_browser {
+                if let Ok(uia) = crate::automation::uia::UiaHandle::global() {
+                    uia.focused_input_state().await.unwrap_or((false, 0))
+                } else {
+                    (false, 0)
+                }
+            } else {
+                (true, 50004)
+            };
+
+            // Pada halaman 'New Tab' Chrome, kotak pencarian tengah (ComboBox 50003) adalah elemen semu
+            // yang tidak menerima ketikan langsung kecuali omnibox (Edit 50004) difokuskan.
+            let browser_input_ready = if !is_browser {
+                true
+            } else if is_new_tab {
+                focused_ct == 50004
+            } else {
+                is_editable_focused
+            };
+
             let text_owned = text.to_string();
             let _cursor_hold = CursorController::global().hold(crate::ui::CursorMode::Typing);
             let type_res = tokio::task::spawn_blocking(move || {
-                if clear_first {
+                if is_browser && !browser_input_ready {
+                    if press_enter || is_new_tab {
+                        info!(
+                            "[AUTOMATION] 🎯 Browser text input not focused (ct={}, title='{}') -> auto-focusing omnibox via CTRL+L before typing",
+                            focused_ct, win_title
+                        );
+                        let _ = desktop_press_key("CTRL+L");
+                        std::thread::sleep(std::time::Duration::from_millis(65));
+                        if clear_first {
+                            let _ = desktop_press_key("BACKSPACE");
+                            std::thread::sleep(std::time::Duration::from_millis(25));
+                        }
+                    } else {
+                        warn!(
+                            "[AUTOMATION] ⚠️ Browser text input not focused (ct={}, title='{}') and press_enter=false; skipping CTRL+A to avoid selecting page body",
+                            focused_ct, win_title
+                        );
+                    }
+                } else if clear_first {
                     let _ = desktop_press_key("CTRL+A+BACKSPACE");
                     std::thread::sleep(std::time::Duration::from_millis(25));
                 }

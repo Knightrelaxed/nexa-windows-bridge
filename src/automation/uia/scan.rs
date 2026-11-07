@@ -252,6 +252,27 @@ impl UiaContext {
             Ok(Scan { infos, elements })
         }
     }
+
+    /// Cek apakah elemen yang sedang fokus keyboard (`GetFocusedElement`) adalah kotak input teks
+    /// (`Edit` 50004 atau `ComboBox` 50003, atau elemen non-Document dengan `ValuePattern` writable).
+    /// Mengembalikan `(is_editable, control_type_id)`.
+    pub(super) fn focused_input_state(&self) -> (bool, i32) {
+        let Ok(el) = (unsafe { self.uia.GetFocusedElement() }) else {
+            return (false, 0);
+        };
+        let ct = unsafe { el.CurrentControlType().map(|v| v.0).unwrap_or(0) };
+        if ct == 50004 || ct == 50003 {
+            return (true, ct);
+        }
+        if ct != 50030 {
+            if let Ok(vp) = pattern::<IUIAutomationValuePattern>(&el, UIA_ValuePatternId) {
+                if unsafe { vp.CurrentIsReadOnly().map(|b| !b.as_bool()).unwrap_or(false) } {
+                    return (true, ct);
+                }
+            }
+        }
+        (false, ct)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
